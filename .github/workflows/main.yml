@@ -4,16 +4,19 @@ on:
   push:
     branches:
       - master
+  # No base-branch filter: stacked PRs target their parent branch, not master,
+  # and would otherwise get no checks at all.
   pull_request:
-    branches:
-      - master
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Report every leg: a single failing version used to cancel its siblings,
+      # which hid whether the others were healthy.
+      fail-fast: false
       matrix:
-        node-version: ['18', '20']
+        node-version: ['24', '26']
     name: Test (node ${{ matrix.node-version }}.x)
     steps:
       - uses: actions/checkout@v5
