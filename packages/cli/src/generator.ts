@@ -17,6 +17,7 @@ import { camelCase } from 'camel-case';
 import { pascalCase } from 'pascal-case';
 import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
+import { attachPreparedStatementName } from './preparedStatementName.js';
 import { parseCode as parseTypescriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
 import { IQueryTypes } from '@pelotech/pgtyped-query/lib/actions.js';
@@ -352,7 +353,11 @@ export async function generateTypedecsFromFile(
         query: {
           name: camelCase(sqlQueryAST.name),
           ast: sqlQueryAST,
-          ir: queryASTToIR(sqlQueryAST),
+          ir: attachPreparedStatementName(
+            queryASTToIR(sqlQueryAST),
+            sqlQueryAST.name,
+            config,
+          ),
           paramTypeAlias: `${interfacePrefix}${pascalCase(
             sqlQueryAST.name,
           )}Params`,
