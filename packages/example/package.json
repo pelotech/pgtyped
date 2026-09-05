@@ -12,7 +12,7 @@
     "lib": "lib"
   },
   "engines": {
-    "node": ">=14.16"
+    "node": ">=24"
   },
   "scripts": {
     "test": "docker compose run build && docker compose run test && docker compose run test-cjs",
