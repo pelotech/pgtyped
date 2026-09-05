@@ -84,6 +84,12 @@ export interface QueryIR {
   params: ParamIR[];
   statement: string;
   usedParamSet: QueryAST['usedParamSet'];
+  /**
+   * Canonical name for the server-side prepared statement, emitted by codegen
+   * only when the query renders a fixed SQL text. Absent means the query is
+   * sent unnamed, as it always was.
+   */
+  name?: string;
 }
 
 interface ParseTree {
