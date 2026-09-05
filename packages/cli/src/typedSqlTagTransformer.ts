@@ -13,6 +13,7 @@ import { TransformJob, WorkerPool } from './index.js';
 import { TypeAllocator } from './types.js';
 import { debug } from './util.js';
 import { getTypeDecsFnResult } from './worker.js';
+import { RUNTIME_MODULE } from './runtimeModule.js';
 
 type TypedSQLTagTransformResult = TypeDeclarationSet | undefined;
 
@@ -127,7 +128,7 @@ export class TypedSqlTagTransformer {
     return this.generateTypedSQLTagFile(Object.values(this.cache));
   }
 
-  private contentStart = `import { ${this.transform.functionName} as sourceSql } from '@pgtyped/runtime';\n\n`;
+  private contentStart = `import { ${this.transform.functionName} as sourceSql } from '${RUNTIME_MODULE}';\n\n`;
   private contentEnd = [
     `export function ${this.transform.functionName}(s: string): unknown;`,
     `export function ${this.transform.functionName}(s: string): unknown {`,

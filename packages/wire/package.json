@@ -1,5 +1,5 @@
 {
-  "name": "@pgtyped/wire",
+  "name": "@pelotech/pgtyped-wire",
   "version": "2.4.2",
   "type": "module",
   "exports": {
@@ -13,11 +13,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/adelsz/pgtyped.git"
+    "url": "https://github.com/pelotech/pgtyped.git"
   },
-  "homepage": "https://github.com/adelsz/pgtyped",
+  "homepage": "https://github.com/pelotech/pgtyped",
   "publishConfig": {
-    "access": "public"
+    "registry": "https://npm.pkg.github.com"
   },
   "files": [
     "lib"

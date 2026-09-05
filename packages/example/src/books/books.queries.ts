@@ -1,5 +1,5 @@
 /** Types generated for queries found in "src/books/books.sql" */
-import { PreparedQuery } from '@pgtyped/runtime';
+import { PreparedQuery } from '@pelotech/pgtyped-runtime';
 
 import type { Category } from '../customTypes.js';
 

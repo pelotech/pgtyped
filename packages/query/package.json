@@ -1,5 +1,5 @@
 {
-  "name": "@pgtyped/query",
+  "name": "@pelotech/pgtyped-query",
   "version": "2.4.2",
   "type": "module",
   "exports": {
@@ -21,11 +21,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/adelsz/pgtyped.git"
+    "url": "https://github.com/pelotech/pgtyped.git"
   },
-  "homepage": "https://github.com/adelsz/pgtyped",
+  "homepage": "https://github.com/pelotech/pgtyped",
   "publishConfig": {
-    "access": "public"
+    "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
@@ -34,8 +34,8 @@
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "dependencies": {
-    "@pgtyped/runtime": "^2.4.2",
-    "@pgtyped/wire": "^2.4.2",
+    "@pelotech/pgtyped-runtime": "^2.4.2",
+    "@pelotech/pgtyped-wire": "^2.4.2",
     "chalk": "^4.1.0",
     "debug": "^4.1.1"
   },
