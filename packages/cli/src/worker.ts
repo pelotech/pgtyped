@@ -1,5 +1,5 @@
-import { startup } from '@pgtyped/query';
-import { AsyncQueue } from '@pgtyped/wire';
+import { startup } from '@pelotech/pgtyped-query';
+import { AsyncQueue } from '@pelotech/pgtyped-wire';
 import fs from 'fs-extra';
 import nun from 'nunjucks';
 import path from 'path';
@@ -10,6 +10,7 @@ import {
   generateTypedecsFromFile,
 } from './generator.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
+import { RUNTIME_MODULE } from './runtimeModule.js';
 
 // disable autoescape as it breaks windows paths
 // see https://github.com/adelsz/pgtyped/issues/519 for details
@@ -57,7 +58,7 @@ export async function getTypeDecs({
   if (transform.mode === 'sql') {
     // Second parameter has no effect here, we could have used any value
     types.use(
-      { name: 'PreparedQuery', from: '@pgtyped/runtime' },
+      { name: 'PreparedQuery', from: RUNTIME_MODULE },
       TypeScope.Return,
     );
   }

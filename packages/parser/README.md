@@ -1,4 +1,4 @@
-## @pgtyped/runtime
+## @pelotech/pgtyped-runtime
 
 This package provides SQL and TS query parsing for pgTyped.
 

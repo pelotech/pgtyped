@@ -1,4 +1,4 @@
-## @pgtyped/example
+## @pelotech/pgtyped-example
 
 This is an example app using `pgtyped`.  
 Example queries are stored in `src/books/queries.sql`, `src/users/queries.ts` and `src/comments/queries.sql`.
