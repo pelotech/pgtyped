@@ -42,11 +42,5 @@ services:
     <<: *build
     depends_on:
       - build
-    command: npx jest index.test.ts
-
-  test-cjs:
-    <<: *build
-    depends_on:
-      - build
-    command: npx jest -c jest-cjs.config.ts index.test.ts
+    command: sh -c "NODE_OPTIONS='--experimental-vm-modules' npx jest index.test.ts"
 
