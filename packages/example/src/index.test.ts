@@ -1,4 +1,3 @@
-import { afterEach, beforeAll, beforeEach, expect, test } from '@jest/globals';
 import pg from 'pg';
 import {
   aggregateEmailsAndTest,
@@ -67,9 +66,9 @@ afterAll(async () => {
 beforeEach(() => client.query('BEGIN'));
 afterEach(() => client.query('ROLLBACK'));
 
-test('select query with unicode characters', () => {
+test('select query with unicode characters', async () => {
   const result = findBookUnicode.run(undefined, client);
-  expect(result).resolves.toMatchSnapshot();
+  await expect(result).resolves.toMatchSnapshot();
 });
 
 test('select query with parameters', async () => {
@@ -77,14 +76,14 @@ test('select query with parameters', async () => {
   expect(comments).toMatchSnapshot();
 });
 
-test('select query with dynamic or', () => {
+test('select query with dynamic or', async () => {
   const result = findBookNameOrRank.run(
     {
       rank: 1,
     },
     client,
   );
-  expect(result).resolves.toMatchSnapshot();
+  await expect(result).resolves.toMatchSnapshot();
 });
 
 test('select query with date type override (TS)', async () => {
