@@ -47,7 +47,7 @@ function runQuery(
   options?: QueryRunOptions,
 ) {
   const name =
-    options?.name === false ? undefined : options?.name ?? canonicalName;
+    options?.name === false ? undefined : (options?.name ?? canonicalName);
   return name
     ? connection.query({ name, text, values })
     : connection.query(text, values);

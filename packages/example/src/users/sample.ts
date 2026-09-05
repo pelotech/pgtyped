@@ -15,4 +15,4 @@ export async function getUsersWithComment(
   return result[0];
 }
 
-const selectExistsQuery = sql`SELECT EXISTS ( SELECT 1 WHERE true ) AS "isTransactionExists";`;
+export const selectExistsQuery = sql`SELECT EXISTS ( SELECT 1 WHERE true ) AS "isTransactionExists";`;

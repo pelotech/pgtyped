@@ -4,7 +4,6 @@ about: Create a report to help us improve
 title: ''
 labels: bug
 assignees: ''
-
 ---
 
 **Describe the bug**
@@ -18,6 +17,7 @@ A clear and concise description of what you expected to happen.
 If applicable, it would really help if you can add an end-to-end test-case to the `packages/example` project.
 
 The package allows you to do the following:
+
 - Modify the database schema at `packages/example/sql/schema.sql`.
 - Define your SQL query as a `.ts` or `.sql` anywhere in the `packages/example/src` directory.
 - Run your SQL as a Jest test case in `packages/example/src/index.test.ts`

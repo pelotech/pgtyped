@@ -28,7 +28,7 @@ import {
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
 import { Category } from './customTypes.js';
-import { sql } from './sql/index.js'
+import { sql } from './sql/index.js';
 
 const { Client } = pg;
 
@@ -231,8 +231,10 @@ test('select query with a bigint field', async () => {
   expect(row.book_count).toBe(BigInt(4));
 });
 
-
 test('ts-implicit mode query', async () => {
-  const books = await sql(`SELECT * FROM books WHERE id = $id`).run({id: 1}, client);
+  const books = await sql(`SELECT * FROM books WHERE id = $id`).run(
+    { id: 1 },
+    client,
+  );
   expect(books).toMatchSnapshot();
 });

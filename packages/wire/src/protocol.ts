@@ -224,7 +224,7 @@ export const parseMessage = <Params extends object>(
       }
       pairIndex++;
     }
-  } catch (e) {
+  } catch {
     return {
       type: 'MessageMismatchError',
       messageName: message.name,

@@ -156,7 +156,7 @@ export function stringToType(str: string): Type {
     return {
       name: alias ?? namedImport,
       from,
-      aliasOf: alias ? namedImport ?? 'default' : undefined,
+      aliasOf: alias ? (namedImport ?? 'default') : undefined,
     };
   }
 

@@ -51,9 +51,11 @@ export class TypedSqlTagTransformer {
       const job = {
         files: [fileName],
       };
-      !initialized
-        ? this.pushToQueue(job)
-        : await this.generateTypedSQLTagFileForJob(job, true);
+      if (!initialized) {
+        this.pushToQueue(job);
+      } else {
+        await this.generateTypedSQLTagFileForJob(job, true);
+      }
     };
 
     chokidar

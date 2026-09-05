@@ -289,19 +289,22 @@ export function reduceTypeRows(
 ): Record<string, MappableType> {
   const enumTypes = typeRows
     .filter((r) => r.typeKind === DatabaseTypeKind.Enum)
-    .reduce((typeMap, { oid, typeName, enumLabel }) => {
-      const typ = typeMap[oid] ?? typeName;
+    .reduce(
+      (typeMap, { oid, typeName, enumLabel }) => {
+        const typ = typeMap[oid] ?? typeName;
 
-      // We should get one row per enum value
-      return {
-        ...typeMap,
-        [oid]: {
-          name: typeName,
-          // Merge enum values
-          enumValues: [...(isEnum(typ) ? typ.enumValues : []), enumLabel],
-        },
-      };
-    }, {} as Record<string, MappableType>);
+        // We should get one row per enum value
+        return {
+          ...typeMap,
+          [oid]: {
+            name: typeName,
+            // Merge enum values
+            enumValues: [...(isEnum(typ) ? typ.enumValues : []), enumLabel],
+          },
+        };
+      },
+      {} as Record<string, MappableType>,
+    );
   return typeRows.reduce(
     (typeMap, { oid, typeName, typeCategory, elementTypeOid }) => {
       // Attempt to merge any partially defined types

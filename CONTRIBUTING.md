@@ -1,4 +1,4 @@
-#  Contributing to pgTyped
+# Contributing to pgTyped
 
 pgTyped is an open source project, and we welcome contributions of all kinds, including bug reports, feature requests, and pull requests.
 
@@ -66,6 +66,7 @@ docker compose run build && docker compose run test && docker compose run test-c
 ```
 
 As you can see it runs the `build` target, then runs the `test` target twice, once with the `esm` module format and once with the `cjs` module format:
+
 - The `build` target runs pgTyped on the `sql` files in the `packages/example/src` directory generating the query code and type definitions. It also runs `git diff` to verify that the generated code matches the code in the repository.
 - The `test` target runs the queries in `packages/example/src/index.ts` and verifies that the results match the expected results.
 - The `test-cjs` target runs the same tests as the `test` target, but using the `cjs` module format to verify that the generated code works with both module formats.
