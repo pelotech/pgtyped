@@ -17,27 +17,27 @@ test('createInitialSASLResponse creates random nonces', () => {
 });
 
 test('createClientSASLContinueResponse to fail when not giving it correct SASLData', () => {
-  expect(() => createClientSASLContinueResponse('', '', '')).toThrowError();
+  expect(() => createClientSASLContinueResponse('', '', '')).toThrow();
 });
 test('createClientSASLContinueResponse to fail when nonce is missing in SASLData', () => {
-  expect(() =>
-    createClientSASLContinueResponse('', '', 's=1,i=1'),
-  ).toThrowError('SASL: SCRAM-SERVER-FIRST-MESSAGE: nonce missing');
+  expect(() => createClientSASLContinueResponse('', '', 's=1,i=1')).toThrow(
+    'SASL: SCRAM-SERVER-FIRST-MESSAGE: nonce missing',
+  );
 });
 test('createClientSASLContinueResponse to fail when salt is missing in SASLata', () => {
-  expect(() =>
-    createClientSASLContinueResponse('', '', 'r=1,i=1'),
-  ).toThrowError('SASL: SCRAM-SERVER-FIRST-MESSAGE: salt missing');
+  expect(() => createClientSASLContinueResponse('', '', 'r=1,i=1')).toThrow(
+    'SASL: SCRAM-SERVER-FIRST-MESSAGE: salt missing',
+  );
 });
 test('createClientSASLContinueResponse to fail when iteration is missing in SASLata', () => {
-  expect(() =>
-    createClientSASLContinueResponse('', '', 'r=1,s=abcd'),
-  ).toThrowError('SASL: SCRAM-SERVER-FIRST-MESSAGE: iteration missing');
+  expect(() => createClientSASLContinueResponse('', '', 'r=1,s=abcd')).toThrow(
+    'SASL: SCRAM-SERVER-FIRST-MESSAGE: iteration missing',
+  );
 });
 test('createClientSASLContinueResponse to fail when SASLData does not contain client nonce in server nonce', () => {
   expect(() =>
     createClientSASLContinueResponse('password', '2', 'r=1,s=abcd,i=1'),
-  ).toThrowError(
+  ).toThrow(
     'SASL: SCRAM-SERVER-FIRST-MESSAGE: server nonce does not start with client nonce',
   );
 });
@@ -57,13 +57,13 @@ test('createClientSASLContinueResponse works as expected', () => {
   );
 });
 test('checkServerFinalMessage is failing when server signature is missing', () => {
-  expect(() => checkServerFinalMessage('', 'abcd')).toThrowError(
+  expect(() => checkServerFinalMessage('', 'abcd')).toThrow(
     'SASL: SCRAM-SERVER-FINAL-MESSAGE: server signature is missing',
   );
 });
 
 test('checkServerFinalMessage is failing when server signature is not base64', () => {
-  expect(() => checkServerFinalMessage('v=x1', 'abcd')).toThrowError(
+  expect(() => checkServerFinalMessage('v=x1', 'abcd')).toThrow(
     'SASL: SCRAM-SERVER-FINAL-MESSAGE: server signature must be base64',
   );
 });
@@ -72,12 +72,12 @@ test(
   'checkServerFinalMessage is failing when server signature does not match calculated server signature at client' +
     ' side',
   () => {
-    expect(() => checkServerFinalMessage('v=xyzq', 'abcd')).toThrowError(
+    expect(() => checkServerFinalMessage('v=xyzq', 'abcd')).toThrow(
       'SASL: SCRAM-SERVER-FINAL-MESSAGE: server signature does not match',
     );
   },
 );
 
 test('checkServerFinalMessage does not throw an error when it should suppose to work', () => {
-  expect(() => checkServerFinalMessage('v=abcd', 'abcd')).not.toThrowError();
+  expect(() => checkServerFinalMessage('v=abcd', 'abcd')).not.toThrow();
 });

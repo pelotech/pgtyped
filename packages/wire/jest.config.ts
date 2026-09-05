@@ -17,7 +17,10 @@ const config: Config = {
       },
     ],
   },
-  preset: 'ts-jest/presets/default-esm',
+  // Inlined from ts-jest's default-esm preset, which only sets this and a
+  // transform we already declare above. Naming it directly avoids depending
+  // on ts-jest's preset path resolving from each package's rootDir.
+  extensionsToTreatAsEsm: ['.ts', '.tsx', '.mts'],
   testRegex: '\\.test\\.tsx?$',
 };
 

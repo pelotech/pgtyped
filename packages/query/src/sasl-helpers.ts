@@ -140,7 +140,10 @@ function extractVariablesFromSASLContinueServerMessage(data: string): {
 }
 
 /* tslint:disable:no-bitwise */
-function xorBuffers(a: Buffer, b: Buffer): Buffer {
+// Return type is inferred on purpose. @types/node defaults bare Buffer to
+// Buffer<ArrayBufferLike>, but Buffer.from below yields the narrower
+// Buffer<ArrayBuffer>, which is what callers thread through Hi().
+function xorBuffers(a: Buffer, b: Buffer) {
   if (!Buffer.isBuffer(a)) a = Buffer.from(a);
   if (!Buffer.isBuffer(b)) b = Buffer.from(b);
   const res = [];
