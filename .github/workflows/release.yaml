@@ -2,30 +2,49 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  release:
+  release-please:
+    name: Maintain the release PR
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish to GitHub Packages
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'npm'
           registry-url: 'https://npm.pkg.github.com'
           scope: '@pelotech'
       - run: npm ci
-      - name: Build packages
-        run: npm run build
-      - name: Run tests
-        run: npm test
-      - name: Publish to GitHub Packages
-        run: npx lerna publish from-git --yes
+      - run: npm run build
+      - run: npm test
+      # from-package, not from-git: release-please has already bumped and
+      # committed the versions, so lerna publishes whatever is not yet on the
+      # registry rather than looking for tags it created itself.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx lerna publish from-package --yes

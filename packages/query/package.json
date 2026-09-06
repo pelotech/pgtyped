@@ -1,6 +1,6 @@
 {
   "name": "@pelotech/pgtyped-query",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "type": "module",
   "exports": {
     ".": {
@@ -34,8 +34,8 @@
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "dependencies": {
-    "@pelotech/pgtyped-runtime": "^2.4.2",
-    "@pelotech/pgtyped-wire": "^2.4.2",
+    "@pelotech/pgtyped-runtime": "^2.4.3",
+    "@pelotech/pgtyped-wire": "^2.4.3",
     "debug": "^4.1.1"
   },
   "devDependencies": {
