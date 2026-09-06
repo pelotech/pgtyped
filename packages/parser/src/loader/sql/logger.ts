@@ -1,4 +1,4 @@
-import chalk, { ChalkFunction } from 'chalk';
+import chalk, { ChalkInstance } from 'chalk';
 import { ANTLRErrorListener } from 'antlr4ts';
 import { RecognitionException } from 'antlr4ts/RecognitionException.js';
 
@@ -44,7 +44,7 @@ export type ParseEvent =
 
 function styleIntervals(
   str: string,
-  intervals: { a: number; b: number; style: ChalkFunction }[],
+  intervals: { a: number; b: number; style: ChalkInstance }[],
 ) {
   if (intervals.length === 0) {
     return str;

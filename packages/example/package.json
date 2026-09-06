@@ -24,11 +24,11 @@
   "dependencies": {
     "@pelotech/pgtyped-cli": "^2.4.3",
     "@pelotech/pgtyped-query": "^2.4.2",
-    "pg": "8.14.1",
+    "pg": "^8.23.0",
     "typescript": "^6.0.3"
   },
   "devDependencies": {
-    "@types/pg": "8.11.14",
+    "@types/pg": "^8.23.1",
     "ts-node": "10.9.2"
   }
 }

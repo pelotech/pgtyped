@@ -35,7 +35,7 @@
     "debug": "^4.1.1"
   },
   "devDependencies": {
-    "@types/debug": "^4.1.7",
+    "@types/debug": "^4.1.13",
     "@types/node": "^24.0.0"
   }
 }
