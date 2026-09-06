@@ -1,22 +1,36 @@
 {
-  "extends": ["config:base"],
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:allNonMajor"
+  ],
+  "schedule": ["every weekend"],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
   "packageRules": [
     {
-      "matchPackagePatterns": ["*"],
-      "schedule": ["every weekend"],
+      "description": "Dev tooling can land on its own once CI is green. Runtime dependencies and every major open a PR for review instead.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
-      "automergeType": "branch",
-      "minor": {
-        "groupName": "all non-major dependencies",
-        "groupSlug": "all-minor-patch"
-      }
+      "minimumReleaseAge": "3 days"
     },
     {
-      "matchPackageNames": ["antlr4ts", "antlr4ts-cli", "typescript"],
+      "description": "Pinned to a prerelease the generated ANTLR sources are built against; moving it means regenerating the parsers.",
+      "matchPackageNames": ["antlr4ts", "antlr4ts-cli"],
       "enabled": false
     },
     {
-      "matchPackagePrefixes": ["@docusaurus"],
+      "description": "TypeScript 7 is a hard blocker, not a preference: typescript-eslint refuses it, and the CLI parses SQL-in-TS through the compiler API that TS 7's native rewrite does not expose. Take 6.x updates, hold at the major.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "The docs site is not part of the library build.",
+      "matchPackageNames": ["@docusaurus/**"],
       "enabled": false
     }
   ]
