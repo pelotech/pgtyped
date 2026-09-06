@@ -7,12 +7,50 @@ export interface ICursor<T> {
   close(): Promise<void>;
 }
 
+export interface QueryConfig {
+  /**
+   * Server-side prepared statement name. node-postgres only issues a Parse
+   * when this is set, and then caches the statement per connection.
+   */
+  name?: string;
+  text: string;
+  values: any[];
+}
+
 export interface IDatabaseConnection {
   query: (
-    query: string,
-    bindings: any[],
+    query: string | QueryConfig,
+    bindings?: any[],
   ) => Promise<{ rows: any[]; rowCount: number }>;
   stream?: (query: string, bindings: any[]) => ICursor<any[]>;
+}
+
+export interface QueryRunOptions {
+  /**
+   * Overrides the query's canonical statement name. Pass `false` to send the
+   * query unnamed, which is required under PgBouncer in transaction-pooling
+   * mode where named statements are unsafe.
+   */
+  name?: string | false;
+}
+
+/**
+ * Chooses the call shape. A name can only reach Postgres via a QueryConfig as
+ * the *first* argument: node-postgres reads a third argument as a callback and
+ * throws "callback is not a function" if handed anything else.
+ */
+function runQuery(
+  connection: IDatabaseConnection,
+  text: string,
+  values: any[],
+  canonicalName?: string,
+  options?: QueryRunOptions,
+) {
+  const name =
+    options?.name === false ? undefined : options?.name ?? canonicalName;
+  return name
+    ? connection.query({ name, text, values })
+    : connection.query(text, values);
 }
 
 /** Check for column modifier suffixes (exclamation and question marks). */
@@ -96,11 +134,13 @@ export class PreparedQuery<TParamType, TResultType> {
   public run: (
     params: TParamType,
     dbConnection: IDatabaseConnection,
+    options?: QueryRunOptions,
   ) => Promise<Array<TResultType>>;
 
   public runWithCounts: (
     params: TParamType,
     dbConnection: IDatabaseConnection,
+    options?: QueryRunOptions,
   ) => Promise<{ result: Array<TResultType>; rowCount: number }>;
 
   public stream: (
@@ -112,20 +152,32 @@ export class PreparedQuery<TParamType, TResultType> {
 
   constructor(queryIR: SQLQueryIR) {
     this.queryIR = queryIR;
-    this.run = async (params, connection) => {
+    this.run = async (params, connection, options) => {
       const { query: processedQuery, bindings } = processSQLQueryIR(
         this.queryIR,
         params as any,
       );
-      const result = await connection.query(processedQuery, bindings);
+      const result = await runQuery(
+        connection,
+        processedQuery,
+        bindings,
+        this.queryIR.name,
+        options,
+      );
       return mapQueryResultRows(result.rows);
     };
-    this.runWithCounts = async (params, connection) => {
+    this.runWithCounts = async (params, connection, options) => {
       const { query: processedQuery, bindings } = processSQLQueryIR(
         this.queryIR,
         params as any,
       );
-      const result = await connection.query(processedQuery, bindings);
+      const result = await runQuery(
+        connection,
+        processedQuery,
+        bindings,
+        this.queryIR.name,
+        options,
+      );
       return {
         result: mapQueryResultRows(result.rows),
         rowCount: result.rowCount,
