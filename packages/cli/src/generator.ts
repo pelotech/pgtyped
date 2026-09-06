@@ -13,8 +13,7 @@ import {
   processSQLQueryIR,
   processTSQueryAST,
 } from '@pelotech/pgtyped-runtime';
-import { camelCase } from 'camel-case';
-import { pascalCase } from 'pascal-case';
+import { camelCase, pascalCase } from 'change-case';
 import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
