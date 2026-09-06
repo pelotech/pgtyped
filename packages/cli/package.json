@@ -1,5 +1,5 @@
 {
-  "name": "@pgtyped/cli",
+  "name": "@pelotech/pgtyped-cli",
   "version": "2.4.3",
   "type": "module",
   "main": "lib/index.js",
@@ -12,7 +12,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/adelsz/pgtyped.git"
+    "url": "https://github.com/pelotech/pgtyped.git"
   },
   "files": [
     "lib"
@@ -20,9 +20,9 @@
   "engines": {
     "node": ">=14.16"
   },
-  "homepage": "https://github.com/adelsz/pgtyped",
+  "homepage": "https://github.com/pelotech/pgtyped",
   "publishConfig": {
-    "access": "public"
+    "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
@@ -34,9 +34,9 @@
     "pgtyped": "lib/index.js"
   },
   "dependencies": {
-    "@pgtyped/parser": "^2.4.2",
-    "@pgtyped/query": "^2.4.2",
-    "@pgtyped/wire": "^2.4.2",
+    "@pelotech/pgtyped-parser": "^2.4.2",
+    "@pelotech/pgtyped-query": "^2.4.2",
+    "@pelotech/pgtyped-wire": "^2.4.2",
     "camel-case": "^5.0.0",
     "chalk": "^4.0.0",
     "chokidar": "^4.0.0",

@@ -1,4 +1,4 @@
-import { assert, SQLQueryIR, TransformType } from '@pgtyped/parser';
+import { assert, SQLQueryIR, TransformType } from '@pelotech/pgtyped-parser';
 import {
   InterpolatedQuery,
   NestedParameters,

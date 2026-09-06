@@ -7,10 +7,11 @@ import {
   isImport,
   MappableType,
   Type,
-} from '@pgtyped/query';
+} from '@pelotech/pgtyped-query';
 import os from 'os';
-import { AliasedType, EnumType } from '@pgtyped/query/lib/type.js';
+import { AliasedType, EnumType } from '@pelotech/pgtyped-query/lib/type.js';
 import path from 'path';
+import { RUNTIME_MODULE } from './runtimeModule.js';
 
 const String: Type = { name: 'string' };
 const Number: Type = { name: 'number' };
@@ -168,7 +169,7 @@ export function declareImport(
 
   if (from.startsWith('.')) {
     from = path.relative(path.dirname(decsFileName), imports[0].from);
-    if (os.platform() === "win32") {
+    if (os.platform() === 'win32') {
       // make sure we use posix separators in TS import declarations (see #533)
       from = from.split(path.sep).join(path.posix.sep);
     }
@@ -186,7 +187,7 @@ export function declareImport(
       // A type-only import can specify a default import or named bindings, but not both.
       lines.push(defaultImportDec);
     } else {
-      return `${defaultImportDec}\n`
+      return `${defaultImportDec}\n`;
     }
   }
 
@@ -194,7 +195,7 @@ export function declareImport(
 
   const parts = ['import'];
 
-  if (from !== '@pgtyped/runtime') {
+  if (from !== RUNTIME_MODULE) {
     parts.push('type');
   }
 

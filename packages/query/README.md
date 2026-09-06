@@ -1,4 +1,4 @@
-## @pgtyped/query
+## @pelotech/pgtyped-query
 
 This package provides protocol utilities for PgTyped queries.
 
