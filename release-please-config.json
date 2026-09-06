@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "separate-pull-requests": false,
+  "include-component-in-tag": false,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "build", "section": "Build" },
+    { "type": "ci", "section": "CI" },
+    { "type": "chore", "section": "Chores", "hidden": true },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "style", "hidden": true },
+    { "type": "test", "hidden": true }
+  ],
+  "packages": {
+    "packages/cli": {},
+    "packages/parser": {},
+    "packages/query": {},
+    "packages/runtime": {},
+    "packages/wire": {}
+  },
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "pgtyped",
+      "components": [
+        "@pelotech/pgtyped-cli",
+        "@pelotech/pgtyped-parser",
+        "@pelotech/pgtyped-query",
+        "@pelotech/pgtyped-runtime",
+        "@pelotech/pgtyped-wire"
+      ]
+    },
+    "node-workspace"
+  ]
+}
