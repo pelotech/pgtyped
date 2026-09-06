@@ -27,6 +27,12 @@ type MapFields<Params> = {
         : (arg: Params[P]) => Buffer);
 };
 
+/**
+ * Messages that declare no parameters. keyof resolves to never, so MapFields
+ * over this adds no required fields and fixed patterns still typecheck.
+ */
+type NoParams = object;
+
 export interface IServerMessage<Params extends object> {
   name: string;
   type: 'SERVER';
@@ -63,7 +69,7 @@ export const messages = {
       // The SSL request code.
       int32(80877103),
     ],
-  } as IClientMessage<{}>,
+  } as IClientMessage<NoParams>,
   /** ReadyForQuery message informs the frontend that it can safely send a new command. */
   readyForQuery: {
     name: 'ReadyForQuery',
@@ -83,7 +89,7 @@ export const messages = {
     pattern: {
       status: int32(0),
     },
-  } as IServerMessage<{}>,
+  } as IServerMessage<NoParams>,
   /** AuthenticationCleartextPassword message informs the frontend that it must now send a PasswordMessage containing the password in clear-text form */
   authenticationCleartextPassword: {
     name: 'AuthenticationCleartextPassword',
@@ -93,7 +99,7 @@ export const messages = {
     pattern: {
       status: int32(3),
     },
-  } as IServerMessage<{}>,
+  } as IServerMessage<NoParams>,
   /** AuthenticationMD5Password message informs the frontend that it must now send a PasswordMessage containing the password in MD5 form */
   authenticationMD5Password: {
     name: 'AuthenticationMD5Password',
@@ -341,7 +347,7 @@ export const messages = {
     size: 5,
     indicator: 'n',
     pattern: {},
-  } as IServerMessage<{}>,
+  } as IServerMessage<NoParams>,
   /**
    * ParameterDescription message describes the parameters needed by the statement.
    * It is followed by a RowDescription message describing the rows that will be returned (or a NoData message if the statement will not return rows)
@@ -406,7 +412,7 @@ export const messages = {
     indicator: '1',
     size: 4,
     pattern: {},
-  } as IServerMessage<{}>,
+  } as IServerMessage<NoParams>,
   /** Sync message asks the server to return to normal mode after an error */
   sync: {
     name: 'Sync',
@@ -414,7 +420,7 @@ export const messages = {
     indicator: 'S',
     size: int32(4),
     pattern: () => [],
-  } as IClientMessage<{}>,
+  } as IClientMessage<NoParams>,
   /** Flush message asks the server to send all queued messages */
   flush: {
     name: 'Flush',
@@ -422,7 +428,7 @@ export const messages = {
     indicator: 'H',
     size: int32(4),
     pattern: () => [],
-  } as IClientMessage<{}>,
+  } as IClientMessage<NoParams>,
   /** ErrorResponse message is sent by the server when an error has occurred. */
   errorResponse: {
     name: 'ErrorResponse',
@@ -466,7 +472,7 @@ export const messages = {
     indicator: '3',
     size: 4,
     pattern: {},
-  } as IServerMessage<{}>,
+  } as IServerMessage<NoParams>,
   commandComplete: {
     name: 'CommandComplete',
     type: 'SERVER',

@@ -92,6 +92,7 @@ export class AsyncQueue {
             this.socket.end();
             throw new Error(
               'There was an error establishing an SSL connection',
+              { cause: err },
             );
           }
 

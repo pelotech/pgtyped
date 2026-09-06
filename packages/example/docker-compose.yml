@@ -1,7 +1,6 @@
 version: '3.9'
 
 services:
-
   db:
     image: postgres:17-alpine
     restart: always
@@ -9,15 +8,18 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - ./sql/:/docker-entrypoint-initdb.d
 
   build: &build
     build:
-      context: .
+      # Root context: the image installs the whole workspace, so it needs every
+      # package manifest, not just the example's.
+      context: ../..
+      dockerfile: packages/example/Dockerfile
       args:
-        NODE_IMAGE: "node:${NODE_VERSION:-24}-alpine"
+        NODE_IMAGE: 'node:${NODE_VERSION:-24}-alpine'
     environment:
       PGHOST: db
       PGUSER: postgres
@@ -26,6 +28,9 @@ services:
       CI: $CI
     volumes:
       - ../../:/app
+      # Anonymous volume: keeps the image's node_modules from being shadowed by
+      # the host's, whose native binaries are built for the wrong platform.
+      - /app/node_modules
     working_dir: /app/packages/example
     deploy:
       restart_policy:
@@ -42,5 +47,4 @@ services:
     <<: *build
     depends_on:
       - build
-    command: sh -c "NODE_OPTIONS='--experimental-vm-modules' npx jest index.test.ts"
-
+    command: npx vitest run index.test.ts

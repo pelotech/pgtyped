@@ -264,7 +264,7 @@ export class TypeAllocator {
 
   /** Lookup a database-provided type name in the allocator's map */
   use(typeNameOrType: MappableType, scope: TypeScope): string {
-    let typ: Type | null = null;
+    let typ: Type | null;
 
     if (typeof typeNameOrType == 'string') {
       if (typeNameOrType[0] === '_') {

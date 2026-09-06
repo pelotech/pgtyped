@@ -22,7 +22,7 @@ export const int32 = (val: number): Buffer => {
   return buf;
 };
 
-export const cByteDict = (dict: { [key: string]: string }): Buffer =>
+export const cByteDict = (_dict: { [key: string]: string }): Buffer =>
   null as any;
 
 export const cStringDict = (dict: { [key: string]: string }): Buffer => {
@@ -39,14 +39,14 @@ export const cStringDict = (dict: { [key: string]: string }): Buffer => {
   return buf;
 };
 
-export const cStringUnknownLengthArray = (array: string[]): Buffer =>
+export const cStringUnknownLengthArray = (_array: string[]): Buffer =>
   null as any;
 
 export const byte1 = (num: string): Buffer => Buffer.from(num);
 
 export const byte4 = (): Buffer => null as any;
 
-export const byteN = (buf: Buffer): Buffer => null as any;
+export const byteN = (_buf: Buffer): Buffer => null as any;
 
 export const cString = (str: string): Buffer => {
   const buf = Buffer.concat([Buffer.from(str, 'utf8'), Buffer.from([0])]);

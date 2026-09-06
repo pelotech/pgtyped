@@ -24,6 +24,8 @@ export class TypedSqlTagTransformer {
   private readonly includePattern: string;
   private readonly localFileName: string;
   private readonly fullFileName: string;
+  private readonly contentStart: string;
+  private readonly contentEnd: string[];
 
   constructor(
     private readonly pool: WorkerPool,
@@ -33,6 +35,13 @@ export class TypedSqlTagTransformer {
     this.includePattern = `${this.config.srcDir}/**/${transform.include}`;
     this.localFileName = this.transform.emitFileName;
     this.fullFileName = path.relative(process.cwd(), this.localFileName);
+    this.contentStart = `import { ${this.transform.functionName} as sourceSql } from '${RUNTIME_MODULE}';\n\n`;
+    this.contentEnd = [
+      `export function ${this.transform.functionName}(s: string): unknown;`,
+      `export function ${this.transform.functionName}(s: string): unknown {`,
+      `  return sourceSql([s] as any);`,
+      `}`,
+    ];
   }
 
   private async watch() {
@@ -42,9 +51,11 @@ export class TypedSqlTagTransformer {
       const job = {
         files: [fileName],
       };
-      !initialized
-        ? this.pushToQueue(job)
-        : await this.generateTypedSQLTagFileForJob(job, true);
+      if (!initialized) {
+        this.pushToQueue(job);
+      } else {
+        await this.generateTypedSQLTagFileForJob(job, true);
+      }
     };
 
     chokidar
@@ -127,14 +138,6 @@ export class TypedSqlTagTransformer {
     delete this.cache[fileToRemove];
     return this.generateTypedSQLTagFile(Object.values(this.cache));
   }
-
-  private contentStart = `import { ${this.transform.functionName} as sourceSql } from '${RUNTIME_MODULE}';\n\n`;
-  private contentEnd = [
-    `export function ${this.transform.functionName}(s: string): unknown;`,
-    `export function ${this.transform.functionName}(s: string): unknown {`,
-    `  return sourceSql([s] as any);`,
-    `}`,
-  ];
 
   private async generateTypedSQLTagFile(typeDecsSets: TypeDeclarationSet[]) {
     console.log(`Generating ${this.fullFileName}...`);

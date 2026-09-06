@@ -64,7 +64,7 @@ function processScalarArray(
   const bindings: Scalar[] = [];
   let config = existingConfig;
 
-  let assignedIndex: number[] = [];
+  let assignedIndex: number[];
   if (config) {
     assignedIndex = config.assignedIndex as number[];
   } else {
@@ -210,7 +210,7 @@ export const processTSQueryAST = (
   const intervals: { a: number; b: number; sub: string }[] = [];
   for (const param of query.params) {
     let sub: string;
-    let paramBindings: Scalar[] = [];
+    let paramBindings: Scalar[];
     let config: QueryParameter;
     let result;
     if (param.selection.type === ParamType.Scalar) {
@@ -219,8 +219,7 @@ export const processTSQueryAST = (
     }
     if (param.selection.type === ParamType.ScalarArray) {
       const prevConfig = baseMap[param.name] as
-        | ScalarArrayParameter
-        | undefined;
+        ScalarArrayParameter | undefined;
       result = processScalarArray(param, i, prevConfig, parameters);
     }
     if (param.selection.type === ParamType.Object) {

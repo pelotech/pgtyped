@@ -37,10 +37,7 @@ export interface DictArrayParameter {
   };
 }
 export type QueryParameter =
-  | ScalarParameter
-  | ScalarArrayParameter
-  | DictParameter
-  | DictArrayParameter;
+  ScalarParameter | ScalarArrayParameter | DictParameter | DictArrayParameter;
 
 export interface InterpolatedQuery {
   query: string;
@@ -54,10 +51,7 @@ export interface NestedParameters {
 
 export interface QueryParameters {
   [paramName: string]:
-    | Scalar
-    | NestedParameters
-    | Scalar[]
-    | NestedParameters[];
+    Scalar | NestedParameters | Scalar[] | NestedParameters[];
 }
 
 export function replaceIntervals(

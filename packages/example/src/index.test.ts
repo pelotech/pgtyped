@@ -1,4 +1,3 @@
-import { afterEach, beforeAll, beforeEach, expect, test } from '@jest/globals';
 import pg from 'pg';
 import {
   aggregateEmailsAndTest,
@@ -29,7 +28,7 @@ import {
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
 import { Category } from './customTypes.js';
-import { sql } from './sql/index.js'
+import { sql } from './sql/index.js';
 
 const { Client } = pg;
 
@@ -67,9 +66,9 @@ afterAll(async () => {
 beforeEach(() => client.query('BEGIN'));
 afterEach(() => client.query('ROLLBACK'));
 
-test('select query with unicode characters', () => {
+test('select query with unicode characters', async () => {
   const result = findBookUnicode.run(undefined, client);
-  expect(result).resolves.toMatchSnapshot();
+  await expect(result).resolves.toMatchSnapshot();
 });
 
 test('select query with parameters', async () => {
@@ -77,14 +76,14 @@ test('select query with parameters', async () => {
   expect(comments).toMatchSnapshot();
 });
 
-test('select query with dynamic or', () => {
+test('select query with dynamic or', async () => {
   const result = findBookNameOrRank.run(
     {
       rank: 1,
     },
     client,
   );
-  expect(result).resolves.toMatchSnapshot();
+  await expect(result).resolves.toMatchSnapshot();
 });
 
 test('select query with date type override (TS)', async () => {
@@ -232,8 +231,10 @@ test('select query with a bigint field', async () => {
   expect(row.book_count).toBe(BigInt(4));
 });
 
-
 test('ts-implicit mode query', async () => {
-  const books = await sql(`SELECT * FROM books WHERE id = $id`).run({id: 1}, client);
+  const books = await sql(`SELECT * FROM books WHERE id = $id`).run(
+    { id: 1 },
+    client,
+  );
   expect(books).toMatchSnapshot();
 });

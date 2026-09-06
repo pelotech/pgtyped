@@ -1,9 +1,5 @@
 export type Type =
-  | NamedType
-  | ImportedType
-  | AliasedType
-  | EnumType
-  | EnumArrayType;
+  NamedType | ImportedType | AliasedType | EnumType | EnumArrayType;
 // May be a database source type name (string) or a typescript destination type (Type)
 export type MappableType = string | Type;
 

@@ -1,0 +1,6 @@
+# Dependencies are installed inside the image so that native bindings match the
+# container's platform. Never copy the host's tree in.
+node_modules
+packages/*/node_modules
+packages/*/lib
+.git
