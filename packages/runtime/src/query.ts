@@ -45,7 +45,12 @@ function stripColumnHints<T>(rows: unknown[]): T[] {
   return rows as T[];
 }
 
-const RUN_OPTION_KEYS = new Set(['prepared', 'name']);
+const RUN_OPTION_KEYS = new Set(
+  Object.keys({ prepared: true, name: true } satisfies Record<
+    keyof RunOptions,
+    true
+  >),
+);
 
 /**
  * Guards the `hasParams: false` path. Misrouting here would hand a params
@@ -53,6 +58,10 @@ const RUN_OPTION_KEYS = new Set(['prepared', 'name']);
  * server-side statement name — node-postgres keys its statement cache by name,
  * so a user-supplied value there means unbounded namespace growth and, on a
  * collision, the server running previously parsed SQL.
+ *
+ * Not airtight: a params object whose keys are all within {prepared, name} is
+ * indistinguishable from options and still passes. Only reachable when a
+ * subclass's hasParams is already wrong.
  */
 function assertRunOptions(value: unknown, queryName: string | undefined): void {
   if (value === undefined) return;
@@ -124,7 +133,7 @@ export abstract class Query<TParams, TResult> {
 
   private split(rest: unknown[]): [TParams, RunOptions | undefined] {
     if (this.hasParams) {
-      if (rest.length === 0) {
+      if (rest[0] === undefined) {
         throw new TypeError(
           `Query ${this.name ?? '(unnamed)'} requires parameters.`,
         );

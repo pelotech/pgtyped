@@ -86,6 +86,20 @@ describe('compile', () => {
     ).toThrow(/requires parameters/);
   });
 
+  // Documents a known limit rather than desired behaviour: a params object
+  // whose keys are all valid RunOptions keys cannot be distinguished from
+  // options, so it is misread. Only reachable if hasParams is wrong.
+  test('cannot detect a params object that looks exactly like options', () => {
+    const wrong = new FixedQuery<{ name: string }, unknown>(
+      'SELECT 1',
+      undefined,
+      false,
+    );
+    expect(
+      (wrong.compile as (...a: unknown[]) => QueryConfig)({ name: 'Alice' }),
+    ).toStrictEqual({ name: 'Alice', text: 'SELECT 1', values: [] });
+  });
+
   test('rejects a params object when the query declares none', () => {
     const noParams = new FixedQuery<void, unknown>(
       'SELECT 1',
@@ -109,9 +123,9 @@ describe('execute', () => {
   });
 
   test('strips column hint suffixes from rows', async () => {
-    const { connection } = recording([{ 'total!': 3, 'maybe?': null }]);
+    const { connection } = recording([{ 'total!': 3, 'maybe?': null, '!': 9 }]);
     const { rows } = await NAMED().execute(connection, { id: 1 });
-    expect(rows).toEqual([{ total: 3, maybe: null }]);
+    expect(rows).toStrictEqual([{ total: 3, maybe: null, '!': 9 }]);
   });
 
   test('passes the driver rowCount through, including null', async () => {
