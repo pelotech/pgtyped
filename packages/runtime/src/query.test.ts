@@ -46,14 +46,14 @@ describe('compile', () => {
   });
 
   test('omits name when the query has none', () => {
-    expect(UNNAMED().compile({ id: 1 })).toEqual({
+    expect(UNNAMED().compile({ id: 1 })).toStrictEqual({
       text: 'SELECT $1',
       values: [1],
     });
   });
 
   test('prepared: false drops the name', () => {
-    expect(NAMED().compile({ id: 1 }, { prepared: false })).toEqual({
+    expect(NAMED().compile({ id: 1 }, { prepared: false })).toStrictEqual({
       text: 'SELECT $1',
       values: [1],
     });
@@ -80,8 +80,21 @@ describe('compile', () => {
   });
 
   test('a query with params rejects a call without them at the type level', () => {
-    // @ts-expect-error params are required when the query declares them
-    NAMED().compile();
+    expect(() =>
+      // @ts-expect-error params are required when the query declares them
+      NAMED().compile(),
+    ).toThrow(/requires parameters/);
+  });
+
+  test('rejects a params object when the query declares none', () => {
+    const noParams = new FixedQuery<void, unknown>(
+      'SELECT 1',
+      undefined,
+      false,
+    );
+    expect(() =>
+      (noParams.compile as (...a: unknown[]) => unknown)({ id: 1 }),
+    ).toThrow(/declares no parameters/);
   });
 });
 
@@ -100,6 +113,24 @@ describe('execute', () => {
     const { rows } = await NAMED().execute(connection, { id: 1 });
     expect(rows).toEqual([{ total: 3, maybe: null }]);
   });
+
+  test('passes the driver rowCount through, including null', async () => {
+    const connection: DatabaseConnection = {
+      query: async () => ({ rows: [], rowCount: null }),
+    };
+    await expect(NAMED().execute(connection, { id: 1 })).resolves.toStrictEqual(
+      {
+        rows: [],
+        rowCount: null,
+      },
+    );
+  });
+
+  test('leaves rows without hints untouched', async () => {
+    const { connection } = recording([{ id: 1, name: 'a' }]);
+    const { rows } = await NAMED().execute(connection, { id: 1 });
+    expect(rows).toStrictEqual([{ id: 1, name: 'a' }]);
+  });
 });
 
 describe('run', () => {
@@ -114,7 +145,7 @@ describe('run', () => {
   test('forwards options after params', async () => {
     const { calls, connection } = recording();
     await NAMED().run(connection, { id: 1 }, { prepared: false });
-    expect(calls[0]).toEqual({ text: 'SELECT $1', values: [1] });
+    expect(calls[0]).toStrictEqual({ text: 'SELECT $1', values: [1] });
   });
 });
 
@@ -135,7 +166,7 @@ describe('parameterless queries', () => {
   test('run(connection, options) reads the second argument as options', async () => {
     const { calls, connection } = recording();
     await noParams().run(connection, { prepared: false });
-    expect(calls[0]).toEqual({ text: 'SELECT 1', values: [] });
+    expect(calls[0]).toStrictEqual({ text: 'SELECT 1', values: [] });
   });
 
   test('execute(connection) takes no params argument', async () => {
