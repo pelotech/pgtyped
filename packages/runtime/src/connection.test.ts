@@ -23,7 +23,8 @@ describe('unprepared', () => {
       text: 'SELECT 1',
       values: [],
     });
-    expect(calls).toEqual([{ text: 'SELECT 1', values: [] }]);
+    expect(calls).toStrictEqual([{ text: 'SELECT 1', values: [] }]);
+    expect(calls[0]).not.toHaveProperty('name');
   });
 
   test('passes an already-unnamed query through unchanged', async () => {
@@ -32,15 +33,20 @@ describe('unprepared', () => {
     expect(calls).toEqual([{ text: 'SELECT 1', values: [1] }]);
   });
 
+  test("does not mutate the caller's config object", async () => {
+    const { connection } = recording();
+    const config: QueryConfig = { name: 'Q_1', text: 'SELECT 1', values: [] };
+    await unprepared(connection).query(config);
+    expect(config).toStrictEqual({ name: 'Q_1', text: 'SELECT 1', values: [] });
+  });
+
   test('returns the underlying result', async () => {
+    const result = { rows: [{ a: 1 }], rowCount: 1 };
     const connection: DatabaseConnection = {
-      query: async () => ({ rows: [{ a: 1 }], rowCount: 1 }),
+      query: async () => result,
     };
     await expect(
       unprepared(connection).query({ text: 'x', values: [] }),
-    ).resolves.toEqual({
-      rows: [{ a: 1 }],
-      rowCount: 1,
-    });
+    ).resolves.toBe(result);
   });
 });

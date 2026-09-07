@@ -26,9 +26,10 @@ export interface DatabaseConnection {
 export interface RunOptions {
   /**
    * Set to false to send the query unnamed regardless of its canonical name.
-   * Required under PgBouncer in transaction-pooling mode, where server-side
-   * prepared statements are unsafe. Prefer wrapping the connection with
-   * `unprepared()` over passing this at every call site.
+   * Required under PgBouncer in transaction-pooling mode. Takes precedence over
+   * `name` below. Setting it to true is a no-op: it never invents a name for a
+   * query that has none, and it cannot defeat a connection wrapped in
+   * `unprepared()`, which strips names after all options are applied.
    */
   prepared?: boolean;
   /** Overrides the query's canonical statement name for this call. */
@@ -36,8 +37,13 @@ export interface RunOptions {
 }
 
 /**
- * Wraps a connection so every query goes out unnamed. Use this once where the
- * connection is created for a PgBouncer transaction-pooling deployment.
+ * Wraps a connection so every query goes out unnamed. Required under PgBouncer
+ * in transaction-pooling mode, where server-side prepared statements are unsafe.
+ *
+ * Wrap every connection handed to pgTyped, including a client checked out of a
+ * pool: the wrapper exposes only `query`, so `pool.connect()` must be called on
+ * the underlying pool and its client wrapped in turn. Stripping at this level
+ * means no per-call option can re-introduce a name.
  */
 export function unprepared(connection: DatabaseConnection): DatabaseConnection {
   return {
