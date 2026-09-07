@@ -25,10 +25,12 @@ export class TypedQuery<TParams, TResult> extends Query<TParams, TResult> {
     // would reject generated params types, whose values include booleans,
     // Dates and JSON that QueryParameters' Scalar (string | number | null)
     // does not name. Assert to the callee's own type so a change to its
-    // signature still surfaces here.
+    // signature still surfaces here. Includes undefined: on the no-params path
+    // the base passes undefined through, which processSQLQueryIR accepts as
+    // "no bindings".
     const { query: text, bindings: values } = processSQLQueryIR(
       this.ir,
-      params as QueryParameters,
+      params as QueryParameters | undefined,
     );
     return { text, values };
   }
