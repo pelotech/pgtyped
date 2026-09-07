@@ -30,7 +30,7 @@ describe('unprepared', () => {
   test('passes an already-unnamed query through unchanged', async () => {
     const { calls, connection } = recording();
     await unprepared(connection).query({ text: 'SELECT 1', values: [1] });
-    expect(calls).toEqual([{ text: 'SELECT 1', values: [1] }]);
+    expect(calls).toStrictEqual([{ text: 'SELECT 1', values: [1] }]);
   });
 
   test("does not mutate the caller's config object", async () => {
