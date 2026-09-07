@@ -7,7 +7,13 @@ import type { DatabaseConnection, QueryConfig } from './connection.js';
 import { TypedQuery } from './typed-query.js';
 
 function irFor(sql: string, name?: string): SQLQueryIR {
-  const ir = queryASTToIR(parseSQLFile(sql).queries[0]);
+  const { queries, events } = parseSQLFile(sql);
+  // A fixture that silently failed to parse would make the tests below pass
+  // for the wrong reason. Warnings are fine — the unused-param fixture below
+  // deliberately triggers one — but a hard parse error (the only ParseEvent
+  // variant carrying `critical`) is not.
+  expect(events.filter((e) => 'critical' in e)).toStrictEqual([]);
+  const ir = queryASTToIR(queries[0]);
   return name ? { ...ir, name } : ir;
 }
 
@@ -66,10 +72,14 @@ describe('TypedQuery', () => {
   test('a query with no used params is called with just the connection', async () => {
     const { calls, connection } = recording();
     await new TypedQuery<void, unknown>(
-      irFor(NO_PARAMS_SQL, 'CountBooks_1'),
+      irFor(NO_PARAMS_SQL, 'CountBooks_1a2b3c4d'),
     ).run(connection);
     expect(calls).toStrictEqual([
-      { name: 'CountBooks_1', text: 'SELECT count(*) FROM books', values: [] },
+      {
+        name: 'CountBooks_1a2b3c4d',
+        text: 'SELECT count(*) FROM books',
+        values: [],
+      },
     ]);
   });
 
@@ -82,15 +92,37 @@ describe('TypedQuery', () => {
       */
       SELECT count(*) FROM books;
     `;
-    await new TypedQuery<void, unknown>(
-      irFor(declaredNotUsed, 'CountBooksUnused_1'),
-    ).run(connection);
+    const ir = irFor(declaredNotUsed, 'CountBooksUnused_5e6f7a8b');
+    expect(ir.params.map((p) => p.name)).toStrictEqual(['ids']);
+    await new TypedQuery<void, unknown>(ir).run(connection);
     expect(calls).toStrictEqual([
       {
-        name: 'CountBooksUnused_1',
+        name: 'CountBooksUnused_5e6f7a8b',
         text: 'SELECT count(*) FROM books',
         values: [],
       },
     ]);
+  });
+
+  test('re-renders a variable-arity query per call', () => {
+    const spread = `
+      /*
+        @name FindBooksByIds
+        @param ids -> (...)
+      */
+      SELECT * FROM books WHERE id IN :ids;
+    `;
+    // Codegen leaves array-spread queries unnamed precisely because the text
+    // varies per call; compiling the same instance twice must reflect that.
+    const query = new TypedQuery<{ ids: number[] }, unknown>(irFor(spread));
+    expect(query.name).toBeUndefined();
+    expect(query.compile({ ids: [1, 2] })).toStrictEqual({
+      text: 'SELECT * FROM books WHERE id IN ($1,$2)',
+      values: [1, 2],
+    });
+    expect(query.compile({ ids: [1, 2, 3] })).toStrictEqual({
+      text: 'SELECT * FROM books WHERE id IN ($1,$2,$3)',
+      values: [1, 2, 3],
+    });
   });
 });

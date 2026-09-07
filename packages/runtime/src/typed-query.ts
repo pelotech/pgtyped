@@ -1,5 +1,6 @@
 import type { SQLQueryIR } from '@pelotech/pgtyped-parser';
-import { processSQLQueryIR } from './preprocessor-sql.js';
+import { processSQLQueryIR, usedParams } from './preprocessor-sql.js';
+import type { QueryParameters } from './preprocessor.js';
 import { Query, type Interpolated } from './query.js';
 
 /**
@@ -16,13 +17,18 @@ export class TypedQuery<TParams, TResult> extends Query<TParams, TResult> {
     this.name = ir.name;
     // Same rule codegen applies when deciding whether to emit `Params = void`:
     // only params that are actually referenced in the statement count.
-    this.hasParams = ir.params.some((p) => p.name in ir.usedParamSet);
+    this.hasParams = usedParams(ir).length > 0;
   }
 
   protected interpolate(params: TParams): Interpolated {
+    // TParams is unconstrained on purpose: constraining it to QueryParameters
+    // would reject generated params types, whose values include booleans,
+    // Dates and JSON that QueryParameters' Scalar (string | number | null)
+    // does not name. Assert to the callee's own type so a change to its
+    // signature still surfaces here.
     const { query: text, bindings: values } = processSQLQueryIR(
       this.ir,
-      params as never,
+      params as QueryParameters,
     );
     return { text, values };
   }

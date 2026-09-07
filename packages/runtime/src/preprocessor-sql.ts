@@ -11,6 +11,16 @@ import {
   Scalar,
 } from './preprocessor.js';
 
+/**
+ * The params a query actually interpolates: declared and referenced in the
+ * statement. Callers must agree on this predicate — TypedQuery uses it to
+ * decide whether its first argument after the connection is params, and this
+ * module uses it to decide what to bind. Object.hasOwn rather than `in`, so a
+ * param named `constructor` or `toString` is not reported as used.
+ */
+export const usedParams = (queryIR: SQLQueryIR): SQLQueryIR['params'] =>
+  queryIR.params.filter((p) => Object.hasOwn(queryIR.usedParamSet, p.name));
+
 /* Processes query AST formed by new parser from pure SQL files */
 export const processSQLQueryIR = (
   queryIR: SQLQueryIR,
@@ -18,12 +28,10 @@ export const processSQLQueryIR = (
 ): InterpolatedQuery => {
   const bindings: Scalar[] = [];
   const paramMapping: QueryParameter[] = [];
-  const usedParams = queryIR.params.filter(
-    (p) => p.name in queryIR.usedParamSet,
-  );
+  const used = usedParams(queryIR);
   let i = 1;
   const intervals: { a: number; b: number; sub: string }[] = [];
-  for (const usedParam of usedParams) {
+  for (const usedParam of used) {
     // Handle spread transform
     if (usedParam.transform.type === TransformType.ArraySpread) {
       let sub: string;
