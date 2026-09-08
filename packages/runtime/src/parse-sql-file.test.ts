@@ -35,11 +35,22 @@ describe('parseSqlFile', () => {
   });
 
   test('multiple queries, each with its own block', () => {
-    const { queries } = parseSqlFile(`
+    const { queries, warnings, errors } = parseSqlFile(`
       /* @name A */ SELECT 1;
-      /* @name B */ SELECT 2;
+      /* @name B */ SELECT :b;
     `);
-    expect(queries.map((q) => q.queryName)).toStrictEqual(['A', 'B']);
+    expect(errors).toStrictEqual([]);
+    expect(warnings).toStrictEqual([]);
+    // The split points matter as much as the names: each statement starts
+    // after its own block and ends at its own `;`, with no block text and no
+    // surrounding whitespace, because `statement` is the prepared-statement
+    // hash input.
+    expect(queries.map((q) => [q.queryName, q.statement])).toStrictEqual([
+      ['A', 'SELECT 1'],
+      ['B', 'SELECT :b'],
+    ]);
+    expect(queries[0].params).toStrictEqual([]);
+    expect(queries[1].params.map((p) => p.name)).toStrictEqual(['b']);
   });
 
   test('the four @param transforms', () => {
@@ -158,12 +169,24 @@ describe('parseSqlFile — conformance ported from the old ANTLR parser', () => 
   });
 
   test('Named query selects some fields', () => {
-    const q = one(`
+    // Asserted whole, so that the commas in the select list cannot quietly
+    // produce a param, a column hint or a diagnostic.
+    expect(
+      parseSqlFile(`
   /* @name GetAllUsers */
-  SELECT id, name FROM users;`);
-    expect(q.queryName).toBe('GetAllUsers');
-    expect(q.statement).toBe('SELECT id, name FROM users');
-    expect(q.params).toStrictEqual([]);
+  SELECT id, name FROM users;`),
+    ).toStrictEqual({
+      queries: [
+        {
+          queryName: 'GetAllUsers',
+          statement: 'SELECT id, name FROM users',
+          params: [],
+          columns: [],
+        },
+      ],
+      warnings: [],
+      errors: [],
+    });
   });
 
   test('Named query with an inferred param', () => {
@@ -388,5 +411,231 @@ describe('parseSqlFile — conformance ported from the old ANTLR parser', () => 
     expect(q.queryName).toBe('TestRange');
     expect(q.statement).toBe('select (ARRAY[1,2,3,4])[2:3] as arr');
     expect(q.params).toStrictEqual([]);
+  });
+});
+
+// Every diagnostic offset is asserted by slicing the source at it, so the
+// assertion says what the user would see underlined and cannot pass against an
+// offset that merely happens to be in range.
+const at = (text: string, offset: number, len: number): string =>
+  text.slice(offset, offset + len);
+
+describe('parseSqlFile — an annotation is read whole or reported', () => {
+  test('a description line after the last @param does not downgrade it', () => {
+    const r = parseSqlFile(`/*
+ @name A
+ @param ids -> (...)
+ Some description here.
+*/
+SELECT :ids;`);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.warnings).toStrictEqual([]);
+    expect(r.queries[0].params.map((p) => p.transform)).toStrictEqual([
+      { type: 'array_spread' },
+    ]);
+  });
+
+  test('a rule never spans a line to reach a later )', () => {
+    const r = parseSqlFile(`/*
+ @name A
+ @param ids -> (...)
+ join on (x)
+*/
+SELECT :ids;`);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries[0].params.map((p) => p.transform)).toStrictEqual([
+      { type: 'array_spread' },
+    ]);
+  });
+
+  test('a single-line block still holds two annotations', () => {
+    const q = one(`/* @name Q @param a -> (...) */ SELECT :a;`);
+    expect(q.queryName).toBe('Q');
+    expect(q.params.map((p) => p.transform)).toStrictEqual([
+      { type: 'array_spread' },
+    ]);
+  });
+
+  test('a @param that cannot be read is an error, never a silent scalar', () => {
+    const text = `/* @name A\n @param ids -> [...] */\nSELECT :ids;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name A declares 1 @param annotations but only 0 could be read',
+      'Malformed @param annotation; expected `@param name -> (...)`',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@name A');
+    expect(at(text, r.errors[1].offset, 10)).toBe('@param ids');
+  });
+
+  test('a transform may span lines, as it could under the old grammar', () => {
+    // The rule ends at its balanced closing paren, not at a newline, so a
+    // wrapped transform still parses. The old ANTLR grammar skipped newlines
+    // inside comments, so rejecting these would break existing .sql files.
+    const q = one(`/*
+  @name Insert
+  @param books -> ((
+    name,
+    rank!
+  )...)
+*/
+INSERT INTO books VALUES :books;`);
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'name', required: false },
+        { name: 'rank', required: true },
+      ],
+    });
+  });
+
+  test('a transform whose paren never closes is reported', () => {
+    const text = `/* @name A\n @param ids -> (... */\nSELECT :ids;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name A declares 1 @param annotations but only 0 could be read',
+      'Malformed @param annotation; expected `@param name -> (...)`',
+    ]);
+    expect(at(text, r.errors[1].offset, 10)).toBe('@param ids');
+  });
+
+  test('a bad transform is reported at its own @param', () => {
+    const text = `/* @name A @param i -> (x y) */ SELECT :i;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Cannot parse transform for @param i: (x y)',
+    ]);
+    expect(at(text, r.errors[0].offset, 8)).toBe('@param i');
+  });
+
+  test('an unused @param warns at its declaration, not at the block end', () => {
+    const text = `/* @name A @param i -> (...) */${'\n'.repeat(40)}SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.warnings.map((w) => w.message)).toStrictEqual([
+      'Parameter "i" is defined but never used',
+    ]);
+    expect(r.warnings[0].offset).toBeGreaterThan(0);
+    expect(at(text, r.warnings[0].offset, 8)).toBe('@param i');
+  });
+
+  test('a trailing comma in a key list does not add an empty key', () => {
+    const q = one(`/* @name A @param x -> ((a, b,)...) */ SELECT :x;`);
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'a', required: false },
+        { name: 'b', required: false },
+      ],
+    });
+  });
+
+  test('@column without a sigil is reported and produces no hint', () => {
+    const text = `/* @name A @column total */ SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.queries[0].columns).toStrictEqual([]);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Malformed @column annotation; expected `@column name!` or `@column name?`',
+    ]);
+    expect(at(text, r.errors[0].offset, 13)).toBe('@column total');
+  });
+
+  test('a second @name is reported', () => {
+    const text = `/* @name A @name B */ SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.queries[0].queryName).toBe('A');
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Duplicate @name annotation; the first one wins',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@name B');
+  });
+
+  test('an unrecognised annotation is reported', () => {
+    const text = `/* @name A @paramx b -> (x) */ SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Unrecognised annotation @paramx',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@paramx');
+  });
+
+  test('a duplicate @param is reported', () => {
+    const text = `/* @name A @param a -> (...) @param a -> (x) */ SELECT :a;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Duplicate @param a; the last one wins',
+    ]);
+    expect(text.slice(r.errors[0].offset)).toMatch(/^@param a -> \(x\)/);
+  });
+
+  test('an @ in prose is not an annotation', () => {
+    const r = parseSqlFile(
+      `/* @name A\n mail foo@bar.com, or a bare @ sign */ SELECT 1;`,
+    );
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries[0].queryName).toBe('A');
+  });
+});
+
+describe('parseSqlFile — a block or a statement is never lost silently', () => {
+  test('a trailing block with no statement is an error', () => {
+    const text = `/* @name A */\nSELECT 1;\n/* @name B */\n`;
+    const r = parseSqlFile(text);
+    expect(r.queries.map((q) => q.queryName)).toStrictEqual(['A']);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name B has no statement',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@name B');
+  });
+
+  test('a block replaced by another before any statement is an error', () => {
+    const text = `/* @name A */\n/* @name B */\nSELECT 1;\n`;
+    const r = parseSqlFile(text);
+    expect(r.queries.map((q) => q.queryName)).toStrictEqual(['B']);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name A has no statement',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@name A');
+  });
+
+  test('a file that is nothing but a block is an error', () => {
+    const text = `/* @name A */\n`;
+    const r = parseSqlFile(text);
+    expect(r.queries).toStrictEqual([]);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name A has no statement',
+    ]);
+    expect(at(text, r.errors[0].offset, 7)).toBe('@name A');
+  });
+
+  test('a statement missing its ; does not swallow the next block', () => {
+    const text = `/* @name A */\nSELECT 1\n\n/* @name B */\nSELECT :x;`;
+    const r = parseSqlFile(text);
+    expect(r.queries.map((q) => [q.queryName, q.statement])).toStrictEqual([
+      ['A', 'SELECT 1'],
+      ['B', 'SELECT :x'],
+    ]);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Statement for @name A is not terminated by ";"',
+    ]);
+    expect(at(text, r.errors[0].offset, 8)).toBe('SELECT 1');
+  });
+
+  test('a statement after a complete query does not inherit its block', () => {
+    const text = `/* @name A */ SELECT 1;\nSELECT 2;`;
+    const r = parseSqlFile(text);
+    expect(r.queries.map((q) => q.queryName)).toStrictEqual(['A']);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Statement has no /* @name ... */ block',
+    ]);
+    expect(at(text, r.errors[0].offset, 8)).toBe('SELECT 2');
+  });
+
+  test('the no-block error points at the statement, not the whitespace', () => {
+    const text = `\n\n   SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Statement has no /* @name ... */ block',
+    ]);
+    expect(at(text, r.errors[0].offset, 8)).toBe('SELECT 1');
   });
 });
