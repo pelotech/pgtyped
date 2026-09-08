@@ -67,22 +67,19 @@ beforeEach(() => client.query('BEGIN'));
 afterEach(() => client.query('ROLLBACK'));
 
 test('select query with unicode characters', async () => {
-  const result = findBookUnicode.run(undefined, client);
+  const result = findBookUnicode.run(client);
   await expect(result).resolves.toMatchSnapshot();
 });
 
 test('select query with parameters', async () => {
-  const comments = await getAllComments.run({ id: 1 }, client);
+  const comments = await getAllComments.run(client, { id: 1 });
   expect(comments).toMatchSnapshot();
 });
 
 test('select query with dynamic or', async () => {
-  const result = findBookNameOrRank.run(
-    {
-      rank: 1,
-    },
-    client,
-  );
+  const result = findBookNameOrRank.run(client, {
+    rank: 1,
+  });
   await expect(result).resolves.toMatchSnapshot();
 });
 
@@ -93,75 +90,67 @@ test('select query with date type override (TS)', async () => {
 });
 
 test('select query with date type override (SQL)', async () => {
-  const notifications = await getNotifications.run(
-    { userId: 1, date: '2000-01-01' },
-    client,
-  );
+  const notifications = await getNotifications.run(client, {
+    userId: 1,
+    date: '2000-01-01',
+  });
   const dateAsString: string = notifications[0].created_at;
   expect(typeof dateAsString).toBe('string');
 });
 
 test('insert query with parameter spread', async () => {
-  const [{ book_id: insertedBookId }] = await insertBooks.run(
-    {
-      books: [
-        {
-          authorId: 1,
-          name: 'A Brief History of Time: From the Big Bang to Black Holes',
-          rank: 1,
-          categories: [Category.Novel, Category.ScienceFiction],
-        },
-      ],
-    },
-    client,
-  );
-  const { 0: insertedBook } = await findBookById.run(
-    { id: insertedBookId },
-    client,
-  );
+  const [{ book_id: insertedBookId }] = await insertBooks.run(client, {
+    books: [
+      {
+        authorId: 1,
+        name: 'A Brief History of Time: From the Big Bang to Black Holes',
+        rank: 1,
+        categories: [Category.Novel, Category.ScienceFiction],
+      },
+    ],
+  });
+  const { 0: insertedBook } = await findBookById.run(client, {
+    id: insertedBookId,
+  });
   expect(insertedBook.categories).toEqual('{novel,science-fiction}');
 });
 
 test('update query with a non-null parameter override', async () => {
-  await updateBooks.run({ id: 2, rank: 12, name: 'Another title' }, client);
+  await updateBooks.run(client, { id: 2, rank: 12, name: 'Another title' });
 });
 
 test('insert query with an inline sql comment', async () => {
-  const [result] = await insertComment.run(
-    { comments: [{ commentBody: 'Just a comment', userId: 1 }] },
-    client,
-  );
+  const [result] = await insertComment.run(client, {
+    comments: [{ commentBody: 'Just a comment', userId: 1 }],
+  });
   expect(result).toMatchSnapshot({
     id: expect.any(Number),
   });
 });
 
 test('dynamic update query', async () => {
-  await updateBooksCustom.run({ id: 2, rank: 13 }, client);
+  await updateBooksCustom.run(client, { id: 2, rank: 13 });
 });
 
 test('update query with a multiple non-null parameter overrides', async () => {
-  await updateBooksRankNotNull.run(
-    { id: 2, rank: 12, name: 'Another title' },
-    client,
-  );
+  await updateBooksRankNotNull.run(client, {
+    id: 2,
+    rank: 12,
+    name: 'Another title',
+  });
 });
 
 test('select query with join and a parameter override', async () => {
-  const books = await getBooksByAuthorName.run(
-    {
-      authorName: 'Carl Sagan',
-    },
-    client,
-  );
+  const books = await getBooksByAuthorName.run(client, {
+    authorName: 'Carl Sagan',
+  });
   expect(books).toMatchSnapshot();
 });
 
 test('select query with aggregation', async () => {
-  const [aggregateData] = await aggregateEmailsAndTest.run(
-    { testAges: [35, 23, 19] },
-    client,
-  );
+  const [aggregateData] = await aggregateEmailsAndTest.run(client, {
+    testAges: [35, 23, 19],
+  });
   expect(aggregateData.agetest).toBe(true);
   expect(aggregateData.emails).toEqual([
     'alex.doe@example.com',
@@ -171,70 +160,60 @@ test('select query with aggregation', async () => {
 });
 
 test('insert query with an enum field', async () => {
-  await sendNotifications.run(
-    {
-      notifications: [
-        {
-          user_id: 2,
-          payload: { num_frogs: 82 },
-          type: 'reminder',
-        },
-      ],
-    },
-    client,
-  );
+  await sendNotifications.run(client, {
+    notifications: [
+      {
+        user_id: 2,
+        payload: { num_frogs: 82 },
+        type: 'reminder',
+      },
+    ],
+  });
 });
 
 test('multiple insert queries with an enum field', async () => {
-  await insertNotifications.run(
-    {
-      params: [
-        {
-          user_id: 1,
-          payload: { num_frogs: 1002 },
-          type: 'reminder',
-        },
-      ],
-    },
-    client,
-  );
-  await insertNotification.run(
-    {
-      notification: {
+  await insertNotifications.run(client, {
+    params: [
+      {
         user_id: 1,
         payload: { num_frogs: 1002 },
         type: 'reminder',
       },
+    ],
+  });
+  await insertNotification.run(client, {
+    notification: {
+      user_id: 1,
+      payload: { num_frogs: 1002 },
+      type: 'reminder',
     },
-    client,
-  );
+  });
 });
 
 test('select query with json fields and casts', async () => {
-  const notifications = await thresholdFrogs.run({ numFrogs: 80 }, client);
+  const notifications = await thresholdFrogs.run(client, { numFrogs: 80 });
   expect(notifications).toMatchSnapshot();
 });
 
 test('select query nullability override on return field', async () => {
-  const result = await getBooks.run(undefined, client);
+  const result = await getBooks.run(client);
   expect(result).toMatchSnapshot();
 });
 
 test('select exists query, testing #472', async () => {
-  const result = await selectExistsTest.run(undefined, client);
+  const result = await selectExistsTest.run(client);
   expect(result).toMatchSnapshot();
 });
 
 test('select query with a bigint field', async () => {
-  const [row] = await countBooks.run(undefined, client);
+  const [row] = await countBooks.run(client);
   expect(typeof row.book_count).toBe('bigint');
   expect(row.book_count).toBe(BigInt(4));
 });
 
 test('ts-implicit mode query', async () => {
-  const books = await sql(`SELECT * FROM books WHERE id = $id`).run(
-    { id: 1 },
-    client,
-  );
+  const books = await sql(`SELECT * FROM books WHERE id = $id`).run(client, {
+    id: 1,
+  });
   expect(books).toMatchSnapshot();
 });
