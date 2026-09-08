@@ -1,37 +1,142 @@
-import type { SQLQueryIR } from '@pelotech/pgtyped-parser';
-import { processSQLQueryIR, usedParams } from './preprocessor-sql.js';
-import type { QueryParameters } from './preprocessor.js';
-import { Query, type Interpolated } from './query.js';
+import type {
+  DatabaseConnection,
+  QueryConfig,
+  QueryResult,
+  RunOptions,
+} from './connection.js';
+import type { QueryIR } from './ir.js';
+import { render, type QueryParameters } from './render.js';
+
+/**
+ * The arguments after the connection. A query that declares parameters
+ * requires them; one that declares none has no params slot at all, so
+ * `run(connection)` and `run(connection, options)` are the only shapes.
+ *
+ * Codegen emits `never` for an invalid query; `QueryArgs<never>` is `never`,
+ * which makes such a query uncallable by construction.
+ */
+export type QueryArgs<TParams> = TParams extends void
+  ? [options?: RunOptions]
+  : [params: TParams, options?: RunOptions];
+
+const RUN_OPTION_KEYS = new Set(
+  Object.keys({ prepared: true, name: true } satisfies Record<
+    keyof RunOptions,
+    true
+  >),
+);
+
+/**
+ * Guards the `hasParams: false` path. Misrouting here would hand a params
+ * object to `compile()` as options, and its `name` property would become the
+ * server-side statement name — node-postgres keys its statement cache by name,
+ * so a user-supplied value there means unbounded namespace growth and, on a
+ * collision, the server running previously parsed SQL.
+ *
+ * Not airtight: a params object whose keys are all within {prepared, name} is
+ * indistinguishable from options and still passes. Only reachable when a
+ * subclass's hasParams is already wrong.
+ */
+function assertRunOptions(value: unknown, queryName: string | undefined): void {
+  if (value === undefined) return;
+  const extra =
+    typeof value === 'object' && value !== null
+      ? Object.keys(value).filter((key) => !RUN_OPTION_KEYS.has(key))
+      : ['(not an object)'];
+  if (extra.length > 0) {
+    throw new TypeError(
+      `Query ${queryName ?? '(unnamed)'} declares no parameters, so its second ` +
+        `argument must be RunOptions, but received: ${extra.join(', ')}. ` +
+        `This usually means the generated query's hasParams is wrong.`,
+    );
+  }
+}
 
 /**
  * A query from a .sql file. Codegen emits one of these per `@name` block,
  * carrying the parsed IR and, when prepared statements are enabled and the
  * query renders a fixed SQL text, a canonical statement name.
+ *
+ * Owns argument handling, statement-name resolution and result shaping.
  */
-export class TypedQuery<TParams, TResult> extends Query<TParams, TResult> {
+export class TypedQuery<TParams, TResult> {
+  /** Canonical prepared statement name, when codegen assigned one. */
   readonly name: string | undefined;
-  protected readonly hasParams: boolean;
 
-  constructor(private readonly ir: SQLQueryIR) {
-    super();
+  /**
+   * Whether the query declares any parameters. Mirrors the rule codegen uses
+   * to emit `Params = void`, and decides how the rest arguments are read.
+   */
+  private readonly hasParams: boolean;
+
+  constructor(private readonly ir: QueryIR) {
     this.name = ir.name;
     // Same rule codegen applies when deciding whether to emit `Params = void`:
-    // only params that are actually referenced in the statement count.
-    this.hasParams = usedParams(ir).length > 0;
+    // only params that are actually referenced in the statement count, and the
+    // IR carries only those.
+    this.hasParams = ir.params.length > 0;
   }
 
-  protected interpolate(params: TParams): Interpolated {
+  /**
+   * The exact QueryConfig `run`/`execute` would send, without sending it.
+   * Useful for logging, drivers this package does not know about, and tests.
+   */
+  compile(...rest: QueryArgs<TParams>): QueryConfig {
+    const [params, options] = this.split(rest);
+    const { text, values } = this.interpolate(params);
+    const name =
+      options?.prepared === false ? undefined : (options?.name ?? this.name);
+    // Truthiness on purpose: an empty name means unnamed, which is also how
+    // node-postgres reads it.
+    return name ? { name, text, values } : { text, values };
+  }
+
+  /** Sends the query and returns the rows plus the driver's rowCount. */
+  async execute(
+    connection: DatabaseConnection,
+    ...rest: QueryArgs<TParams>
+  ): Promise<QueryResult<TResult>> {
+    const result = await connection.query(this.compile(...rest));
+    return {
+      rows: result.rows as TResult[],
+      rowCount: result.rowCount,
+    };
+  }
+
+  /** Sends the query and returns just the rows. */
+  async run(
+    connection: DatabaseConnection,
+    ...rest: QueryArgs<TParams>
+  ): Promise<TResult[]> {
+    const { rows } = await this.execute(connection, ...rest);
+    return rows;
+  }
+
+  /** Renders the SQL text and positional values for a set of params. */
+  private interpolate(params: TParams): { text: string; values: unknown[] } {
     // TParams is unconstrained on purpose: constraining it to QueryParameters
     // would reject generated params types, whose values include booleans,
     // Dates and JSON that QueryParameters' Scalar (string | number | null)
     // does not name. Assert to the callee's own type so a change to its
     // signature still surfaces here. Includes undefined: on the no-params path
-    // the base passes undefined through, which processSQLQueryIR accepts as
-    // "no bindings".
-    const { query: text, bindings: values } = processSQLQueryIR(
+    // `split` passes undefined through, which render accepts as "no bindings".
+    const { query: text, bindings: values } = render(
       this.ir,
       params as QueryParameters | undefined,
     );
     return { text, values };
+  }
+
+  private split(rest: unknown[]): [TParams, RunOptions | undefined] {
+    if (this.hasParams) {
+      if (rest[0] === undefined) {
+        throw new TypeError(
+          `Query ${this.name ?? '(unnamed)'} requires parameters.`,
+        );
+      }
+      return [rest[0] as TParams, rest[1] as RunOptions | undefined];
+    }
+    assertRunOptions(rest[0], this.name);
+    return [undefined as TParams, rest[0] as RunOptions | undefined];
   }
 }
