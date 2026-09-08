@@ -10,9 +10,10 @@ import {
 import { getTypes, TypeSource } from '@pelotech/pgtyped-query';
 import {
   ParameterTransform,
-  processSQLQueryIR,
-  processTSQueryAST,
-} from '@pelotech/pgtyped-runtime';
+  parseTagged,
+  render,
+  type QueryIR,
+} from '@pelotech/pgtyped-runtime/internal';
 import { camelCase, pascalCase } from 'change-case';
 import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
@@ -20,6 +21,30 @@ import { attachPreparedStatementName } from './preparedStatementName.js';
 import { parseCode as parseTypescriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
 import { IQueryTypes } from '@pelotech/pgtyped-query/lib/actions.js';
+
+/**
+ * Old parser IR -> new runtime IR. Temporary until codegen parses through the
+ * runtime directly. Old locs are inclusive-end; new ones are half-open. Only
+ * referenced params survive, because the new hasParams is params.length > 0.
+ * `ir.name` is the prepared statement name if attachPreparedStatementName set
+ * one, else undefined - queryASTToIR never sets it.
+ */
+function toQueryIR(ir: SQLQueryIR, queryName: string): QueryIR {
+  return {
+    queryName,
+    statement: ir.statement,
+    params: ir.params
+      .filter((p) => Object.hasOwn(ir.usedParamSet, p.name))
+      .map((p) => ({
+        name: p.name,
+        transform: p.transform,
+        required: p.required,
+        locs: p.locs.map(({ a, b }) => ({ a, b: b + 1 })),
+      })),
+    columns: [],
+    ...(ir.name === undefined ? {} : { name: ir.name }),
+  };
+}
 
 export enum ProcessingMode {
   SQL = 'sql-file',
@@ -92,10 +117,12 @@ export async function queryToTypeDeclarations(
   let queryName;
   if (parsedQuery.mode === ProcessingMode.TS) {
     queryName = pascalCase(parsedQuery.ast.name);
-    queryData = processTSQueryAST(parsedQuery.ast);
+    queryData = render(parseTagged(parsedQuery.ast.text, parsedQuery.ast.name));
   } else {
     queryName = pascalCase(parsedQuery.ast.name);
-    queryData = processSQLQueryIR(queryASTToIR(parsedQuery.ast));
+    queryData = render(
+      toQueryIR(queryASTToIR(parsedQuery.ast), parsedQuery.ast.name),
+    );
   }
 
   const typeData = await typeSource(queryData);
@@ -296,7 +323,7 @@ type SQLTypedQuery = {
   query: {
     name: string;
     ast: SQLQueryAST;
-    ir: SQLQueryIR;
+    ir: QueryIR;
     paramTypeAlias: string;
     returnTypeAlias: string;
   };
@@ -352,10 +379,13 @@ export async function generateTypedecsFromFile(
         query: {
           name: camelCase(sqlQueryAST.name),
           ast: sqlQueryAST,
-          ir: attachPreparedStatementName(
-            queryASTToIR(sqlQueryAST),
+          ir: toQueryIR(
+            attachPreparedStatementName(
+              queryASTToIR(sqlQueryAST),
+              sqlQueryAST.name,
+              config,
+            ),
             sqlQueryAST.name,
-            config,
           ),
           paramTypeAlias: `${interfacePrefix}${pascalCase(
             sqlQueryAST.name,
