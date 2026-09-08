@@ -34,8 +34,9 @@ const RUN_OPTION_KEYS = new Set(
  * collision, the server running previously parsed SQL.
  *
  * Not airtight: a params object whose keys are all within {prepared, name} is
- * indistinguishable from options and still passes. Only reachable when a
- * subclass's hasParams is already wrong.
+ * indistinguishable from options and still passes. Only reachable when the
+ * generated params type and the generated IR disagree about whether the query
+ * takes parameters.
  */
 function assertRunOptions(value: unknown, queryName: string | undefined): void {
   if (value === undefined) return;
@@ -47,7 +48,8 @@ function assertRunOptions(value: unknown, queryName: string | undefined): void {
     throw new TypeError(
       `Query ${queryName ?? '(unnamed)'} declares no parameters, so its second ` +
         `argument must be RunOptions, but received: ${extra.join(', ')}. ` +
-        `This usually means the generated query's hasParams is wrong.`,
+        `This usually means the generated params type and the generated IR ` +
+        `disagree; re-run pgtyped codegen.`,
     );
   }
 }
@@ -87,8 +89,17 @@ export class TypedQuery<TParams, TResult> {
   compile(...rest: QueryArgs<TParams>): QueryConfig {
     const [params, options] = this.split(rest);
     const { text, values } = this.interpolate(params);
+    // `options.name` may only override a name codegen already granted. Codegen
+    // withholds one from any query whose SQL varies per call, because
+    // node-postgres caches by name: naming a spread query would let a second
+    // call with a longer array bind against the statement parsed for the
+    // first, and Postgres rejects it with "bind message supplies N parameters,
+    // but prepared statement requires M". A caller cannot tell which queries
+    // are variable, so the guard lives here rather than in their heads.
     const name =
-      options?.prepared === false ? undefined : (options?.name ?? this.name);
+      options?.prepared === false || this.name === undefined
+        ? undefined
+        : (options?.name ?? this.name);
     // Truthiness on purpose: an empty name means unnamed, which is also how
     // node-postgres reads it.
     return name ? { name, text, values } : { text, values };

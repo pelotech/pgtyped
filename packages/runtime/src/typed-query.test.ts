@@ -166,8 +166,17 @@ describe('compile', () => {
   });
 
   test('name option overrides the canonical name', () => {
-    expect(NAMED().compile({ id: 1 }, { name: 'custom' })).toMatchObject({
+    expect(NAMED().compile({ id: 1 }, { name: 'custom' })).toStrictEqual({
       name: 'custom',
+      text: 'SELECT $1',
+      values: [1],
+    });
+  });
+
+  test('an empty name option means unnamed, as node-postgres reads it', () => {
+    expect(NAMED().compile({ id: 1 }, { name: '' })).toStrictEqual({
+      text: 'SELECT $1',
+      values: [1],
     });
   });
 
@@ -192,14 +201,87 @@ describe('compile', () => {
     ).toThrow(/requires parameters/);
   });
 
+  // The conditional rest tuple is what replaced overloads and argument
+  // sniffing, so its edges are asserted at the type level. `npm run check:test`
+  // typechecks this file; each @ts-expect-error fails the build if the error
+  // it claims stops happening.
+  test('the argument tuple rejects the shapes it is meant to', () => {
+    // Declared and never called: these assert what the compiler rejects, and
+    // two of them would not throw at runtime. `npm run check:test` typechecks
+    // this file, so each @ts-expect-error fails the build if the error it
+    // claims stops happening.
+    const typeAssertions = (): void => {
+      const voidQuery = new TypedQuery<void, unknown>(VOID_IR());
+      const paramsQuery = new TypedQuery<{ id: number }, unknown>(PARAMS_IR());
+      // A query whose params are `never` cannot be called at all, because
+      // QueryArgs<never> is never — the "codegen could not type it" case.
+      const impossible = new TypedQuery<never, unknown>(VOID_IR());
+
+      // @ts-expect-error a parameterless query takes no params argument
+      voidQuery.compile({ id: 1 });
+      // @ts-expect-error options alone cannot stand in for required params
+      paramsQuery.compile({ prepared: false });
+      // @ts-expect-error QueryArgs<never> is uncallable
+      impossible.compile();
+    };
+
+    expect(typeof typeAssertions).toBe('function');
+    expect(new TypedQuery<void, unknown>(VOID_IR()).compile()).toStrictEqual({
+      text: 'SELECT 1',
+      values: [],
+    });
+  });
+
   // Documents a known limit rather than desired behaviour: a params object
   // whose keys are all valid RunOptions keys cannot be distinguished from
-  // options, so it is misread. Only reachable if hasParams is wrong.
-  test('cannot detect a params object that looks exactly like options', () => {
+  // options, so it is misread. Only reachable if the generated params type and
+  // the generated IR disagree.
+  test('still cannot detect a params object that looks exactly like options', () => {
     const wrong = new TypedQuery<{ name: string }, unknown>(VOID_IR());
+    // Misread as options, but the value no longer reaches the driver: an
+    // unnamed query stays unnamed whatever the options say.
     expect(
       (wrong.compile as (...a: unknown[]) => QueryConfig)({ name: 'Alice' }),
-    ).toStrictEqual({ name: 'Alice', text: 'SELECT 1', values: [] });
+    ).toStrictEqual({ text: 'SELECT 1', values: [] });
+  });
+
+  test('a query codegen refused to name cannot be named by options', () => {
+    // Codegen withholds a name from any query whose SQL varies per call. If
+    // options could supply one, a second call with a longer array would bind
+    // against the statement parsed for the first.
+    const spread = irFor('/* @name Q @param ids -> (...) */ SELECT :ids');
+    const q = new TypedQuery<{ ids: number[] }, unknown>(spread);
+    expect(q.name).toBeUndefined();
+    expect(q.compile({ ids: [1] }, { name: 'S' })).toStrictEqual({
+      text: 'SELECT ($1)',
+      values: [1],
+    });
+    expect(q.compile({ ids: [1, 2] }, { name: 'S' })).toStrictEqual({
+      text: 'SELECT ($1,$2)',
+      values: [1, 2],
+    });
+  });
+
+  test('options.name still overrides a name codegen did grant', () => {
+    expect(NAMED().compile({ id: 1 }, { name: 'Other' })).toStrictEqual({
+      name: 'Other',
+      text: 'SELECT $1',
+      values: [1],
+    });
+  });
+
+  test('rejects a non-object in the options slot', () => {
+    const noParams = new TypedQuery<void, unknown>(VOID_IR());
+    expect(() =>
+      (noParams.compile as (...a: unknown[]) => unknown)('oops'),
+    ).toThrow(/\(not an object\)/);
+  });
+
+  test('rejects null in the options slot, which is an object to typeof', () => {
+    const noParams = new TypedQuery<void, unknown>(VOID_IR());
+    expect(() =>
+      (noParams.compile as (...a: unknown[]) => unknown)(null),
+    ).toThrow(/\(not an object\)/);
   });
 
   test('rejects a params object when the query declares none', () => {
