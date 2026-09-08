@@ -19,6 +19,35 @@ export type QueryArgs<TParams> = TParams extends void
   ? [options?: RunOptions]
   : [params: TParams, options?: RunOptions];
 
+/**
+ * Codegen leaves `!` / `?` nullability hints on column aliases (`total!`), and
+ * the database echoes them back. Strip them so rows match the generated result
+ * type.
+ *
+ * Temporary, like the `PreparedQuery` alias: hints move to `@column`
+ * annotations in the query's comment block, at which point the server never
+ * sees them and this can go. Until codegen emits `@column`, deleting this
+ * silently hands callers rows keyed `total!` while the generated type says
+ * `total`, so a field reads as undefined with no error anywhere.
+ *
+ * Mutates the row objects in place — safe for node-postgres, which allocates
+ * fresh rows per result, but an adapter that caches or replays rows must copy
+ * before handing them over. If a row somehow carries both `total` and `total!`,
+ * the hinted value wins.
+ */
+function stripColumnHints<T>(rows: unknown[]): T[] {
+  for (const row of rows as Record<string, unknown>[]) {
+    for (const column of Object.keys(row)) {
+      const last = column[column.length - 1];
+      if (column.length > 1 && (last === '!' || last === '?')) {
+        row[column.slice(0, -1)] = row[column];
+        delete row[column];
+      }
+    }
+  }
+  return rows as T[];
+}
+
 const RUN_OPTION_KEYS = new Set(
   Object.keys({ prepared: true, name: true } satisfies Record<
     keyof RunOptions,
@@ -112,7 +141,7 @@ export class TypedQuery<TParams, TResult> {
   ): Promise<QueryResult<TResult>> {
     const result = await connection.query(this.compile(...rest));
     return {
-      rows: result.rows as TResult[],
+      rows: stripColumnHints<TResult>(result.rows),
       rowCount: result.rowCount,
     };
   }

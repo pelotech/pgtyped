@@ -11,7 +11,7 @@ export async function getUsersWithComment(
     INNER JOIN book_comments bc ON u.id = bc.user_id
     GROUP BY u.id
     HAVING count(bc.id) > $minCommentCount!::int`;
-  const result = await getUsersWithComments.run({ minCommentCount }, client);
+  const result = await getUsersWithComments.run(client, { minCommentCount });
   return result[0];
 }
 

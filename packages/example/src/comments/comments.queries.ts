@@ -20,7 +20,7 @@ export interface IGetAllCommentsQuery {
   result: IGetAllCommentsResult;
 }
 
-const getAllCommentsIR: any = {"usedParamSet":{"id":true},"params":[{"name":"id","required":true,"transform":{"type":"scalar"},"locs":[{"a":39,"b":42},{"a":57,"b":59}]}],"statement":"SELECT * FROM book_comments WHERE id = :id! OR user_id = :id                                      "};
+const getAllCommentsIR: any = {"queryName":"GetAllComments","statement":"SELECT * FROM book_comments WHERE id = :id! OR user_id = :id                                      ","params":[{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":39,"b":43},{"a":57,"b":60}]}],"columns":[]};
 
 /**
  * Query generated from SQL:
@@ -50,7 +50,7 @@ export interface IGetAllCommentsByIdsQuery {
   result: IGetAllCommentsByIdsResult;
 }
 
-const getAllCommentsByIdsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"array_spread"},"locs":[{"a":40,"b":43},{"a":55,"b":59}]}],"statement":"SELECT * FROM book_comments WHERE id in :ids AND id in :ids!"};
+const getAllCommentsByIdsIR: any = {"queryName":"GetAllCommentsByIds","statement":"SELECT * FROM book_comments WHERE id in :ids AND id in :ids!","params":[{"name":"ids","transform":{"type":"array_spread"},"required":true,"locs":[{"a":40,"b":44},{"a":55,"b":60}]}],"columns":[]};
 
 /**
  * Query generated from SQL:
@@ -83,7 +83,7 @@ export interface IInsertCommentQuery {
   result: IInsertCommentResult;
 }
 
-const insertCommentIR: any = {"usedParamSet":{"comments":true},"params":[{"name":"comments","required":false,"transform":{"type":"pick_array_spread","keys":[{"name":"userId","required":true},{"name":"commentBody","required":true}]},"locs":[{"a":73,"b":81}]}],"statement":"INSERT INTO book_comments (user_id, body)\n-- NOTE: this is a note\nVALUES :comments RETURNING *"};
+const insertCommentIR: any = {"queryName":"InsertComment","statement":"INSERT INTO book_comments (user_id, body)\n-- NOTE: this is a note\nVALUES :comments RETURNING *","params":[{"name":"comments","transform":{"type":"pick_array_spread","keys":[{"name":"userId","required":true},{"name":"commentBody","required":true}]},"required":false,"locs":[{"a":73,"b":82}]}],"columns":[]};
 
 /**
  * Query generated from SQL:
@@ -110,7 +110,7 @@ export interface ISelectExistsTestQuery {
   result: ISelectExistsTestResult;
 }
 
-const selectExistsTestIR: any = {"usedParamSet":{},"params":[],"statement":"SELECT EXISTS ( SELECT 1 WHERE true ) AS \"isTransactionExists\""};
+const selectExistsTestIR: any = {"queryName":"SelectExistsTest","statement":"SELECT EXISTS ( SELECT 1 WHERE true ) AS \"isTransactionExists\"","params":[],"columns":[]};
 
 /**
  * Query generated from SQL:

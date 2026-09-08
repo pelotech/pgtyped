@@ -27,7 +27,7 @@ export interface ISendNotificationsQuery {
   result: ISendNotificationsResult;
 }
 
-const sendNotificationsIR: any = {"usedParamSet":{"notifications":true},"params":[{"name":"notifications","required":false,"transform":{"type":"pick_array_spread","keys":[{"name":"user_id","required":true},{"name":"payload","required":true},{"name":"type","required":true}]},"locs":[{"a":58,"b":71}]}],"statement":"INSERT INTO notifications (user_id, payload, type)\nVALUES :notifications RETURNING id as notification_id"};
+const sendNotificationsIR: any = {"queryName":"SendNotifications","statement":"INSERT INTO notifications (user_id, payload, type)\nVALUES :notifications RETURNING id as notification_id","params":[{"name":"notifications","transform":{"type":"pick_array_spread","keys":[{"name":"user_id","required":true},{"name":"payload","required":true},{"name":"type","required":true}]},"required":false,"locs":[{"a":58,"b":72}]}],"columns":[]};
 
 /**
  * Query generated from SQL:
@@ -60,7 +60,7 @@ export interface IGetNotificationsQuery {
   result: IGetNotificationsResult;
 }
 
-const getNotificationsIR: any = {"usedParamSet":{"userId":true,"date":true},"params":[{"name":"userId","required":false,"transform":{"type":"scalar"},"locs":[{"a":47,"b":53}]},{"name":"date","required":true,"transform":{"type":"scalar"},"locs":[{"a":73,"b":78}]}],"statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!"};
+const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!","params":[{"name":"userId","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":54}]},{"name":"date","transform":{"type":"scalar"},"required":true,"locs":[{"a":73,"b":79}]}],"columns":[]};
 
 /**
  * Query generated from SQL:
@@ -92,7 +92,7 @@ export interface IThresholdFrogsQuery {
   result: IThresholdFrogsResult;
 }
 
-const thresholdFrogsIR: any = {"usedParamSet":{"numFrogs":true},"params":[{"name":"numFrogs","required":true,"transform":{"type":"scalar"},"locs":[{"a":143,"b":152}]}],"statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!"};
+const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!","params":[{"name":"numFrogs","transform":{"type":"scalar"},"required":true,"locs":[{"a":143,"b":153}]}],"columns":[]};
 
 /**
  * Query generated from SQL:

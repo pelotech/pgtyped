@@ -302,6 +302,22 @@ describe('execute', () => {
     expect(result).toStrictEqual({ rows: [{ id: 7 }], rowCount: 1 });
   });
 
+  // Temporary alongside the PreparedQuery alias: hints move to @column
+  // annotations, and then the server never echoes a suffixed column at all.
+  // Until codegen emits @column, dropping this hands callers rows keyed
+  // `total!` while the generated type says `total`.
+  test('strips column hint suffixes from rows', async () => {
+    const { connection } = recording([{ 'total!': 3, 'maybe?': null, '!': 9 }]);
+    const { rows } = await NAMED().execute(connection, { id: 1 });
+    expect(rows).toStrictEqual([{ total: 3, maybe: null, '!': 9 }]);
+  });
+
+  test('leaves rows without hints untouched', async () => {
+    const { connection } = recording([{ id: 1, name: 'a' }]);
+    const { rows } = await NAMED().execute(connection, { id: 1 });
+    expect(rows).toStrictEqual([{ id: 1, name: 'a' }]);
+  });
+
   test('passes the driver rowCount through, including null', async () => {
     const connection: DatabaseConnection = {
       query: async () => ({ rows: [], rowCount: null }),

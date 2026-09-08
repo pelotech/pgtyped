@@ -9,7 +9,7 @@ import * as tls from 'tls';
 import type {
   InterpolatedQuery,
   QueryParameter,
-} from '@pelotech/pgtyped-runtime';
+} from '@pelotech/pgtyped-runtime/internal';
 import {
   checkServerFinalMessage,
   createClientSASLContinueResponse,
