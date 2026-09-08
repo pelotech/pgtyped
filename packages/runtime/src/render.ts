@@ -1,27 +1,61 @@
 import type { QueryIR } from './ir.js';
-import {
-  InterpolatedQuery,
-  NestedParameters,
-  QueryParameters,
-  ScalarArrayParameter,
-  ScalarParameter,
-  ParameterTransform,
-  QueryParameter,
-  Scalar,
-} from './preprocessor.js';
 
-export {
-  ParameterTransform,
-  type Scalar,
-  type ScalarParameter,
-  type DictParameter,
-  type ScalarArrayParameter,
-  type DictArrayParameter,
-  type QueryParameter,
-  type InterpolatedQuery,
-  type NestedParameters,
-  type QueryParameters,
-} from './preprocessor.js';
+export type Scalar = string | number | null;
+
+export enum ParameterTransform {
+  Scalar,
+  Spread,
+  Pick,
+  PickSpread,
+}
+
+export interface ScalarParameter {
+  name: string;
+  type: ParameterTransform.Scalar;
+  required: boolean;
+  assignedIndex: number;
+}
+
+export interface DictParameter {
+  name: string;
+  type: ParameterTransform.Pick;
+  dict: {
+    [key: string]: ScalarParameter;
+  };
+}
+
+export interface ScalarArrayParameter {
+  name: string;
+  type: ParameterTransform.Spread;
+  required: boolean;
+  assignedIndex: number | number[];
+}
+
+export interface DictArrayParameter {
+  name: string;
+  type: ParameterTransform.PickSpread;
+  dict: {
+    [key: string]: ScalarParameter;
+  };
+}
+
+export type QueryParameter =
+  ScalarParameter | ScalarArrayParameter | DictParameter | DictArrayParameter;
+
+export interface InterpolatedQuery {
+  query: string;
+  mapping: QueryParameter[];
+  bindings: Scalar[];
+}
+
+export interface NestedParameters {
+  [subParamName: string]: Scalar;
+}
+
+export interface QueryParameters {
+  [paramName: string]:
+    Scalar | NestedParameters | Scalar[] | NestedParameters[];
+}
 
 /** Applies non-overlapping half-open substitutions, last first so earlier offsets stay valid. */
 function substitute(

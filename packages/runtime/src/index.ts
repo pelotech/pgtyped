@@ -1,18 +1,15 @@
 export {
-  ParameterTransform,
-  QueryParameters,
-  InterpolatedQuery,
-  QueryParameter,
-} from './preprocessor.js';
+  unprepared,
+  type DatabaseConnection,
+  type QueryConfig,
+  type QueryResult,
+  type RunOptions,
+} from './connection.js';
+export { TypedQuery, type QueryArgs } from './typed-query.js';
+export { sql, type TypePair } from './sql.js';
+export type { QueryIR } from './ir.js';
 
-export { processTSQueryAST } from './preprocessor-ts.js';
-export { processSQLQueryIR } from './preprocessor-sql.js';
+/** @deprecated Renamed to TypedQuery. Removed once codegen emits the new name. */
+export { TypedQuery as PreparedQuery } from './typed-query.js';
 
-export {
-  sql,
-  TaggedQuery,
-  PreparedQuery,
-  IDatabaseConnection,
-  QueryConfig,
-  QueryRunOptions,
-} from './tag.js';
+export { sql as default } from './sql.js';

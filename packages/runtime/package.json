@@ -6,6 +6,10 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./internal": {
+      "types": "./lib/internal.d.ts",
+      "default": "./lib/internal.js"
     }
   },
   "types": "lib/index.d.ts",
@@ -30,12 +34,5 @@
     "check": "tsc --noEmit",
     "check:test": "tsc -p tsconfig.test.json",
     "watch": "tsc --watch --preserveWatchOutput"
-  },
-  "dependencies": {
-    "@pelotech/pgtyped-parser": "^2.4.3",
-    "debug": "^4.1.1"
-  },
-  "devDependencies": {
-    "@types/debug": "^4.1.13"
   }
 }
