@@ -467,11 +467,29 @@ SELECT :ids;`);
     expect(at(text, r.errors[1].offset, 10)).toBe('@param ids');
   });
 
-  test('a transform split across lines is reported, not guessed at', () => {
-    // Line-scoping is what stops a description line from being absorbed into
-    // the rule, so a rule that genuinely spans lines is out of scope and must
-    // say so rather than being silently stitched back together.
-    const text = `/* @name A\n @param ids -> (\n ...) */\nSELECT :ids;`;
+  test('a transform may span lines, as it could under the old grammar', () => {
+    // The rule ends at its balanced closing paren, not at a newline, so a
+    // wrapped transform still parses. The old ANTLR grammar skipped newlines
+    // inside comments, so rejecting these would break existing .sql files.
+    const q = one(`/*
+  @name Insert
+  @param books -> ((
+    name,
+    rank!
+  )...)
+*/
+INSERT INTO books VALUES :books;`);
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'name', required: false },
+        { name: 'rank', required: true },
+      ],
+    });
+  });
+
+  test('a transform whose paren never closes is reported', () => {
+    const text = `/* @name A\n @param ids -> (... */\nSELECT :ids;`;
     const r = parseSqlFile(text);
     expect(r.errors.map((e) => e.message)).toStrictEqual([
       'Block @name A declares 1 @param annotations but only 0 could be read',

@@ -18,19 +18,32 @@ export interface SqlFileParse {
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 const KEYS = `\\s*${IDENT}!?(?:\\s*,\\s*${IDENT}!?)*\\s*,?\\s*`;
 
-/**
- * Annotation rules. Every rule is line-scoped: it may not cross a newline, and
- * it ends at the next annotation or at the end of its line. A rule that could
- * span lines would either be swallowed by a following description line or
- * stretch across one to reach a later `)`, and in both cases the declaration
- * is lost: the param silently degrades to `scalar`, which renders one
- * placeholder where the SQL needs a list and lets codegen name a statement
- * that must stay unnamed. Always use PARAM_RULE with the `m` flag, so `$` in
- * its lookahead means end of line.
- */
 const NAME_RULE = `@name\\s+(${IDENT})`;
-const PARAM_RULE = `@param\\s+(${IDENT})\\s*->\\s*(\\([^\\n]*?\\))(?=\\s*(?:@|$))`;
+/** Matches up to the transform's opening paren; `readRule` finds its close. */
+const PARAM_HEAD = `@param\\s+(${IDENT})\\s*->\\s*(?=\\()`;
 const COLUMN_RULE = `@column\\s+(${IDENT})([!?])`;
+
+/**
+ * A transform rule starting at the `(` at `from`, ending just past its
+ * balanced closing paren, or undefined if it never closes.
+ *
+ * The end has to come from paren balance rather than a newline or a lookahead.
+ * Ending at a newline would reject a rule wrapped across lines, which the old
+ * ANTLR grammar accepted because it skipped newlines inside comments. Ending
+ * at "the next annotation or end of block" would let a trailing description
+ * line swallow the rule entirely. Both failures land in the same place: the
+ * declaration is lost, the param degrades to `scalar`, and the query renders
+ * one placeholder where the SQL needs a list — while codegen, seeing no
+ * variable-arity param, assigns a statement name that must never exist.
+ */
+function readRule(text: string, from: number): string | undefined {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')' && --depth === 0) return text.slice(from, i + 1);
+  }
+  return undefined;
+}
 
 /**
  * An `@` that starts a word. Prose is free to contain `foo@bar.com` or a bare
@@ -107,8 +120,8 @@ function checkAnnotations(
       if (at !== nameAt)
         report('Duplicate @name annotation; the first one wins');
     } else if (m[1] === 'param') {
-      const p = matchesAt(PARAM_RULE, inner, at);
-      if (!p)
+      const p = matchesAt(PARAM_HEAD, inner, at);
+      if (!p || readRule(inner, at + p[0].length) === undefined)
         report('Malformed @param annotation; expected `@param name -> (...)`');
       else if (seen.has(p[1]))
         report(`Duplicate @param ${p[1]}; the last one wins`);
@@ -140,13 +153,15 @@ function readBlock(
 
   const params = new Map<string, Declared>();
   let read = 0;
-  for (const m of inner.matchAll(new RegExp(PARAM_RULE, 'gm'))) {
+  for (const m of inner.matchAll(new RegExp(PARAM_HEAD, 'g'))) {
+    const rule = readRule(inner, m.index + m[0].length);
+    if (rule === undefined) continue;
     read++;
-    const t = transform(m[2]);
+    const t = transform(rule);
     if (t) params.set(m[1], { transform: t, offset: offset + m.index });
     else
       errors.push({
-        message: `Cannot parse transform for @param ${m[1]}: ${m[2].trim()}`,
+        message: `Cannot parse transform for @param ${m[1]}: ${rule.trim()}`,
         offset: offset + m.index,
       });
   }
