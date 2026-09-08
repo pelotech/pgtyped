@@ -53,11 +53,14 @@ function assertRunOptions(value: unknown, queryName: string | undefined): void {
 }
 
 /**
- * A query from a .sql file. Codegen emits one of these per `@name` block,
- * carrying the parsed IR and, when prepared statements are enabled and the
- * query renders a fixed SQL text, a canonical statement name.
+ * A typed query, however it was written. Codegen emits one per `@name` block
+ * in a .sql file, and the `sql` tag builds one at runtime from an inline
+ * template; both carry the same IR, which is why there is one class rather
+ * than a base and two subclasses.
  *
- * Owns argument handling, statement-name resolution and result shaping.
+ * Owns argument handling, statement-name resolution and result shaping. Only
+ * queries from .sql files can carry a canonical statement name, and only when
+ * prepared statements are enabled and the query renders a fixed SQL text.
  */
 export class TypedQuery<TParams, TResult> {
   /** Canonical prepared statement name, when codegen assigned one. */
