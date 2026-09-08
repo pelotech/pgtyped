@@ -11,6 +11,28 @@ import {
   Scalar,
 } from './preprocessor.js';
 
+/**
+ * The params a query actually interpolates: declared and referenced in the
+ * statement. The two runtime callers must agree on this predicate — TypedQuery
+ * uses it to decide whether its first argument after the connection is params,
+ * and this module uses it to decide what to bind. If they drift, a query with a
+ * used param renders `$1` placeholders with no bindings and Postgres rejects it
+ * with "bind message supplies 0 parameters".
+ *
+ * Object.hasOwn rather than `in`, so a param named `constructor` or `toString`
+ * is not reported as used. This cannot be pushed up into the parser: codegen
+ * serialises the IR into generated files as a JSON literal, so at runtime
+ * `usedParamSet` is always a fresh object with Object.prototype regardless of
+ * what the parser built.
+ *
+ * `packages/cli/src/preparedStatementName.ts` still uses the plain `in` idiom.
+ * That divergence is fail-safe — `in` is strictly more inclusive, so it can
+ * only withhold a statement name, never wrongly assign one — and the cli does
+ * not depend on this package, so it cannot import this helper today.
+ */
+export const usedParams = (queryIR: SQLQueryIR): SQLQueryIR['params'] =>
+  queryIR.params.filter((p) => Object.hasOwn(queryIR.usedParamSet, p.name));
+
 /* Processes query AST formed by new parser from pure SQL files */
 export const processSQLQueryIR = (
   queryIR: SQLQueryIR,
@@ -18,12 +40,10 @@ export const processSQLQueryIR = (
 ): InterpolatedQuery => {
   const bindings: Scalar[] = [];
   const paramMapping: QueryParameter[] = [];
-  const usedParams = queryIR.params.filter(
-    (p) => p.name in queryIR.usedParamSet,
-  );
+  const used = usedParams(queryIR);
   let i = 1;
   const intervals: { a: number; b: number; sub: string }[] = [];
-  for (const usedParam of usedParams) {
+  for (const usedParam of used) {
     // Handle spread transform
     if (usedParam.transform.type === TransformType.ArraySpread) {
       let sub: string;

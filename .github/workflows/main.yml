@@ -28,6 +28,8 @@ jobs:
       - run: npm ci
       - name: Build packages
         run: npm run build
+      - name: Typecheck test files (packages with check:test)
+        run: npm run check:test --workspaces --if-present
       - name: Run tests
         run: npm test
         env:

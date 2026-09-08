@@ -28,6 +28,7 @@
     "test": "vitest run",
     "build": "tsc",
     "check": "tsc --noEmit",
+    "check:test": "tsc -p tsconfig.test.json",
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "dependencies": {
