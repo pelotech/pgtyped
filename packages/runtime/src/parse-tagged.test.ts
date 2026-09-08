@@ -87,6 +87,7 @@ describe('parseTagged: ported from the old TS parser conformance suite', () => {
   test('scalar param', () => {
     const query = 'select * from users where id = $id and title= $title';
     const q = parseTagged(query);
+    expect(q.statement).toBe(query);
     expect(
       q.params.map((p) => [p.name, p.required, p.transform]),
     ).toStrictEqual([
@@ -105,6 +106,7 @@ describe('parseTagged: ported from the old TS parser conformance suite', () => {
     const query =
       'select * from users where id in $activeUsers(userOne, userTwo)';
     const q = parseTagged(query);
+    expect(q.statement).toBe(query);
     expect(
       q.params.map((p) => [p.name, p.required, p.transform]),
     ).toStrictEqual([
@@ -128,6 +130,7 @@ describe('parseTagged: ported from the old TS parser conformance suite', () => {
   test('array param', () => {
     const query = 'select * from users where id in $$ids';
     const q = parseTagged(query);
+    expect(q.statement).toBe(query);
     expect(
       q.params.map((p) => [p.name, p.required, p.transform]),
     ).toStrictEqual([['ids', false, { type: 'array_spread' }]]);
@@ -140,6 +143,7 @@ describe('parseTagged: ported from the old TS parser conformance suite', () => {
     const query = `INSERT INTO customers (customer_name, contact_name, address)
   VALUES $$customers(customerName, contactName, address)`;
     const q = parseTagged(query);
+    expect(q.statement).toBe(query);
     expect(
       q.params.map((p) => [p.name, p.required, p.transform]),
     ).toStrictEqual([
