@@ -236,6 +236,15 @@ describe('parseSqlFile — conformance ported from the old ANTLR parser', () => 
     );
     expect(q.params).toHaveLength(1);
     const [p] = q.params;
+    expect(p.name).toBe('customers');
+    expect(p.transform).toStrictEqual({
+      type: 'pick_tuple',
+      keys: [
+        { name: 'customerName', required: false },
+        { name: 'contactName', required: false },
+        { name: 'address', required: false },
+      ],
+    });
     expect(p.locs).toHaveLength(2);
     for (const loc of p.locs)
       expect(q.statement.slice(loc.a, loc.b)).toBe(':customers');
