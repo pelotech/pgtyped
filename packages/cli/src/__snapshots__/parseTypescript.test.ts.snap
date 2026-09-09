@@ -8,7 +8,7 @@ Object {
       "columns": Array [],
       "params": Array [],
       "queryName": "query",
-      "statement": "select id, name, age from users;",
+      "statement": "select id, name, age from users",
     },
   ],
 }
@@ -22,7 +22,7 @@ Object {
       "columns": Array [],
       "params": Array [],
       "queryName": "query",
-      "statement": "select id, name, age from users;",
+      "statement": "select id, name, age from users",
     },
   ],
 }

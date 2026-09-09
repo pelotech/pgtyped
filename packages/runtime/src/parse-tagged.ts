@@ -29,6 +29,12 @@ export function parseTagged(text: string, queryName = 'query'): QueryIR {
     }
     statement = statement.slice(lead[0].length).trim();
   }
+  // Drop a terminating semicolon, as the .sql front-end does when it splits on
+  // one. Without this the two front-ends emit different text for the same
+  // query, and a tag written with a trailing `;` sends it to the server where
+  // 2.x did not. Only a real terminator goes: a `;` inside a string literal is
+  // not at the end after trimming.
+  statement = statement.replace(/;\s*$/, '').trimEnd();
 
   const byName = new Map<string, ParamIR>();
   for (const ref of scanParams(statement, '$')) {
