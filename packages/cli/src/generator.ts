@@ -58,6 +58,34 @@ export const generateInterface = (interfaceName: string, fields: IField[]) => {
 export const generateTypeAlias = (typeName: string, alias: string) =>
   `export type ${typeName} = ${alias};\n\n`;
 
+/**
+ * A result column whose name ends in `!` or `?` is almost always 2.x syntax
+ * that was never migrated: back then the suffix was stripped off every row
+ * key at runtime, so `AS "total!"` read back as `row.total`. 3.0 leaves the
+ * alias alone, which makes the column genuinely named `total!`.
+ *
+ * That is survivable on its own — the odd field name in the generated type
+ * gives the game away. It is not survivable with `camelCaseColumnNames`:
+ * `camelCase('total!')` is `'total'`, so the generated type promises a field
+ * the rows do not have and `row.total` is silently `undefined`. Hence a
+ * warning on the column name rather than on the config combination.
+ */
+function nullabilitySuffixWarning(
+  returnName: string,
+  queryName: string,
+): string | undefined {
+  const match = /^(.+)([!?])$/.exec(returnName);
+  if (!match) {
+    return undefined;
+  }
+  const [, alias, suffix] = match;
+  return (
+    `Column alias "${returnName}" in query '${queryName}' ends in a nullability suffix, ` +
+    `which 3.0 reads from @column annotations instead — the column really is named "${returnName}". ` +
+    `Rename the alias to "${alias}" and add \`@column ${alias}${suffix}\` to the query's comment block.`
+  );
+}
+
 export async function queryToTypeDeclarations(
   ir: QueryIR,
   typeSource: TypeSource,
@@ -114,6 +142,22 @@ export async function queryToTypeDeclarations(
 
   const returnFieldTypes: IField[] = [];
   const paramFieldTypes: IField[] = [];
+
+  // Emitted here rather than in either front-end parser so that both `sql`
+  // files and `sql` tags surface it: this is the one place both modes pass
+  // through, and it is the only place the server-reported column names are
+  // known at all.
+  const suffixWarnings = returnTypes
+    .map(({ returnName }) => nullabilitySuffixWarning(returnName, queryName))
+    .filter((warning): warning is string => warning !== undefined);
+  // tslint:disable-next-line:no-console
+  suffixWarnings.forEach((warning) => console.warn(warning));
+  // Advisory by default — the types generated are an accurate description of
+  // what the server returns — until failOnError asks for the strict reading,
+  // exactly as the tag lints do.
+  if (config.failOnError && suffixWarnings.length > 0) {
+    throw new Error(suffixWarnings.join('\n'));
+  }
 
   returnTypes.forEach(({ returnName, type, nullable, comment }) => {
     let tsTypeName = types.use(type, TypeScope.Return);

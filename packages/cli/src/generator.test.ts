@@ -1284,3 +1284,167 @@ describe('the type argument lint', () => {
     }
   });
 });
+
+// In 2.x, `AS "total!"` was how nullability was declared, and the runtime
+// stripped the suffix off every row key. 3.0 reads hints from `@column` and
+// strips nothing, so such an alias now names a column that really is `total!`.
+describe('the nullability-suffix alias lint', () => {
+  /**
+   * A database that reports one `int4` result column under `name`, so a test
+   * can drive the whole pipeline over a column Postgres really did call
+   * `total!`. The column belongs to no table, so it has no `pg_attribute` row
+   * and comes back with unknown nullability.
+   */
+  const dbReturning = (name: string): TypeDb => ({
+    describe: async () => ({
+      params: [],
+      fields: [
+        {
+          name,
+          tableOID: 0,
+          columnAttrNumber: 0,
+          typeOID: 23,
+          typeSize: 4,
+          typeModifier: -1,
+          formatCode: 0,
+        },
+      ],
+    }),
+    rows: async (sql) =>
+      sql.includes('FROM pg_type')
+        ? [
+            {
+              oid: 23,
+              typname: 'int4',
+              typtype: 'b',
+              enumlabel: null,
+              typelem: 0,
+              typcategory: 'N',
+            },
+          ]
+        : [],
+  });
+
+  const sqlFile = (alias: string) => `
+    /* @name CountBooks */
+    SELECT count(*)::int AS "${alias}" FROM books;
+  `;
+  const sqlTag = (alias: string) =>
+    `const countBooks = sql\`SELECT count(*)::int AS "${alias}" FROM books\`;`;
+
+  const generate = (mode: Mode, alias: string, failOnError = false) =>
+    generateTypedecsFromFile(
+      mode === 'sql' ? sqlFile(alias) : sqlTag(alias),
+      mode === 'sql' ? 'queries.sql' : 'queries.ts',
+      // The alias reaches the server verbatim, so the server names the column
+      // after it.
+      dbReturning(alias),
+      mode === 'sql'
+        ? { mode: 'sql', include: '*.sql' }
+        : { mode: 'ts', include: '*.ts' },
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false, failOnError } as ParsedConfig,
+    );
+
+  // The lint lives in queryToTypeDeclarations, the one point both front ends
+  // pass through, so a tag aliasing a column is caught just like a .sql file.
+  (['sql', 'ts'] as const).forEach((mode) => {
+    test(`warns on a \`!\` suffix, and still generates (${mode})`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await generate(mode, 'total!');
+
+        expect(result.typedQueries).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message] = warn.mock.calls[0];
+        expect(message).toContain('"total!"');
+        expect(message).toContain('@column total!');
+        expect(message).toContain('CountBooks');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    test(`says nothing about a plain alias (${mode})`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await generate(mode, 'total');
+
+        expect(result.typedQueries).toHaveLength(1);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  test('covers the `?` suffix too, and suggests the matching hint', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await generate('sql', 'maybe?');
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('"maybe?"');
+      expect(warn.mock.calls[0][0]).toContain('@column maybe?');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(generate('sql', 'total!', true)).rejects.toThrow(
+        'Column alias "total!"',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The trap the warning exists to catch: `camelCase('total!')` is `'total'`,
+  // so with camelCaseColumnNames on the generated type promises a field the
+  // rows do not have, and `row.total` is `undefined` with nothing to show for
+  // it. Without camelCasing the field keeps the odd name and at least matches.
+  test('camelCasing hides the mismatch: `total!` generates the field `total`', async () => {
+    const mockTypes: IQueryTypes = {
+      returnTypes: [
+        {
+          returnName: 'total!',
+          columnName: 'total!',
+          type: 'int4',
+          nullable: false,
+        },
+      ],
+      paramMetadata: { params: [], mapping: [] },
+    };
+    const typeSource = async (_: any) => mockTypes;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const ir = parsedQuery('sql', sqlFile('total!'));
+
+      const camelCased = await queryToTypeDeclarations(
+        ir,
+        typeSource,
+        new TypeAllocator(TypeMapping()),
+        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+      );
+      // Postgres returns the row under `total!`; the type says `total`.
+      expect(camelCased).toContain('total: number;');
+      expect(camelCased).not.toContain('"total!"');
+
+      const asIs = await queryToTypeDeclarations(
+        ir,
+        typeSource,
+        new TypeAllocator(TypeMapping()),
+        {
+          camelCaseColumnNames: false,
+          hungarianNotation: true,
+        } as ParsedConfig,
+      );
+      expect(asIs).toContain('"total!": number;');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
