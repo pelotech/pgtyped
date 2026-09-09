@@ -1001,6 +1001,35 @@ export const findBookById = new TypedQuery<IFindBookByIdParams,IFindBookByIdResu
     );
   });
 
+  // A block comment in the SQL reaches the doc comment verbatim, where an
+  // unescaped `*/` would close it early and break the whole generated file.
+  test('escapes a block comment terminator in the doc comment', () => {
+    const ir = parseSqlFile(`
+      /*
+        @name UpdateBooks
+      */
+      UPDATE books
+      /* ignored comment */
+      SET name = :name;
+    `).queries[0];
+    const result = generateDeclarations([
+      {
+        mode: 'sql',
+        fileName: 'books.sql',
+        query: {
+          name: 'updateBooks',
+          ir,
+          paramTypeAlias: 'UpdateBooksParams',
+          returnTypeAlias: 'UpdateBooksResult',
+        },
+        typeDeclaration: '',
+      },
+    ]);
+
+    expect(result).toContain('ignored comment *\\/');
+    expect(result).not.toMatch(/^ \* .*\*\/$/m);
+  });
+
   // A tagged query builds its own TypedQuery at runtime, so codegen emits its
   // types and nothing else.
   test('emits only the type declaration for a tagged query', () => {

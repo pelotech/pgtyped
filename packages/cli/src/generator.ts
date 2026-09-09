@@ -376,7 +376,9 @@ export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
     }
     const queryPP = typeDec.query.ir.statement
       .split('\n')
-      .map((s: string) => ' * ' + s)
+      // A block comment in the SQL would otherwise close this doc comment
+      // early and leave the rest of the file unparseable.
+      .map((s: string) => ' * ' + s.replace(/\*\//g, '*\\/'))
       .join('\n');
     typeDeclarations += `const ${typeDec.query.name}IR: any = ${JSON.stringify(
       typeDec.query.ir,
