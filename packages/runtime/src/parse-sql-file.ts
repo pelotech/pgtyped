@@ -117,37 +117,49 @@ interface Block {
  * the duplicates that would otherwise be silently overwritten. This is a
  * backstop as much as a courtesy: an annotation that no rule matches is a
  * declaration the user believes they made and the parser never saw.
+ *
+ * Severity is drawn by consequence. A malformed `@param` or `@column` and a
+ * duplicate `@name` change what is generated, so they are errors and the file
+ * emits nothing. An annotation nobody recognises cannot: `@deprecated` on a
+ * query is documentation, and failing the build over it stops the project
+ * dead. It stays a warning, which still surfaces a typo like `@nmae` and which
+ * `failOnError` promotes for anyone who wants the strict reading.
  */
 function checkAnnotations(
   inner: string,
   offset: number,
   nameAt: number,
   errors: Diagnostic[],
+  warnings: Diagnostic[],
 ): void {
   const seen = new Set<string>();
   for (const m of inner.matchAll(ANNOTATION)) {
     const at = m.index;
-    const report = (message: string): void => {
-      errors.push({ message, offset: offset + at });
+    const report = (into: Diagnostic[], message: string): void => {
+      into.push({ message, offset: offset + at });
     };
     if (m[1] === 'name') {
       // The first well-formed @name is the block's; any other is ignored.
       if (at !== nameAt)
-        report('Duplicate @name annotation; the first one wins');
+        report(errors, 'Duplicate @name annotation; the first one wins');
     } else if (m[1] === 'param') {
       const p = matchesAt(PARAM_HEAD, inner, at);
       if (!p || readRule(inner, at + p[0].length) === undefined)
-        report('Malformed @param annotation; expected `@param name -> (...)`');
+        report(
+          errors,
+          'Malformed @param annotation; expected `@param name -> (...)`',
+        );
       else if (seen.has(p[1]))
-        report(`Duplicate @param ${p[1]}; the last one wins`);
+        report(errors, `Duplicate @param ${p[1]}; the last one wins`);
       else seen.add(p[1]);
     } else if (m[1] === 'column') {
       if (!matchesAt(COLUMN_RULE, inner, at))
         report(
+          errors,
           'Malformed @column annotation; expected `@column name!` or `@column name?`',
         );
     } else {
-      report(`Unrecognised annotation @${m[1]}`);
+      report(warnings, `Unrecognised annotation @${m[1]}`);
     }
   }
 }
@@ -162,6 +174,7 @@ function readBlock(
   inner: string,
   offset: number,
   errors: Diagnostic[],
+  warnings: Diagnostic[],
 ): Block | undefined {
   if (!HEADER_START.test(inner)) return undefined;
   const name = new RegExp(NAME_RULE).exec(inner);
@@ -194,7 +207,7 @@ function readBlock(
   for (const m of inner.matchAll(new RegExp(COLUMN_RULE, 'g')))
     columns.push({ name: m[1], nullable: m[2] === '?' });
 
-  checkAnnotations(inner, offset, name.index, errors);
+  checkAnnotations(inner, offset, name.index, errors, warnings);
   return { name: name[1], offset: offset + name.index, params, columns };
 }
 
@@ -298,6 +311,7 @@ export function parseSqlFile(text: string): SqlFileParse {
         chunk.slice(2, chunk.endsWith('*/') ? -2 : undefined),
         span.a + 2,
         errors,
+        warnings,
       );
       if (read) {
         // A header block is a hard statement boundary. Absorbing it into an
