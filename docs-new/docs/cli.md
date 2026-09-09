@@ -8,6 +8,10 @@ sidebar_label: CLI Usage and Configuration
 Watch mode is most useful for a local development workflow,
 while build mode can be used for generating types when running CI.
 
+:::note
+Codegen connects to your database through [node-postgres](https://github.com/brianc/node-postgres) and asks Postgres to describe each query, so the CLI needs a reachable database with your schema applied. It is not a static analyser: without a database it cannot run.
+:::
+
 ### Flags
 
 The CLI supports a number of flags:
@@ -60,7 +64,9 @@ For a full list of options, see the [Configuration file format](#configuration-f
   "srcDir": "./src/", // Directory to scan or watch for query files
   "failOnError": false, // Whether to fail on a file processing error and abort generation (can be omitted - default is false)
   "camelCaseColumnNames": false, // convert to camelCase column names of result interface
+  "hungarianNotation": false, // Whether to prefix generated interface names with "I"
   "nonEmptyArrayParams": false, // Whether the type for an array parameter should exclude empty arrays
+  "preparedStatements": true, // Whether to give each eligible query a server-side prepared statement name
   "dbUrl": "postgres://user:password@host/database", // DB URL (optional - will be merged with db if provided)
   "db": {
     "dbName": "testdb", // DB name
@@ -83,6 +89,10 @@ For a full list of options, see the [Configuration file format](#configuration-f
 Configuration file can be also be written in CommonJS format and default exported as an object. If your project is of ESM type then you will need to give the config file a `.cjs` extension instead of `.js`.
 :::
 
+:::caution
+Unrecognised config keys are an error. A key that PgTyped does not know about used to be ignored silently; since 3.0 it fails the run, so a typo such as `camelCaseColumNames` is reported instead of being quietly dropped.
+:::
+
 ### Configuration file format
 
 | Name                    | Type                     | Description                                                                                                                                                                |
@@ -94,8 +104,9 @@ Configuration file can be also be written in CommonJS format and default exporte
 | `dbUrl?`                | `string`                 | A connection string to the database. Example: `postgres://user:password@host/database`. Overrides (merged) with `db` config.                                               |
 | `camelCaseColumnNames?` | `boolean`                | Whether to convert column names to camelCase. _Note that this only coverts the types. You need to do this at runtime independently using a library like `pg-camelcase`_.   |
 | `nonEmptyArrayParams?`  | `boolean`                | Whether the types for arrays parameters exclude empty arrays. This helps prevent runtime errors when accidentally providing empty input to a query.                        |
+| `hungarianNotation?`    | `boolean`                | Whether to prefix generated interface names with `I`, so `FindBookByIdResult` becomes `IFindBookByIdResult`. **Default:** `false`                                          |
+| `preparedStatements?`   | `boolean`                | Whether to give each eligible query a server-side prepared statement name. See [Prepared statements](#prepared-statements). **Default:** `true`                            |
 | `typesOverrides?`       | `Record<string, string>` | A map of type overrides. Similarly to `camelCaseColumnNames`, this only affects the types. _You need to do this at runtime independently using a library like `pg-types`._ |
-| `maxWorkerThreads`      | `number`                 | The maximum number of worker threads to use for type generation. **The default is based on the number of available CPUs.**                                                 | 
 
 Fields marked with `?` are optional.
 
@@ -118,11 +129,26 @@ Fields marked with `?` are optional.
 | `password?` | `string`                            | The database password. Defaults to empty string.                                                                                                                                                                                                                                           |
 | `ssl?`      | `boolean` or `TLSConnectionOptions` | Determines whether to use SSL to connect to the database. Also accepts a TLS connection options object as defined in the Node.js [socket method](https://nodejs.org/api/tls.html#new-tlstlssocketsocket-options). More details on this in the [Configuring SSL](#configuring-ssl) section. |
 
+### Prepared statements
+
+With `preparedStatements` enabled (the default), codegen writes a *statement name* into each generated query, for example `FindBookById_ddfa9eb1`. The runtime passes that name to node-postgres, which issues a server-side `Parse` the first time the query runs on a connection and reuses the parsed, planned statement on every later call over that same connection.
+
+The name is the query's `@name` plus a hash of its SQL text, so editing a query renames it. That matters during a rolling deploy: a long-lived connection that already prepared the old text will not have the new text bound to a stale name.
+
+Codegen deliberately withholds a name from two kinds of query:
+
+- Queries with an **array spread** (`@param ids -> (...)`) or an **array spread and pick** (`@param users -> ((name, age)...)`) parameter. These render a different number of placeholders on every call, so one name would have to stand for many statement texts, which Postgres does not allow.
+- Queries written with the `sql` tag in a TS file. Only `.sql` files carry an `@name` for codegen to build a canonical name from.
+
+Such queries are simply sent unnamed. `TypedQuery.name` is `undefined` for them, and there is no way to force a name on.
+
+Setting `preparedStatements: false` withholds a name from every query. You can also disable naming per call or per connection at runtime; see the [runtime README](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md) for `RunOptions` and `unprepared()`, which are what you want under PgBouncer in transaction-pooling mode.
+
 ### Customizing generated file paths
 
 By default, PgTyped saves generated files in the same folder as the source files it parses.
 This behavior can be customized using the `emitTemplate` config parameter.
-In that template, four parameters are available for interpolation: `root`, `dir`, `base`, `name` and `ext`.
+In that template, six parameters are available for interpolation: `root`, `dir`, `dir_base` (the last segment of `dir`), `base`, `name` and `ext`.
 For example, when parsing source/query file `/home/user/dir/file.sql`, these parameters are assigned the following values:
 
 ```
