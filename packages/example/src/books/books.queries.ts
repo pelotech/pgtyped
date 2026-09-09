@@ -403,3 +403,28 @@ const getBookCountriesIR: any = {"queryName":"GetBookCountries","statement":"SEL
 export const getBookCountries = new TypedQuery<GetBookCountriesParams,GetBookCountriesResult>(getBookCountriesIR);
 
 
+/** 'CountBooksTotal' parameters type */
+export type CountBooksTotalParams = void;
+
+/** 'CountBooksTotal' return type */
+export interface CountBooksTotalResult {
+  total: number;
+}
+
+/** 'CountBooksTotal' query type */
+export interface CountBooksTotalQuery {
+  params: CountBooksTotalParams;
+  result: CountBooksTotalResult;
+}
+
+const countBooksTotalIR: any = {"queryName":"CountBooksTotal","statement":"SELECT count(*)::int AS total FROM books","params":[],"columns":[{"name":"total","nullable":false}],"name":"CountBooksTotal_6ed22675"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT count(*)::int AS total FROM books
+ * ```
+ */
+export const countBooksTotal = new TypedQuery<CountBooksTotalParams,CountBooksTotalResult>(countBooksTotalIR);
+
+
