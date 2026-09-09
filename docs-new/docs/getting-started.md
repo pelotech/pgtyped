@@ -13,7 +13,7 @@ sidebar_label: Getting Started
 
 `typescript` is an **optional** peer dependency of the CLI, supported at `>=5 <7` and loaded lazily. It is only needed for `ts` mode transforms, which scan `.ts` files for `sql` tags. If all your transforms are `sql` mode, you can leave it out.
 
-Codegen asks your running Postgres to describe each query, so the CLI needs a reachable database with your schema applied.
+Codegen asks your running Postgres to describe each query, so the CLI needs a reachable database with your schema applied. The connection is checked before anything is generated: if the database is unreachable or rejects the credentials, the run fails with a non-zero exit code and no file is written.
 
 ### Configuration
 
@@ -43,7 +43,7 @@ PgTyped requires a `config.json` file to run, a basic config file looks like thi
 Refer to the [CLI page](cli) for more info on the config file, available CLI flags and environment variables.
 
 :::caution
-Unrecognised config keys are rejected. If you are upgrading from PgTyped 2.x, a key that was previously ignored — a typo, or a removed option such as `maxWorkerThreads` — will now fail the run with a message naming the key.
+Unrecognised config keys are rejected. If you are upgrading from PgTyped 2.x, a key that was previously ignored — a typo, or a removed option such as `maxWorkerThreads` — will now fail the run with a message naming the key, and a non-zero exit code.
 :::
 
 :::note

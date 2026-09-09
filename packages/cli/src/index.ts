@@ -6,9 +6,9 @@ import pg from 'pg';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { parseConfig, ParsedConfig, TransformConfig } from './config.js';
-import { typeDb } from './db/type-db.js';
+import { typeDb, verifyConnection } from './db/type-db.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
-import { debug, MAX_CONCURRENCY } from './util.js';
+import { debug, fatal, MAX_CONCURRENCY } from './util.js';
 
 // tslint:disable:no-console
 
@@ -25,8 +25,8 @@ async function main(
   debug('starting codegenerator');
 
   // Codegen waits on the database, not on the CPU, so a small connection pool
-  // buys the parallelism a thread pool used to. pg connects lazily, so this
-  // costs nothing until the first query.
+  // buys the parallelism a thread pool used to. pg connects lazily, so no
+  // connection is opened until the check below.
   const pool = new pg.Pool({
     host: config.db.host,
     port: config.db.port,
@@ -37,6 +37,20 @@ async function main(
     max: MAX_CONCURRENCY,
   });
   const db = typeDb(pool);
+
+  // Nothing is written until the database has answered once. A failure here
+  // used to arrive later, as a describe error per query, which codegen turns
+  // into a `never` type — so an unreachable database quietly replaced correct
+  // output with broken output and exited 0.
+  try {
+    await verifyConnection(pool);
+  } catch (e) {
+    await pool.end().catch(() => undefined);
+    fatal(
+      `Could not connect to the database at ${config.db.host}:${config.db.port} as user "${config.db.user}". No files were written.`,
+      e,
+    );
+  }
 
   const transformTask = async (transform: TransformConfig) => {
     const transformer = new TypescriptAndSqlTransformer(db, config, transform);
@@ -104,26 +118,26 @@ const {
 } = args;
 
 if (typeof configPath !== 'string') {
-  console.log('Config file required. See help -h for details.\nExiting.');
-  process.exit(0);
+  fatal('Config file required. See help -h for details.\nExiting.');
 }
 
 if (isWatchMode && fileOverride) {
-  console.log('File override is not compatible with watch mode.\nExiting.');
-  process.exit(0);
+  fatal('File override is not compatible with watch mode.\nExiting.');
 }
 
 try {
   chokidar.watch(configPath, {}).on('change', () => {
+    // Not a failure: the config the run was started with is gone, so the run
+    // ends deliberately and the user (or their supervisor process) restarts
+    // it against the new one. Exiting non-zero here would report a broken
+    // build every time someone edited the config in watch mode.
     console.log('Config file changed. Exiting.');
-    process.exit();
+    process.exit(0);
   });
   const config = parseConfig(configPath, connectionUri);
   main(config, isWatchMode || false, fileOverride).catch((e) =>
-    debug('error in main: %o', e.message),
+    fatal('Codegen failed:', e),
   );
 } catch (e) {
-  console.error('Failed to parse config file:');
-  console.error((e as any).message);
-  process.exit();
+  fatal('Failed to parse config file:', e);
 }

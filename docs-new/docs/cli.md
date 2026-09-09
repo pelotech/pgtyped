@@ -27,6 +27,22 @@ The CLI supports a number of flags:
 npx pgtyped -w -c config.json
 ```
 
+### Exit codes
+
+The CLI exits `0` only when the run succeeded, so CI can rely on it:
+
+| Situation                                                              | Exit code |
+|------------------------------------------------------------------------|-----------|
+| Codegen completed                                                        | `0`       |
+| Watch mode ended because the config file changed (restart it to pick the change up) | `0`       |
+| The config file is missing, unparseable, or has an unrecognised key     | `1`       |
+| The database could not be reached, or refused the credentials            | `1`       |
+| A file or query failed and `failOnError` is set                          | `1`       |
+
+Every failure is reported on stderr.
+
+The database connection is verified once, before any file is processed. If it fails, no file is written: a query PgTyped cannot describe is normally emitted as the `never` type, and without this check an unreachable database would replace correct generated output with `never` for every query.
+
 ### Environment variables
 
 PgTyped supports common PostgreSQL environment variables:
