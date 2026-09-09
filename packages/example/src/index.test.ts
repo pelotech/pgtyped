@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import {
   aggregateEmailsAndTest,
@@ -300,4 +302,30 @@ describe('prepared statements', () => {
     await countBookCommentsTag.run(client);
     expect(await prepared()).toStrictEqual(before);
   });
+});
+
+/**
+ * The CLI's own suite can prove that a failed run exits non-zero, but not that
+ * a successful one exits 0: since 3.0 codegen verifies the connection before
+ * it touches a file, so the success path needs a real database. This package
+ * has one.
+ */
+describe('codegen exit code', () => {
+  const exampleDir = fileURLToPath(new URL('..', import.meta.url));
+  const cliEntry = fileURLToPath(
+    new URL('../../cli/lib/index.js', import.meta.url),
+  );
+
+  test('a successful run exits 0', () => {
+    // The queries are already generated and committed, so this rewrites
+    // nothing; it is the exit code that is under test.
+    const { status, stdout } = spawnSync(
+      process.execPath,
+      [cliEntry, '-c', 'config.json'],
+      { cwd: exampleDir, encoding: 'utf-8' },
+    );
+
+    expect(stdout).toContain('Processing');
+    expect(status).toBe(0);
+  }, 120_000);
 });

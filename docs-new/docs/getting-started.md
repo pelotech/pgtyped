@@ -13,7 +13,7 @@ sidebar_label: Getting Started
 
 `typescript` is an **optional** peer dependency of the CLI, supported at `>=5 <7` and loaded lazily. It is only needed for `ts` mode transforms, which scan `.ts` files for `sql` tags. If all your transforms are `sql` mode, you can leave it out.
 
-Codegen asks your running Postgres to describe each query, so the CLI needs a reachable database with your schema applied.
+Codegen asks your running Postgres to describe each query, so the CLI needs a reachable database with your schema applied. The connection is checked before anything is generated: if the database is unreachable or rejects the credentials, the run fails with a non-zero exit code and no file is written.
 
 ### Configuration
 
