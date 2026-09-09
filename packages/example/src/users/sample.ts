@@ -1,12 +1,12 @@
 import { sql } from '@pelotech/pgtyped-runtime';
-import { IGetUsersWithCommentsQuery } from './sample.types.js';
+import { GetUsersWithCommentsQuery } from './sample.types.js';
 import { Client } from 'pg';
 
 export async function getUsersWithComment(
   minCommentCount: number,
   client: Client,
 ) {
-  const getUsersWithComments = sql<IGetUsersWithCommentsQuery>`
+  const getUsersWithComments = sql<GetUsersWithCommentsQuery>`
     SELECT u.* FROM users u
     INNER JOIN book_comments bc ON u.id = bc.user_id
     GROUP BY u.id

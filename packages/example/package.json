@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@pelotech/pgtyped-cli": "^2.4.3",
+    "@pelotech/pgtyped-runtime": "^2.4.3",
     "pg": "^8.23.0",
     "typescript": "^6.0.3"
   },

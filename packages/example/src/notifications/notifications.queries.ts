@@ -1,5 +1,5 @@
 /** Types generated for queries found in "src/notifications/notifications.sql" */
-import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type notification_type = 'deadline' | 'notification' | 'reminder';
 
@@ -8,7 +8,7 @@ export type DateOrString = Date | string;
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 /** 'SendNotifications' parameters type */
-export interface ISendNotificationsParams {
+export interface SendNotificationsParams {
   notifications: readonly ({
     user_id: number,
     payload: Json,
@@ -17,14 +17,14 @@ export interface ISendNotificationsParams {
 }
 
 /** 'SendNotifications' return type */
-export interface ISendNotificationsResult {
+export interface SendNotificationsResult {
   notification_id: number;
 }
 
 /** 'SendNotifications' query type */
-export interface ISendNotificationsQuery {
-  params: ISendNotificationsParams;
-  result: ISendNotificationsResult;
+export interface SendNotificationsQuery {
+  params: SendNotificationsParams;
+  result: SendNotificationsResult;
 }
 
 const sendNotificationsIR: any = {"queryName":"SendNotifications","statement":"INSERT INTO notifications (user_id, payload, type)\nVALUES :notifications RETURNING id as notification_id","params":[{"name":"notifications","transform":{"type":"pick_array_spread","keys":[{"name":"user_id","required":true},{"name":"payload","required":true},{"name":"type","required":true}]},"required":false,"locs":[{"a":58,"b":72}]}],"columns":[]};
@@ -36,17 +36,17 @@ const sendNotificationsIR: any = {"queryName":"SendNotifications","statement":"I
  * VALUES :notifications RETURNING id as notification_id
  * ```
  */
-export const sendNotifications = new PreparedQuery<ISendNotificationsParams,ISendNotificationsResult>(sendNotificationsIR);
+export const sendNotifications = new TypedQuery<SendNotificationsParams,SendNotificationsResult>(sendNotificationsIR);
 
 
 /** 'GetNotifications' parameters type */
-export interface IGetNotificationsParams {
+export interface GetNotificationsParams {
   date: DateOrString;
   userId?: number | null | void;
 }
 
 /** 'GetNotifications' return type */
-export interface IGetNotificationsResult {
+export interface GetNotificationsResult {
   created_at: string;
   id: number;
   payload: Json;
@@ -55,12 +55,12 @@ export interface IGetNotificationsResult {
 }
 
 /** 'GetNotifications' query type */
-export interface IGetNotificationsQuery {
-  params: IGetNotificationsParams;
-  result: IGetNotificationsResult;
+export interface GetNotificationsQuery {
+  params: GetNotificationsParams;
+  result: GetNotificationsResult;
 }
 
-const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!","params":[{"name":"userId","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":54}]},{"name":"date","transform":{"type":"scalar"},"required":true,"locs":[{"a":73,"b":79}]}],"columns":[]};
+const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!","params":[{"name":"userId","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":54}]},{"name":"date","transform":{"type":"scalar"},"required":true,"locs":[{"a":73,"b":79}]}],"columns":[],"name":"GetNotifications_32a391fa"};
 
 /**
  * Query generated from SQL:
@@ -71,28 +71,28 @@ const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SEL
  *  AND created_at > :date!
  * ```
  */
-export const getNotifications = new PreparedQuery<IGetNotificationsParams,IGetNotificationsResult>(getNotificationsIR);
+export const getNotifications = new TypedQuery<GetNotificationsParams,GetNotificationsResult>(getNotificationsIR);
 
 
 /** 'ThresholdFrogs' parameters type */
-export interface IThresholdFrogsParams {
+export interface ThresholdFrogsParams {
   numFrogs: number;
 }
 
 /** 'ThresholdFrogs' return type */
-export interface IThresholdFrogsResult {
+export interface ThresholdFrogsResult {
   payload: Json;
   type: notification_type;
   user_name: string;
 }
 
 /** 'ThresholdFrogs' query type */
-export interface IThresholdFrogsQuery {
-  params: IThresholdFrogsParams;
-  result: IThresholdFrogsResult;
+export interface ThresholdFrogsQuery {
+  params: ThresholdFrogsParams;
+  result: ThresholdFrogsResult;
 }
 
-const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!","params":[{"name":"numFrogs","transform":{"type":"scalar"},"required":true,"locs":[{"a":143,"b":153}]}],"columns":[]};
+const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!","params":[{"name":"numFrogs","transform":{"type":"scalar"},"required":true,"locs":[{"a":143,"b":153}]}],"columns":[],"name":"ThresholdFrogs_6137d9bc"};
 
 /**
  * Query generated from SQL:
@@ -103,6 +103,6 @@ const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT 
  * WHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!
  * ```
  */
-export const thresholdFrogs = new PreparedQuery<IThresholdFrogsParams,IThresholdFrogsResult>(thresholdFrogsIR);
+export const thresholdFrogs = new TypedQuery<ThresholdFrogsParams,ThresholdFrogsResult>(thresholdFrogsIR);
 
 

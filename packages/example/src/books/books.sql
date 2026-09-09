@@ -56,11 +56,17 @@ SELECT b.* FROM books b
 INNER JOIN authors a ON a.id = b.author_id
 WHERE a.first_name || ' ' || a.last_name = :authorName!;
 
-/* @name AggregateEmailsAndTest */
-SELECT array_agg(email) as "emails!", array_agg(age) = :testAges as ageTest FROM users;
+/*
+  @name AggregateEmailsAndTest
+  @column emails!
+*/
+SELECT array_agg(email) as emails, array_agg(age) = :testAges as ageTest FROM users;
 
-/* @name GetBooks */
-SELECT id, name as "name!" FROM books;
+/*
+  @name GetBooks
+  @column name!
+*/
+SELECT id, name FROM books;
 
 /* @name CountBooks */
 SELECT count(*) as book_count FROM books;

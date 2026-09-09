@@ -4,7 +4,7 @@ export type notification_type = 'deadline' | 'notification' | 'reminder';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 /** 'InsertNotifications' parameters type */
-export interface IInsertNotificationsParams {
+export interface InsertNotificationsParams {
   params: readonly ({
     payload: Json,
     user_id: number,
@@ -13,16 +13,16 @@ export interface IInsertNotificationsParams {
 }
 
 /** 'InsertNotifications' return type */
-export type IInsertNotificationsResult = void;
+export type InsertNotificationsResult = void;
 
 /** 'InsertNotifications' query type */
-export interface IInsertNotificationsQuery {
-  params: IInsertNotificationsParams;
-  result: IInsertNotificationsResult;
+export interface InsertNotificationsQuery {
+  params: InsertNotificationsParams;
+  result: InsertNotificationsResult;
 }
 
 /** 'InsertNotification' parameters type */
-export interface IInsertNotificationParams {
+export interface InsertNotificationParams {
   notification: {
     payload: Json,
     user_id: number,
@@ -31,19 +31,19 @@ export interface IInsertNotificationParams {
 }
 
 /** 'InsertNotification' return type */
-export type IInsertNotificationResult = void;
+export type InsertNotificationResult = void;
 
 /** 'InsertNotification' query type */
-export interface IInsertNotificationQuery {
-  params: IInsertNotificationParams;
-  result: IInsertNotificationResult;
+export interface InsertNotificationQuery {
+  params: InsertNotificationParams;
+  result: InsertNotificationResult;
 }
 
 /** 'GetAllNotifications' parameters type */
-export type IGetAllNotificationsParams = void;
+export type GetAllNotificationsParams = void;
 
 /** 'GetAllNotifications' return type */
-export interface IGetAllNotificationsResult {
+export interface GetAllNotificationsResult {
   created_at: string;
   id: number;
   payload: Json;
@@ -52,8 +52,8 @@ export interface IGetAllNotificationsResult {
 }
 
 /** 'GetAllNotifications' query type */
-export interface IGetAllNotificationsQuery {
-  params: IGetAllNotificationsParams;
-  result: IGetAllNotificationsResult;
+export interface GetAllNotificationsQuery {
+  params: GetAllNotificationsParams;
+  result: GetAllNotificationsResult;
 }
 
