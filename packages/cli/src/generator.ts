@@ -4,6 +4,7 @@ import {
   ParameterTransform,
   parseSqlFile,
   render,
+  type Diagnostic,
   type QueryIR,
 } from '@pelotech/pgtyped-runtime/internal';
 import { camelCase, pascalCase } from 'change-case';
@@ -353,16 +354,25 @@ export async function generateTypedecsFromFile(
   let queries: QueryIR[];
   if (transform.mode === 'sql') {
     const parsed = parseSqlFile(contents);
-    for (const { message, offset } of parsed.warnings) {
-      console.warn(`${fileName}: ${message} (offset ${offset})`);
+    const located = ({ message, offset }: Diagnostic) =>
+      `${fileName}: ${message} (offset ${offset})`;
+    for (const warning of parsed.warnings) {
+      console.warn(located(warning));
     }
-    for (const { message, offset } of parsed.errors) {
-      console.error(`${fileName}: ${message} (offset ${offset})`);
+    for (const error of parsed.errors) {
+      console.error(located(error));
     }
     // Errors are fatal: a query whose annotation could not be read still
     // parses, into precisely the wrong SQL, so nothing here may be used.
     if (parsed.errors.length > 0) {
       return done();
+    }
+    // A warning still generates correct types, so it is only advisory — until
+    // failOnError, which is how a project asks for the stricter reading. The
+    // same rule as the `ts` branch below: one option, one meaning, whichever
+    // kind of file the query lives in.
+    if (config.failOnError && parsed.warnings.length > 0) {
+      throw new Error(parsed.warnings.map(located).join('\n'));
     }
     queries = parsed.queries;
   } else {

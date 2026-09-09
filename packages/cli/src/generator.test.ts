@@ -1448,3 +1448,78 @@ describe('the nullability-suffix alias lint', () => {
     }
   });
 });
+
+// `failOnError` has to mean one thing whichever kind of file a query lives in,
+// so a `.sql` file's warnings are promoted exactly as a `ts` file's are.
+describe('failOnError over a sql file warning', () => {
+  // A declared-but-unused `@param` is the warning `.sql` files actually emit.
+  const unusedParam = `
+    /*
+      @name GetUsers
+      @param ages -> (...)
+    */
+    SELECT 1 AS n;
+  `;
+
+  const generate = (contents: string, failOnError = false) =>
+    generateTypedecsFromFile(
+      contents,
+      'queries.sql',
+      emptyDb,
+      { mode: 'sql', include: '*.sql' },
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false, failOnError } as ParsedConfig,
+    );
+
+  test('warns and still generates by default', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(unusedParam);
+
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain(
+        'Parameter "ages" is defined but never used',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(generate(unusedParam, true)).rejects.toThrow(
+        'Parameter "ages" is defined but never used',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('the thrown message keeps the file name and offset', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(generate(unusedParam, true)).rejects.toThrow(
+        /^queries\.sql: .* \(offset \d+\)$/,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('a file with no warnings is unaffected by failOnError', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(
+        `/* @name GetUsers */ SELECT 1 AS n;`,
+        true,
+      );
+
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
