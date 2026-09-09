@@ -6,7 +6,6 @@ pnpm-lock.yaml
 # these would make them differ from what a fresh run emits.
 **/*.queries.ts
 **/*.types.ts
-packages/example/src/sql/index.ts
 
 # The docs site is not part of the library build and is left to its own tooling.
 docs-new
