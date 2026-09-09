@@ -29,10 +29,8 @@ It will also link the packages together, so that you can make changes to one pac
 The `packages` directory contains the source code for the various components of pgTyped:
 
 - `packages/cli` - The CLI tool for generating TypeScript types from SQL files
-- `packages/wire` - The pgTyped PostgreSQL wire protocol implementation
 - `packages/parser` - The pgTyped SQL and TS language parser
 - `packages/runtime` - The pgTyped runtime library that provides the `sql` template tag and the `sql` function for executing queries.
-- `packages/query` - This package contains higher level PostgreSQL protocol utilities for describing query types, SSL support, and more.
 - `packages/example` - This repository contains a simple example of a pgTyped project written as a Jest test suite. We use this project both as a demonstration of pgTyped and as an end-to-end test suite for the project.
 
 To build the project, run:

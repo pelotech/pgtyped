@@ -18,9 +18,7 @@
   "packages": {
     "packages/cli": {},
     "packages/parser": {},
-    "packages/query": {},
-    "packages/runtime": {},
-    "packages/wire": {}
+    "packages/runtime": {}
   },
   "plugins": [
     {
@@ -29,9 +27,7 @@
       "components": [
         "@pelotech/pgtyped-cli",
         "@pelotech/pgtyped-parser",
-        "@pelotech/pgtyped-query",
-        "@pelotech/pgtyped-runtime",
-        "@pelotech/pgtyped-wire"
+        "@pelotech/pgtyped-runtime"
       ]
     },
     "node-workspace"

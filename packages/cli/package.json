@@ -36,9 +36,7 @@
   },
   "dependencies": {
     "@pelotech/pgtyped-parser": "^2.4.3",
-    "@pelotech/pgtyped-query": "^2.4.3",
     "@pelotech/pgtyped-runtime": "^2.4.3",
-    "@pelotech/pgtyped-wire": "^2.4.3",
     "change-case": "^5.4.4",
     "chokidar": "^5.0.0",
     "debug": "^4.1.1",
