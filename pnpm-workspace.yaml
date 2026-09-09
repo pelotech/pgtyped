@@ -1,0 +1,12 @@
+packages:
+  - 'packages/*'
+
+# One version per shared dependency, referenced as `catalog:` from each package
+# that uses it. Packages stay self-describing without the three of them drifting
+# apart. pnpm resolves these to the real range when publishing.
+catalog:
+  '@types/node': ^24.13.3
+  '@types/pg': ^8.23.1
+  pg: ^8.23.0
+  typescript: ^6.0.3
+  vitest: ^5.0.0

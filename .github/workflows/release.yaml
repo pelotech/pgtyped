@@ -32,19 +32,22 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'npm'
+          cache: 'pnpm'
           registry-url: 'https://npm.pkg.github.com'
           scope: '@pelotech'
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      # from-package, not from-git: release-please has already bumped and
-      # committed the versions, so lerna publishes whatever is not yet on the
-      # registry rather than looking for tags it created itself.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      # release-please has already bumped and committed the versions, so this
+      # publishes whatever is not yet on the registry. `pnpm publish -r` skips
+      # private packages (the example) and rewrites the `workspace:*` sibling
+      # ranges to the real version as it packs. --no-git-checks because the
+      # release commit is what we are publishing from.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx lerna publish from-package --yes
+        run: pnpm publish -r --no-git-checks

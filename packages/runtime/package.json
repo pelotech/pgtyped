@@ -34,5 +34,10 @@
     "check": "tsc --noEmit",
     "check:test": "tsc -p tsconfig.test.json",
     "watch": "tsc --watch --preserveWatchOutput"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
