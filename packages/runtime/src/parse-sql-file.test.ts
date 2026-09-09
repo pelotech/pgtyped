@@ -549,13 +549,58 @@ INSERT INTO books VALUES :books;`);
     expect(at(text, r.errors[0].offset, 7)).toBe('@name B');
   });
 
-  test('an unrecognised annotation is reported', () => {
+  test('an unrecognised annotation is a warning, not an error', () => {
     const text = `/* @name A @paramx b -> (x) */ SELECT 1;`;
     const r = parseSqlFile(text);
-    expect(r.errors.map((e) => e.message)).toStrictEqual([
+    // It cannot change what is generated, so it must not stop the file from
+    // being generated: errors are fatal, warnings are advisory.
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries.map((q) => q.queryName)).toStrictEqual(['A']);
+    expect(r.warnings.map((w) => w.message)).toStrictEqual([
       'Unrecognised annotation @paramx',
     ]);
-    expect(at(text, r.errors[0].offset, 7)).toBe('@paramx');
+    expect(at(text, r.warnings[0].offset, 7)).toBe('@paramx');
+  });
+
+  test('a documentation annotation does not fail the file', () => {
+    // Regression: `@deprecated` was reported as an error, and errors are
+    // fatal, so documenting a query emitted nothing at all.
+    const text = `/* @name GetUsers
+   @deprecated use GetPeople instead */
+SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries.map((q) => [q.queryName, q.statement])).toStrictEqual([
+      ['GetUsers', 'SELECT 1'],
+    ]);
+    expect(r.warnings.map((w) => w.message)).toStrictEqual([
+      'Unrecognised annotation @deprecated',
+    ]);
+    expect(at(text, r.warnings[0].offset, 11)).toBe('@deprecated');
+  });
+
+  test('a misspelled @name still produces a diagnostic', () => {
+    // The point of the check is to catch a typo, which the downgrade to a
+    // warning must not swallow.
+    const text = `/* @name A @nmae B */ SELECT 1;`;
+    const r = parseSqlFile(text);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.warnings.map((w) => w.message)).toStrictEqual([
+      'Unrecognised annotation @nmae',
+    ]);
+    expect(at(text, r.warnings[0].offset, 5)).toBe('@nmae');
+  });
+
+  test('a malformed @param stays an error, not a warning', () => {
+    // The severity split is by consequence: this one corrupts the generated
+    // query — the param degrades to a scalar — so it has to stay fatal.
+    const text = `/* @name A @param ids -> [...] */ SELECT :ids;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Block @name A declares 1 @param annotations but only 0 could be read',
+      'Malformed @param annotation; expected `@param name -> (...)`',
+    ]);
+    expect(r.warnings).toStrictEqual([]);
   });
 
   test('a duplicate @param is reported', () => {
@@ -605,6 +650,44 @@ describe('parseSqlFile — a block or a statement is never lost silently', () =>
       'Block @name A has no statement',
     ]);
     expect(at(text, r.errors[0].offset, 7)).toBe('@name A');
+  });
+
+  test('a comment that mentions @name mid-statement is not a header', () => {
+    // Regression: `readBlock` ran on every block comment, so an ordinary
+    // comment inside a statement that happened to name `@name` was promoted
+    // to a header. That invented `GetUsersById`, cut `GetUsers` short, and
+    // reported the cut as a missing `;` — a fatal error, so the file that used
+    // to build emitted nothing.
+    const r = parseSqlFile(`/* @name GetUsers */
+SELECT id FROM users
+/* WHERE id = :x  -- see @name GetUsersById */
+ORDER BY id;`);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries.map((q) => [q.queryName, q.statement])).toStrictEqual([
+      [
+        'GetUsers',
+        'SELECT id FROM users\n/* WHERE id = :x  -- see @name GetUsersById */\nORDER BY id',
+      ],
+    ]);
+    // The comment is part of the statement, so the `:x` inside it must not
+    // become a param.
+    expect(r.queries[0].params).toStrictEqual([]);
+  });
+
+  test('the decorated multi-line header form is still a header', () => {
+    const q = one(`/*
+ * @name GetUsers
+ */
+SELECT 1;`);
+    expect(q.queryName).toBe('GetUsers');
+    expect(q.statement).toBe('SELECT 1');
+  });
+
+  test('a header block with trailing prose after its annotations parses', () => {
+    const q = one(`/* @name GetUsers
+   Returns every user, oldest first. */
+SELECT 1;`);
+    expect(q.queryName).toBe('GetUsers');
   });
 
   test('a statement missing its ; does not swallow the next block', () => {
