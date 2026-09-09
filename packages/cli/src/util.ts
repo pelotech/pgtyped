@@ -25,3 +25,33 @@ export async function mapConcurrent<T, R>(
   );
   return results;
 }
+
+/**
+ * The human-readable detail of a thrown value, if it has any. Errors carry a
+ * message; anything else is stringified, since a CLI that prints
+ * "[object Object]" tells the user less than nothing.
+ */
+export function errorDetail(cause: unknown): string | undefined {
+  if (cause === undefined || cause === null) {
+    return undefined;
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return detail.length > 0 ? detail : undefined;
+}
+
+/**
+ * Reports a fatal error where a human will see it and exits non-zero.
+ *
+ * Every failure path in the CLI goes through here. Failures used to print to
+ * stdout (or to a debug log that only appears with DEBUG set) and exit 0, so
+ * CI treated a config typo or an unreachable database as a successful run.
+ */
+export function fatal(message: string, cause?: unknown): never {
+  // tslint:disable:no-console
+  console.error(message);
+  const detail = errorDetail(cause);
+  if (detail !== undefined) {
+    console.error(detail);
+  }
+  return process.exit(1);
+}

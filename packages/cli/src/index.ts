@@ -8,7 +8,7 @@ import { hideBin } from 'yargs/helpers';
 import { parseConfig, ParsedConfig, TransformConfig } from './config.js';
 import { typeDb } from './db/type-db.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
-import { debug, MAX_CONCURRENCY } from './util.js';
+import { debug, fatal, MAX_CONCURRENCY } from './util.js';
 
 // tslint:disable:no-console
 
@@ -104,26 +104,26 @@ const {
 } = args;
 
 if (typeof configPath !== 'string') {
-  console.log('Config file required. See help -h for details.\nExiting.');
-  process.exit(0);
+  fatal('Config file required. See help -h for details.\nExiting.');
 }
 
 if (isWatchMode && fileOverride) {
-  console.log('File override is not compatible with watch mode.\nExiting.');
-  process.exit(0);
+  fatal('File override is not compatible with watch mode.\nExiting.');
 }
 
 try {
   chokidar.watch(configPath, {}).on('change', () => {
+    // Not a failure: the config the run was started with is gone, so the run
+    // ends deliberately and the user (or their supervisor process) restarts
+    // it against the new one. Exiting non-zero here would report a broken
+    // build every time someone edited the config in watch mode.
     console.log('Config file changed. Exiting.');
-    process.exit();
+    process.exit(0);
   });
   const config = parseConfig(configPath, connectionUri);
   main(config, isWatchMode || false, fileOverride).catch((e) =>
-    debug('error in main: %o', e.message),
+    fatal('Codegen failed:', e),
   );
 } catch (e) {
-  console.error('Failed to parse config file:');
-  console.error((e as any).message);
-  process.exit();
+  fatal('Failed to parse config file:', e);
 }
