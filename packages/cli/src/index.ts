@@ -40,7 +40,7 @@ async function main(
 
   const transformTask = async (transform: TransformConfig) => {
     const transformer = new TypescriptAndSqlTransformer(db, config, transform);
-    return transformer.start(isWatchMode);
+    return transformer.start(isWatchMode, fileOverride);
   };
 
   const tasks = config.transforms.map(transformTask);

@@ -173,7 +173,9 @@ export class TypescriptAndSqlTransformer {
   /**
    * Processes one file and reports the outcome. Errors are logged and
    * swallowed so one bad file does not abandon the rest; with failOnError set
-   * they are rethrown, and main() shuts the pool down and exits non-zero.
+   * they are rethrown, and main() shuts the pool down and exits non-zero. That
+   * applies to an invalid query too, which arrives as a returned error rather
+   * than a throw.
    */
   private async processFile(fileName: string) {
     fileName = path.relative(process.cwd(), fileName);
@@ -205,6 +207,13 @@ export class TypescriptAndSqlTransformer {
       console.error(
         `Error processing ${fileName}: ${result.error.message}\n${result.error.stack}`,
       );
+      // An invalid query is reported as a returned error rather than a
+      // throw, so failOnError has to be honoured here too. Without this it
+      // fired only for failures outside type generation — never for the bad
+      // query it exists to catch.
+      if (this.config.failOnError) {
+        throw result.error;
+      }
     } else {
       console.log(
         `Saved ${result.typeDecsLength} query types from ${fileName} to ${result.relativePath}`,
