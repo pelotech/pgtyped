@@ -267,7 +267,11 @@ SELECT count(*)::int AS total FROM books;
 Two things to watch:
 
 - **The name is the Postgres result column name, before `camelCaseColumnNames` is applied.** With camelCasing on, a column selected as `total_count` is still `@column total_count!`, never `@column totalCount!`. A hint that matches no result column is ignored silently, so a mistake shows up as a type that is still nullable rather than as an error.
-- **A column you leave as `AS "total!"` now really is named `total!`**, in the generated result type and in the rows coming back — `row['total!']`, not `row.total`. The runtime no longer strips the suffix. Nothing warns about this, so grep your `.sql` files and `sql` tags for quoted aliases ending in `!` or `?` and convert every one.
+- **A column you leave as `AS "total!"` now really is named `total!`** in the rows coming back — `row['total!']`, not `row.total`. The runtime no longer strips the suffix. What the generated result type says depends on `camelCaseColumnNames`:
+  - **off** (the default): the field is `"total!"` too, so the type matches the rows. Reading `row.total` is a compile error, and the odd field name is the hint that the alias never got migrated.
+  - **on**: `camelCase('total!')` is `'total'`, so the generated field is `total` while the row key is still `total!`. The type compiles, `row.total` is `undefined` at runtime, and nothing in the generated file looks wrong. This is the dangerous case.
+
+  Codegen warns on any result column whose name ends in `!` or `?`, naming the column and the `@column` line to add, in both `sql` files and `sql` tags. With `failOnError` set, the warning fails the run. Still, grep your `.sql` files and `sql` tags for quoted aliases ending in `!` or `?` and convert every one.
 
 Hints work in `sql` tags too, in a leading block comment:
 

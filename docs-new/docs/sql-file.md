@@ -223,7 +223,13 @@ that is still nullable rather than as an error.
 In PgTyped 2.x these hints were written as column aliases: `SELECT ... AS "total!"`. The suffix went to Postgres
 verbatim, so the server returned a column literally called `total!`, and the runtime stripped the trailing `!` off every
 row key on the way back. 3.0 does no such rewriting: write a plain alias and add a `@column` line. An alias left as
-`AS "total!"` now really names the column `total!`, in the generated type and in the rows.
+`AS "total!"` now really names the column `total!` in the rows.
+
+The generated type depends on `camelCaseColumnNames`. With it **off** the field is `"total!"` as well, so the type
+matches the rows and the odd name gives the problem away. With it **on**, `camelCase('total!')` is `'total'`: the type
+declares `total`, the rows still arrive under `total!`, and `row.total` is silently `undefined`. Codegen therefore
+warns on any result column whose name ends in `!` or `?` — in `.sql` files and in `sql` tags alike — naming the column
+and the `@column` line to add; `failOnError` turns the warning into a failed run.
 See [Upgrading from 2.x](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md#upgrading-from-2x).
 :::
 
