@@ -13,9 +13,10 @@ function transformOf(ref: ParamRef): Transform {
 /**
  * Parses the text of a `sql` tagged template. Params are inline (`$name`,
  * `$$name`, `$name(a, b!)`). A leading block comment may supply `@column`
- * nullability hints; it is stripped from the statement. There is no `@name`:
- * codegen names tagged queries after the variable they are assigned to, and at
- * runtime the name is irrelevant because tags are never prepared.
+ * nullability hints; it is stripped from the statement. There is no `@name`
+ * inside the template: a plain `sql` tag is named after the variable it is
+ * assigned to by codegen and is never prepared, and a `sql.prepared` tag passes
+ * its name in as `queryName`, or leaves it defaulted when it has none.
  */
 export function parseTagged(text: string, queryName = 'query'): QueryIR {
   let statement = text.trim();

@@ -59,7 +59,8 @@ export interface QueryIR {
   /**
    * Canonical server-side prepared statement name. Set by codegen when
    * prepared statements are enabled and no param has a variable-arity
-   * transform. Never set for tags.
+   * transform, and by `sql.prepared` under the same variable-arity rule. Never
+   * set for a plain `sql` tag.
    */
   name?: string;
 }

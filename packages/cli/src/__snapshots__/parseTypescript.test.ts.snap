@@ -11,6 +11,7 @@ Object {
       "statement": "select id, name, age from users",
     },
   ],
+  "warnings": Array [],
 }
 `;
 
@@ -25,5 +26,6 @@ Object {
       "statement": "select id, name, age from users",
     },
   ],
+  "warnings": Array [],
 }
 `;

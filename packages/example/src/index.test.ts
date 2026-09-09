@@ -22,6 +22,8 @@ import {
   selectExistsTest,
 } from './comments/comments.queries.js';
 import {
+  countNotifications,
+  getAllNotifications,
   insertNotification,
   insertNotifications,
 } from './notifications/notifications.js';
@@ -33,9 +35,18 @@ import {
 import { getUsersWithComment } from './users/sample.js';
 import { Category } from './customTypes.js';
 import { sql, unprepared } from '@pelotech/pgtyped-runtime';
-import type { FindBookByIdTagQuery } from './index.test.types.js';
+import type {
+  CountBookCommentsTagQuery,
+  FindBookByIdTagQuery,
+} from './index.test.types.js';
 
 const findBookByIdTag = sql<FindBookByIdTagQuery>`SELECT * FROM books WHERE id = $id`;
+
+// Run by exactly one test, the plain-tag case in `prepared statements` below.
+// pg_prepared_statements is per session and this suite shares one client, so a
+// query executed by an earlier test would already be in the "before" snapshot
+// and the diff would prove nothing.
+const countBookCommentsTag = sql<CountBookCommentsTagQuery>`SELECT count(*)::int AS total FROM book_comments`;
 
 const { Client } = pg;
 
@@ -257,5 +268,36 @@ describe('prepared statements', () => {
     expect(findBookByCategory.name).toBeDefined();
     await findBookByCategory.run(unprepared(client), { category: 'novel' });
     expect(await prepared()).not.toContain(findBookByCategory.name);
+  });
+
+  test('a named sql.prepared tag is prepared server-side once and reused', async () => {
+    const before = await prepared();
+    await getAllNotifications.run(client);
+    await getAllNotifications.run(client);
+    const added = (await prepared()).filter((n) => !before.includes(n));
+    expect(added).toStrictEqual([getAllNotifications.name]);
+    expect(getAllNotifications.name).toMatch(
+      /^GetAllNotifications_[0-9a-f]{8}$/,
+    );
+  });
+
+  // The no-argument form. `countNotifications` is run by this test and no
+  // other, so the before/after diff is meaningful: pg_prepared_statements is
+  // per session, the suite shares one client, and the per-test ROLLBACK does
+  // not deallocate anything.
+  test('an unnamed sql.prepared tag is prepared under a derived name', async () => {
+    const before = await prepared();
+    expect(countNotifications.name).toMatch(/^pgtyped_[0-9a-f]{16}$/);
+    await countNotifications.run(client);
+    await countNotifications.run(client);
+    const added = (await prepared()).filter((n) => !before.includes(n));
+    expect(added).toStrictEqual([countNotifications.name]);
+  });
+
+  test('a plain sql tag is unnamed and prepares nothing', async () => {
+    const before = await prepared();
+    expect(countBookCommentsTag.name).toBeUndefined();
+    await countBookCommentsTag.run(client);
+    expect(await prepared()).toStrictEqual(before);
   });
 });

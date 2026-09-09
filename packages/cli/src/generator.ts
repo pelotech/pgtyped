@@ -322,12 +322,24 @@ export async function generateTypedecsFromFile(
     }
     queries = parsed.queries;
   } else {
-    const parsed = (await loadTypescriptParser()).parseCode(contents, fileName);
+    const parsed = (await loadTypescriptParser()).parseCode(
+      contents,
+      fileName,
+      interfacePrefix,
+    );
+    for (const message of parsed.warnings) {
+      console.warn(message);
+    }
     if (parsed.errors.length > 0) {
       for (const message of parsed.errors) {
         console.error(message);
       }
       return done();
+    }
+    // A warning still generates correct types, so it is only advisory — until
+    // failOnError, which is how a project asks for the stricter reading.
+    if (config.failOnError && parsed.warnings.length > 0) {
+      throw new Error(parsed.warnings.join('\n'));
     }
     queries = parsed.queries;
   }

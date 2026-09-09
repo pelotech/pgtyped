@@ -5,6 +5,7 @@
  */
 export { parseSqlFile, type SqlFileParse } from './parse-sql-file.js';
 export { parseTagged } from './parse-tagged.js';
+export { preparedStatementName } from './statement-name.js';
 export {
   render,
   ParameterTransform,
