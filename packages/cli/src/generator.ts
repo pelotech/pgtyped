@@ -329,9 +329,9 @@ type SQLTypedQuery = {
   typeDeclaration: string;
 };
 
-export type TypedQuery = TSTypedQuery | SQLTypedQuery;
+export type GeneratedQueryDec = TSTypedQuery | SQLTypedQuery;
 export type TypeDeclarationSet = {
-  typedQueries: TypedQuery[];
+  typedQueries: GeneratedQueryDec[];
   typeDefinitions: TypeDefinitions;
   fileName: string;
 };
@@ -360,7 +360,7 @@ export async function generateTypedecsFromFile(
   types: TypeAllocator,
   config: ParsedConfig,
 ): Promise<TypeDeclarationSet> {
-  const typedQueries: TypedQuery[] = [];
+  const typedQueries: GeneratedQueryDec[] = [];
   const interfacePrefix = config.hungarianNotation ? 'I' : '';
   const typeSource: TypeSource = (query) => getTypes(query, db);
 
@@ -381,7 +381,7 @@ export async function generateTypedecsFromFile(
   }
 
   for (const queryAST of queries) {
-    let typedQuery: TypedQuery;
+    let typedQuery: GeneratedQueryDec;
     if (transform.mode === 'sql') {
       const sqlQueryAST = queryAST as SQLQueryAST;
       const result = await queryToTypeDeclarations(
@@ -442,7 +442,7 @@ export async function generateTypedecsFromFile(
   return { typedQueries, typeDefinitions: types.toTypeDefinitions(), fileName };
 }
 
-export function generateDeclarations(typeDecs: TypedQuery[]): string {
+export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
   let typeDeclarations = '';
   for (const typeDec of typeDecs) {
     typeDeclarations += typeDec.typeDeclaration;
