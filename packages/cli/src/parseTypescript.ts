@@ -1,6 +1,5 @@
 import { ParseEvent, parseTSQuery, TSQueryAST } from '@pelotech/pgtyped-parser';
 import ts from 'typescript';
-import { TransformConfig } from './config.js';
 
 interface INode {
   queryName: string;
@@ -9,30 +8,11 @@ interface INode {
 
 export type TSParseResult = { queries: TSQueryAST[]; events: ParseEvent[] };
 
-export function parseFile(
-  sourceFile: ts.SourceFile,
-  transformConfig: TransformConfig | undefined,
-): TSParseResult {
+export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
   const foundNodes: INode[] = [];
   parseNode(sourceFile);
 
   function parseNode(node: ts.Node) {
-    if (
-      transformConfig?.mode === 'ts-implicit' &&
-      node.kind === ts.SyntaxKind.CallExpression
-    ) {
-      const callNode = node as ts.CallExpression;
-      const functionName = callNode.expression.getText();
-      if (functionName === transformConfig.functionName) {
-        const queryName = callNode.parent.getChildren()[0].getText();
-        const queryText = callNode.arguments[0].getText().slice(1, -1).trim();
-        foundNodes.push({
-          queryName,
-          queryText,
-        });
-      }
-    }
-
     if (node.kind === ts.SyntaxKind.TaggedTemplateExpression) {
       const queryName = node.parent.getChildren()[0].getText();
       const taggedTemplateNode = node as ts.TaggedTemplateExpression;
@@ -67,16 +47,12 @@ export function parseFile(
   return { queries, events };
 }
 
-export const parseCode = (
-  fileContent: string,
-  fileName = 'unnamed.ts',
-  transformConfig?: TransformConfig,
-) => {
+export const parseCode = (fileContent: string, fileName = 'unnamed.ts') => {
   const sourceFile = ts.createSourceFile(
     fileName,
     fileContent,
     ts.ScriptTarget.ES2015,
     true,
   );
-  return parseFile(sourceFile, transformConfig);
+  return parseFile(sourceFile);
 };

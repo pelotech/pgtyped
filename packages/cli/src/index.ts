@@ -7,7 +7,6 @@ import { Piscina as PiscinaPool } from 'piscina';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { parseConfig, ParsedConfig, TransformConfig } from './config.js';
-import { TypedSqlTagTransformer } from './typedSqlTagTransformer.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
 import { debug } from './util.js';
 
@@ -25,7 +24,6 @@ export class WorkerPool {
   constructor(private readonly config: ParsedConfig) {
     this.pool = new PiscinaPool({
       filename: new URL('./worker.js', import.meta.url).href,
-      maxThreads: config.maxWorkerThreads,
       workerData: config,
       recordTiming: false,
     });
@@ -70,17 +68,12 @@ async function main(
   const pool = new WorkerPool(config);
 
   const transformTask = async (transform: TransformConfig) => {
-    if (transform.mode === 'ts-implicit') {
-      const transformer = new TypedSqlTagTransformer(pool, config, transform);
-      return transformer.start(isWatchMode);
-    } else {
-      const transformer = new TypescriptAndSqlTransformer(
-        pool,
-        config,
-        transform,
-      );
-      return transformer.start(isWatchMode);
-    }
+    const transformer = new TypescriptAndSqlTransformer(
+      pool,
+      config,
+      transform,
+    );
+    return transformer.start(isWatchMode);
   };
 
   const tasks = config.transforms.map(transformTask);

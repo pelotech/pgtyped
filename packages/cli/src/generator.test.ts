@@ -1,13 +1,10 @@
-import { parseSQLFile, TSQueryAST } from '@pelotech/pgtyped-parser';
+import { parseSQLFile } from '@pelotech/pgtyped-parser';
 import { IQueryTypes } from './db/types.js';
 import { ParameterTransform } from '@pelotech/pgtyped-runtime/internal';
-import { pascalCase } from 'change-case';
 import { ParsedConfig } from './config.js';
 import {
   escapeComment,
   generateInterface,
-  genTypedSQLOverloadFunctions,
-  TSTypedQuery,
   ProcessingMode,
   queryToTypeDeclarations,
 } from './generator.js';
@@ -892,25 +889,5 @@ export type IGetNotificationsResult = never;
 export type IGetNotificationsParams = never;
 
 `;
-  expect(result).toEqual(expected);
-});
-
-test('should generate the correct SQL overload functions', async () => {
-  const queryStringTS = `
-      const getUsers = sql\`SELECT id from users\`;
-      `;
-  const query = parsedQuery(ProcessingMode.TS, queryStringTS);
-  const typedQuery: TSTypedQuery = {
-    mode: 'ts' as const,
-    fileName: 'test.ts',
-    query: {
-      name: query.ast.name,
-      ast: query.ast as TSQueryAST,
-      queryTypeAlias: `I${pascalCase(query.ast.name)}Query`,
-    },
-    typeDeclaration: '',
-  };
-  const result = genTypedSQLOverloadFunctions('sqlFunc', [typedQuery]);
-  const expected = `export function sqlFunc(s: \`SELECT id from users\`): ReturnType<typeof sourceSql<IGetUsersQuery>>;`;
   expect(result).toEqual(expected);
 });

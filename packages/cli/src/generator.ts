@@ -19,7 +19,6 @@ import { camelCase, pascalCase } from 'change-case';
 import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
-import { parseCode as parseTypescriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
 
 /**
@@ -336,6 +335,23 @@ export type TypeDeclarationSet = {
   typeDefinitions: TypeDefinitions;
   fileName: string;
 };
+/**
+ * `typescript` is an optional peer dependency: only `ts` transforms need it, so
+ * the parser (and with it the whole compiler) is loaded on demand.
+ */
+async function loadTypescriptParser(): Promise<
+  typeof import('./parseTypescript.js')
+> {
+  try {
+    return await import('./parseTypescript.js');
+  } catch (err) {
+    throw new Error(
+      'Transform mode "ts" needs the optional peer dependency "typescript" (>=5 <7). Install it to generate types from sql tags.',
+      { cause: err },
+    );
+  }
+}
+
 export async function generateTypedecsFromFile(
   contents: string,
   fileName: string,
@@ -351,7 +367,7 @@ export async function generateTypedecsFromFile(
   const { queries, events } =
     transform.mode === 'sql'
       ? parseSQLFile(contents)
-      : parseTypescriptFile(contents, fileName, transform);
+      : (await loadTypescriptParser()).parseCode(contents, fileName);
 
   if (events.length > 0) {
     prettyPrintEvents(contents, events);
@@ -472,17 +488,4 @@ export function generateDeclarationFile(typeDecSet: TypeDeclarationSet) {
   content += '\n';
   content += generateDeclarations(typeDecSet.typedQueries);
   return content;
-}
-
-export function genTypedSQLOverloadFunctions(
-  functionName: string,
-  typedQueries: TSTypedQuery[],
-) {
-  return typedQueries
-    .map(
-      (typeDec) =>
-        `export function ${functionName}(s: \`${typeDec.query.ast.text}\`): ReturnType<typeof sourceSql<${typeDec.query.queryTypeAlias}>>;`,
-    )
-    .filter((s) => s)
-    .join('\n');
 }
