@@ -39,9 +39,38 @@ const result = await getUsersWithComments.run(client, { minCommentCount: 12 });
 
 The connection comes first and the parameters second. A query that declares no parameters has no params slot at all, so it is called as `someQuery.run(client)`; the 2.x shape `someQuery.run(undefined, client)` no longer compiles.
 
+# Prepared statements
+
+A query written with a plain `sql` tag is sent unnamed, so Postgres parses and plans it on every call. The tag cannot see the variable it is assigned to, so there is no name to give the statement. `sql.named` supplies one explicitly — it is the `@name` a `.sql` query would have carried:
+
+```ts
+import { sql } from '@pelotech/pgtyped-runtime';
+import type { GetAllNotificationsQuery } from './notifications.types.js';
+
+export const getAllNotifications = sql.named<GetAllNotificationsQuery>(
+  'GetAllNotifications',
+)`
+  SELECT * FROM notifications
+`;
+
+const notifications = await getAllNotifications.run(client);
+```
+
+The statement then goes out as `GetAllNotifications_2199d77a`: the name you passed, plus the first eight hex digits of a SHA-256 of the SQL text. Editing the query changes the hash and so renames the statement, which is what keeps a long-lived pooled connection from executing the text it prepared under the old name during a rolling deploy. `getAllNotifications.name` returns that full name; for a plain `sql` tag it is `undefined`.
+
+Codegen reads the name off the tag rather than off the variable, so the generated types above are `GetAllNotificationsParams`, `GetAllNotificationsResult` and `GetAllNotificationsQuery` however the query is assigned. Because the two are then easy to get out of step, codegen warns when the variable is not `camelCase` of the name:
+
+```
+src/notifications/notifications.ts: statement `GetEveryNotification` is held by variable `getAllNotifications`, expected `getEveryNotification`. ...
+```
+
+The types are still correct, so it is only a warning — unless [`failOnError`](cli#configuration-file-format) is set, which turns it into a failed run.
+
 :::caution
-Queries built with the `sql` tag are never given a prepared statement name, because only `.sql` files carry the `@name` that codegen builds a canonical name from. If you want a query sent as a server-side prepared statement, put it in a `.sql` file. See [Prepared statements](cli#prepared-statements).
+A query with a spread parameter (`$$ids`, `$$users(name, age)`) renders a different number of placeholders on every call, so a single name would have to stand for many different statement texts. Such a query stays unnamed even when you write `sql.named`, exactly as codegen leaves the equivalent `.sql` query unnamed. See [Prepared statements](cli#prepared-statements).
 :::
+
+The CLI's `preparedStatements` option does not reach a tag: it gates the names codegen writes into `.sql` queries, while `sql.named` computes its name at runtime. To send a named tag unnamed, pass `{ prepared: false }` to the call or wrap the connection in `unprepared()`.
 
 # Expansions
 

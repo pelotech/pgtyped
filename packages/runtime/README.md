@@ -5,7 +5,7 @@ The runtime half of [PgTyped](https://pgtyped.dev/). It has no dependencies, and
 It provides:
 
 - `TypedQuery`, the class the CLI instantiates in every generated `.queries.ts` file.
-- the `sql` tagged template, for writing queries inline in TS files.
+- the `sql` tagged template, for writing queries inline in TS files, and `sql.named`, its variant that carries a prepared statement name.
 - `DatabaseConnection`, the interface a query needs in order to talk to your database.
 - `unprepared()`, for connections that cannot support server-side prepared statements.
 
@@ -53,6 +53,34 @@ A query that declares no parameters has no params slot at all, so it is called w
 const books = await getBooks.run(client);
 ```
 
+### `sql.named`
+
+A query written with a plain `sql` tag is sent unnamed. `sql.named` gives it a server-side prepared statement name, the same thing codegen gives a `.sql` file's `@name`:
+
+```ts
+import { sql } from '@pelotech/pgtyped-runtime';
+import type { GetAllNotificationsQuery } from './notifications.types.js';
+
+export const getAllNotifications = sql.named<GetAllNotificationsQuery>(
+  'GetAllNotifications',
+)`
+  SELECT * FROM notifications
+`;
+
+const notifications = await getAllNotifications.run(client);
+```
+
+The name you pass is only the prefix. The statement is sent as `<name>_<first 8 hex digits of the SHA-256 of its SQL text>`, for example `GetAllNotifications_2199d77a`, exactly as codegen names a `.sql` query; `TypedQuery.name` returns the whole thing.
+
+The hash is the point. It makes an edit to the SQL rename the statement, so a redeployed query cannot collide with the one a long-lived pooled connection already prepared under that name — which would otherwise leave that connection executing the old text. A name longer than Postgres' 63-byte identifier limit is truncated on the prefix, never on the hash.
+
+The name must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, the shape a `.sql` file's `@name` allows. Anything else throws a `TypeError` while the module is being evaluated, rather than reaching the server as something strange.
+
+Two things do not follow from the name alone:
+
+- A query with a spread parameter stays unnamed even here; see [Prepared statements](#prepared-statements) below.
+- The CLI's `preparedStatements` option does not reach a tag. It gates the names codegen writes into `.sql` queries, and `sql.named` computes its name at runtime. To send a named tag unnamed, use `prepared: false` or `unprepared()`.
+
 ### `DatabaseConnection`
 
 The connection you pass is anything with a `query` method that accepts a single `QueryConfig`:
@@ -84,7 +112,13 @@ node-postgres' `Client` and `Pool` satisfy this as they are, so the usual thing 
 
 With `preparedStatements` enabled in the CLI config (the default since 3.0), codegen writes a statement name into each eligible query, such as `FindBookById_ddfa9eb1`. The runtime sends that name, and Postgres parses and plans the statement once per connection and reuses it thereafter. `TypedQuery.name` exposes the name, or `undefined` if the query has none.
 
-Codegen deliberately withholds a name from any query whose SQL text varies from call to call — that is, any query with an `array_spread` (`@param ids -> (...)`) or `pick_array_spread` (`@param users -> ((name, age)...)`) parameter, since those render a different number of placeholders each time. Queries built with the `sql` tag never get one either. Those queries are simply sent unnamed, and there is no way to force a name on.
+Two kinds of query carry no name, for two different reasons.
+
+A query whose SQL text varies from call to call **cannot** be named. That is any query with an `array_spread` (`@param ids -> (...)`, `$$ids`) or `pick_array_spread` (`@param users -> ((name, age)...)`, `$$users(name, age)`) parameter: each renders a different number of placeholders per call, so one name would have to stand for many statement texts. node-postgres caches parsed statements by name, per connection, so a second call with a longer array would bind against the statement parsed for the first. Codegen withholds a name from these, `sql.named` withholds it too even though a name was supplied, and no per-call option can put one back.
+
+A query written with a plain `sql` tag **is not** named, which is a default rather than a rule. The tag cannot see the variable it is assigned to, so it has nothing to name the statement after; [`sql.named`](#sqlnamed) supplies that name explicitly and the query is then named like any other.
+
+Queries with no name are simply sent unnamed, and `TypedQuery.name` is `undefined` for them.
 
 #### `RunOptions`
 
@@ -130,7 +164,7 @@ try {
 }
 ```
 
-To disable naming project-wide instead, set `"preparedStatements": false` in the PgTyped config so codegen never assigns a name in the first place.
+To disable naming project-wide instead, set `"preparedStatements": false` in the PgTyped config so codegen never assigns a name in the first place. That option only reaches queries codegen names, so a `sql.named` tag keeps its name; drop those back to a plain `sql` tag, or wrap the connection in `unprepared()`.
 
 ## Upgrading from 2.x
 
