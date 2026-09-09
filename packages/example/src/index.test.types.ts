@@ -23,3 +23,17 @@ export interface FindBookByIdTagQuery {
   result: FindBookByIdTagResult;
 }
 
+/** 'CountBookCommentsTag' parameters type */
+export type CountBookCommentsTagParams = void;
+
+/** 'CountBookCommentsTag' return type */
+export interface CountBookCommentsTagResult {
+  total: number | null;
+}
+
+/** 'CountBookCommentsTag' query type */
+export interface CountBookCommentsTagQuery {
+  params: CountBookCommentsTagParams;
+  result: CountBookCommentsTagResult;
+}
+

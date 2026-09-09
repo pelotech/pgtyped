@@ -16,6 +16,11 @@ export const insertNotification = sql<InsertNotificationQuery>`
     values $notification(payload!, user_id!, type!)
 `;
 
-export const getAllNotifications = sql<GetAllNotificationsQuery>`
+// Named on purpose: this one renders a fixed SQL text, so it can carry a
+// canonical statement name and be prepared server-side. The variable is
+// camelCase of the name, which is what codegen expects.
+export const getAllNotifications = sql.named<GetAllNotificationsQuery>(
+  'GetAllNotifications',
+)`
   SELECT * FROM notifications
 `;
