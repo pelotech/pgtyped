@@ -607,6 +607,44 @@ describe('parseSqlFile — a block or a statement is never lost silently', () =>
     expect(at(text, r.errors[0].offset, 7)).toBe('@name A');
   });
 
+  test('a comment that mentions @name mid-statement is not a header', () => {
+    // Regression: `readBlock` ran on every block comment, so an ordinary
+    // comment inside a statement that happened to name `@name` was promoted
+    // to a header. That invented `GetUsersById`, cut `GetUsers` short, and
+    // reported the cut as a missing `;` — a fatal error, so the file that used
+    // to build emitted nothing.
+    const r = parseSqlFile(`/* @name GetUsers */
+SELECT id FROM users
+/* WHERE id = :x  -- see @name GetUsersById */
+ORDER BY id;`);
+    expect(r.errors).toStrictEqual([]);
+    expect(r.queries.map((q) => [q.queryName, q.statement])).toStrictEqual([
+      [
+        'GetUsers',
+        'SELECT id FROM users\n/* WHERE id = :x  -- see @name GetUsersById */\nORDER BY id',
+      ],
+    ]);
+    // The comment is part of the statement, so the `:x` inside it must not
+    // become a param.
+    expect(r.queries[0].params).toStrictEqual([]);
+  });
+
+  test('the decorated multi-line header form is still a header', () => {
+    const q = one(`/*
+ * @name GetUsers
+ */
+SELECT 1;`);
+    expect(q.queryName).toBe('GetUsers');
+    expect(q.statement).toBe('SELECT 1');
+  });
+
+  test('a header block with trailing prose after its annotations parses', () => {
+    const q = one(`/* @name GetUsers
+   Returns every user, oldest first. */
+SELECT 1;`);
+    expect(q.queryName).toBe('GetUsers');
+  });
+
   test('a statement missing its ; does not swallow the next block', () => {
     const text = `/* @name A */\nSELECT 1\n\n/* @name B */\nSELECT :x;`;
     const r = parseSqlFile(text);

@@ -19,6 +19,21 @@ const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 const KEYS = `\\s*${IDENT}!?(?:\\s*,\\s*${IDENT}!?)*\\s*,?\\s*`;
 
 const NAME_RULE = `@name\\s+(${IDENT})`;
+
+/**
+ * What a header block has to open with. Leading whitespace and the `*` that
+ * decorates a multi-line comment are all that may come before the `@name`, so
+ * the decorated form, where every line opens with a `*`, still qualifies.
+ *
+ * Mentioning `@name` is not enough. A comment written inside a statement that
+ * refers to one — `\/* WHERE id = :x -- see @name GetUsersById *∕` — would
+ * otherwise be promoted to a header, inventing a query and cutting the
+ * statement it was written in half. Requiring the annotation to come first
+ * tells the two apart without weakening the rule that a header ends the
+ * statement above it, which is what reports a missing `;`.
+ */
+const HEADER_START = /^[\s*]*@name\s/;
+
 /** Matches up to the transform's opening paren; `readRule` finds its close. */
 const PARAM_HEAD = `@param\\s+(${IDENT})\\s*->\\s*(?=\\()`;
 const COLUMN_RULE = `@column\\s+(${IDENT})([!?])`;
@@ -139,8 +154,8 @@ function checkAnnotations(
 
 /**
  * Reads the annotations out of the text between the comment delimiters.
- * Returns undefined if there is no `@name`, which is how an ordinary comment
- * is told from a header block. `offset` is the offset of `inner` in the source
+ * Returns undefined if the block does not open with `@name`, which is how an
+ * ordinary comment is told from a header block. `offset` is the offset of `inner` in the source
  * text, so diagnostics point at the annotation they describe.
  */
 function readBlock(
@@ -148,6 +163,7 @@ function readBlock(
   offset: number,
   errors: Diagnostic[],
 ): Block | undefined {
+  if (!HEADER_START.test(inner)) return undefined;
   const name = new RegExp(NAME_RULE).exec(inner);
   if (!name) return undefined;
 
