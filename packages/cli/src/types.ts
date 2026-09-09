@@ -319,8 +319,7 @@ export class TypeAllocator {
     return typ.name;
   }
 
-  // In order to get the results out of the Piscina pool, we need to have
-  //  a serializable variant
+  // A plain, serializable view of the allocated types
   public toTypeDefinitions(): TypeDefinitions {
     return {
       imports: this.imports,
