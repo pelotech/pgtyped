@@ -1,3 +1,4 @@
+import ts from 'typescript';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 
 describe('TypeAllocator', () => {
@@ -22,5 +23,46 @@ describe('TypeAllocator', () => {
       Json: expect.objectContaining({ name: 'Json' }),
       JsonArray: expect.objectContaining({ name: 'JsonArray' }),
     });
+  });
+});
+
+/** The syntax errors TypeScript reports for `source`, if any. */
+const syntaxErrors = (source: string): string[] =>
+  (
+    ts.transpileModule(source, { reportDiagnostics: true }).diagnostics ?? []
+  ).map((d) => ts.flattenDiagnosticMessageText(d.messageText, ' '));
+
+const declare = (name: string, enumValues: string[]): string =>
+  TypeAllocator.typeDefinitionDeclarations('out.ts', {
+    imports: {},
+    enums: [{ name, enumValues }],
+    aliases: [],
+  });
+
+describe('enum declarations', () => {
+  // Covers issue #611
+  test('an enum value containing a quote emits parseable TypeScript', () => {
+    // The values were interpolated raw, which emitted
+    // `export type model_enum = '525' | 'car's' | 'rileys';` — a file that
+    // does not parse, while codegen still exited 0.
+    const declaration = declare('model_enum', ['525', "car's", 'rileys']);
+    expect(declaration).toBe(
+      "export type model_enum = '525' | 'car\\'s' | 'rileys';\n",
+    );
+    expect(syntaxErrors(declaration)).toStrictEqual([]);
+  });
+
+  test('backslashes, double quotes and control characters are escaped too', () => {
+    const declaration = declare('weird', ['a\\b', 'say "hi"', 'line\nbreak']);
+    expect(declaration).toBe(
+      `export type weird = 'a\\\\b' | 'line\\nbreak' | 'say "hi"';\n`,
+    );
+    expect(syntaxErrors(declaration)).toStrictEqual([]);
+  });
+
+  test('ordinary values are still emitted single-quoted and sorted', () => {
+    expect(declare('notification_type', ['reminder', 'deadline'])).toBe(
+      "export type notification_type = 'deadline' | 'reminder';\n",
+    );
   });
 });
