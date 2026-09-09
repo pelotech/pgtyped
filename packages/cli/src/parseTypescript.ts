@@ -1,4 +1,4 @@
-import { ParseEvent, parseTSQuery, TSQueryAST } from '@pelotech/pgtyped-parser';
+import { parseTagged, type QueryIR } from '@pelotech/pgtyped-runtime/internal';
 import ts from 'typescript';
 
 interface INode {
@@ -6,7 +6,12 @@ interface INode {
   queryText: string;
 }
 
-export type TSParseResult = { queries: TSQueryAST[]; events: ParseEvent[] };
+/**
+ * `errors` holds already-formatted messages, one per `sql` tag that could not
+ * be parsed. They are fatal for the whole file: the queries that did parse are
+ * still returned, but codegen must not emit from a file it only half read.
+ */
+export type TSParseResult = { queries: QueryIR[]; errors: string[] };
 
 export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
   const foundNodes: INode[] = [];
@@ -33,18 +38,24 @@ export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
     ts.forEachChild(node, parseNode);
   }
 
-  const queries: TSQueryAST[] = [];
-  const events: ParseEvent[] = [];
+  const queries: QueryIR[] = [];
+  const errors: string[] = [];
   for (const node of foundNodes) {
-    const { query, events: qEvents } = parseTSQuery(
-      node.queryText,
-      node.queryName,
-    );
-    queries.push(query);
-    events.push(...qEvents);
+    // parseTagged throws on a `$param` whose inline selections disagree
+    // between references. Catch per tag so one bad template is reported by
+    // name rather than aborting the file with a stack trace.
+    try {
+      queries.push(parseTagged(node.queryText, node.queryName));
+    } catch (err) {
+      errors.push(
+        `${sourceFile.fileName}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
-  return { queries, events };
+  return { queries, errors };
 }
 
 export const parseCode = (fileContent: string, fileName = 'unnamed.ts') => {

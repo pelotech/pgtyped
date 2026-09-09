@@ -17,18 +17,13 @@
   ],
   "packages": {
     "packages/cli": {},
-    "packages/parser": {},
     "packages/runtime": {}
   },
   "plugins": [
     {
       "type": "linked-versions",
       "groupName": "pgtyped",
-      "components": [
-        "@pelotech/pgtyped-cli",
-        "@pelotech/pgtyped-parser",
-        "@pelotech/pgtyped-runtime"
-      ]
+      "components": ["@pelotech/pgtyped-cli", "@pelotech/pgtyped-runtime"]
     },
     "node-workspace"
   ]

@@ -1,17 +1,8 @@
-import {
-  parseSQLFile,
-  prettyPrintEvents,
-  queryASTToIR,
-  SQLQueryAST,
-  SQLQueryIR,
-  TSQueryAST,
-} from '@pelotech/pgtyped-parser';
-
 import { getTypes, IQueryTypes, TypeSource } from './db/types.js';
 import type { TypeDb } from './db/type-db.js';
 import {
   ParameterTransform,
-  parseTagged,
+  parseSqlFile,
   render,
   type QueryIR,
 } from '@pelotech/pgtyped-runtime/internal';
@@ -20,35 +11,6 @@ import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
 import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
-
-/**
- * Old parser IR -> new runtime IR. Temporary until codegen parses through the
- * runtime directly. Old locs are inclusive-end; new ones are half-open. Only
- * referenced params survive, because the new hasParams is params.length > 0.
- * `ir.name` is the prepared statement name if attachPreparedStatementName set
- * one, else undefined - queryASTToIR never sets it.
- */
-function toQueryIR(ir: SQLQueryIR, queryName: string): QueryIR {
-  return {
-    queryName,
-    statement: ir.statement,
-    params: ir.params
-      .filter((p) => Object.hasOwn(ir.usedParamSet, p.name))
-      .map((p) => ({
-        name: p.name,
-        transform: p.transform,
-        required: p.required,
-        locs: p.locs.map(({ a, b }) => ({ a, b: b + 1 })),
-      })),
-    columns: [],
-    ...(ir.name === undefined ? {} : { name: ir.name }),
-  };
-}
-
-export enum ProcessingMode {
-  SQL = 'sql-file',
-  TS = 'query-file',
-}
 
 export interface IField {
   optional?: boolean;
@@ -96,33 +58,14 @@ export const generateInterface = (interfaceName: string, fields: IField[]) => {
 export const generateTypeAlias = (typeName: string, alias: string) =>
   `export type ${typeName} = ${alias};\n\n`;
 
-type ParsedQuery =
-  | {
-      ast: TSQueryAST;
-      mode: ProcessingMode.TS;
-    }
-  | {
-      ast: SQLQueryAST;
-      mode: ProcessingMode.SQL;
-    };
-
 export async function queryToTypeDeclarations(
-  parsedQuery: ParsedQuery,
+  ir: QueryIR,
   typeSource: TypeSource,
   types: TypeAllocator,
   config: ParsedConfig,
 ): Promise<string> {
-  let queryData;
-  let queryName;
-  if (parsedQuery.mode === ProcessingMode.TS) {
-    queryName = pascalCase(parsedQuery.ast.name);
-    queryData = render(parseTagged(parsedQuery.ast.text, parsedQuery.ast.name));
-  } else {
-    queryName = pascalCase(parsedQuery.ast.name);
-    queryData = render(
-      toQueryIR(queryASTToIR(parsedQuery.ast), parsedQuery.ast.name),
-    );
-  }
+  const queryName = pascalCase(ir.queryName);
+  const queryData = render(ir);
 
   const typeData = await typeSource(queryData);
   const interfaceName = pascalCase(queryName);
@@ -175,18 +118,13 @@ export async function queryToTypeDeclarations(
   returnTypes.forEach(({ returnName, type, nullable, comment }) => {
     let tsTypeName = types.use(type, TypeScope.Return);
 
-    const lastCharacter = returnName[returnName.length - 1]; // Checking for type hints
-    const addNullability = lastCharacter === '?';
-    const removeNullability = lastCharacter === '!';
-    if (
-      (addNullability || nullable || nullable == null) &&
-      !removeNullability
-    ) {
+    // A `@column name!` / `@column name?` annotation overrides what the
+    // catalog reports. Hints are keyed by the Postgres result column name, so
+    // the lookup happens before camelCasing. Absent a hint, a column the
+    // catalog cannot vouch for (`nullable` undefined) is treated as nullable.
+    const hint = ir.columns.find((c) => c.name === returnName);
+    if (hint ? hint.nullable : (nullable ?? true)) {
       tsTypeName += ' | null';
-    }
-
-    if (addNullability || removeNullability) {
-      returnName = returnName.slice(0, -1);
     }
 
     returnFieldTypes.push({
@@ -310,7 +248,6 @@ export type TSTypedQuery = {
   fileName: string;
   query: {
     name: string;
-    ast: TSQueryAST;
     queryTypeAlias: string;
   };
   typeDeclaration: string;
@@ -321,7 +258,6 @@ type SQLTypedQuery = {
   fileName: string;
   query: {
     name: string;
-    ast: SQLQueryAST;
     ir: QueryIR;
     paramTypeAlias: string;
     returnTypeAlias: string;
@@ -364,82 +300,71 @@ export async function generateTypedecsFromFile(
   const interfacePrefix = config.hungarianNotation ? 'I' : '';
   const typeSource: TypeSource = (query) => getTypes(query, db);
 
-  const { queries, events } =
-    transform.mode === 'sql'
-      ? parseSQLFile(contents)
-      : (await loadTypescriptParser()).parseCode(contents, fileName);
+  const done = () => ({
+    typedQueries,
+    typeDefinitions: types.toTypeDefinitions(),
+    fileName,
+  });
 
-  if (events.length > 0) {
-    prettyPrintEvents(contents, events);
-    if (events.find((e) => 'critical' in e)) {
-      return {
-        typedQueries,
-        typeDefinitions: types.toTypeDefinitions(),
-        fileName,
-      };
+  let queries: QueryIR[];
+  if (transform.mode === 'sql') {
+    const parsed = parseSqlFile(contents);
+    for (const { message, offset } of parsed.warnings) {
+      console.warn(`${fileName}: ${message} (offset ${offset})`);
     }
+    for (const { message, offset } of parsed.errors) {
+      console.error(`${fileName}: ${message} (offset ${offset})`);
+    }
+    // Errors are fatal: a query whose annotation could not be read still
+    // parses, into precisely the wrong SQL, so nothing here may be used.
+    if (parsed.errors.length > 0) {
+      return done();
+    }
+    queries = parsed.queries;
+  } else {
+    const parsed = (await loadTypescriptParser()).parseCode(contents, fileName);
+    if (parsed.errors.length > 0) {
+      for (const message of parsed.errors) {
+        console.error(message);
+      }
+      return done();
+    }
+    queries = parsed.queries;
   }
 
-  for (const queryAST of queries) {
-    let typedQuery: GeneratedQueryDec;
-    if (transform.mode === 'sql') {
-      const sqlQueryAST = queryAST as SQLQueryAST;
-      const result = await queryToTypeDeclarations(
-        { ast: sqlQueryAST, mode: ProcessingMode.SQL },
-        typeSource,
-        types,
-        config,
-      );
-      typedQuery = {
-        mode: 'sql' as const,
-        query: {
-          name: camelCase(sqlQueryAST.name),
-          ast: sqlQueryAST,
-          ir: toQueryIR(
-            attachPreparedStatementName(
-              queryASTToIR(sqlQueryAST),
-              sqlQueryAST.name,
-              config,
-            ),
-            sqlQueryAST.name,
-          ),
-          paramTypeAlias: `${interfacePrefix}${pascalCase(
-            sqlQueryAST.name,
-          )}Params`,
-          returnTypeAlias: `${interfacePrefix}${pascalCase(
-            sqlQueryAST.name,
-          )}Result`,
-        },
-        fileName,
-        typeDeclaration: result,
-      };
-    } else {
-      const tsQueryAST = queryAST as TSQueryAST;
-      const result = await queryToTypeDeclarations(
-        {
-          ast: tsQueryAST,
-          mode: ProcessingMode.TS,
-        },
-        typeSource,
-        types,
-        config,
-      );
-      typedQuery = {
-        mode: 'ts' as const,
-        fileName,
-        query: {
-          name: tsQueryAST.name,
-          ast: tsQueryAST,
-          queryTypeAlias: `${interfacePrefix}${pascalCase(
-            tsQueryAST.name,
-          )}Query`,
-        },
-        typeDeclaration: result,
-      };
-    }
-    typedQueries.push(typedQuery);
+  for (const ir of queries) {
+    const typeDeclaration = await queryToTypeDeclarations(
+      ir,
+      typeSource,
+      types,
+      config,
+    );
+    const prefixed = `${interfacePrefix}${pascalCase(ir.queryName)}`;
+    typedQueries.push(
+      transform.mode === 'sql'
+        ? {
+            mode: 'sql',
+            fileName,
+            query: {
+              name: camelCase(ir.queryName),
+              ir: attachPreparedStatementName(ir, config),
+              paramTypeAlias: `${prefixed}Params`,
+              returnTypeAlias: `${prefixed}Result`,
+            },
+            typeDeclaration,
+          }
+        : {
+            mode: 'ts',
+            fileName,
+            query: {
+              name: ir.queryName,
+              queryTypeAlias: `${prefixed}Query`,
+            },
+            typeDeclaration,
+          },
+    );
   }
-  return { typedQueries, typeDefinitions: types.toTypeDefinitions(), fileName };
+  return done();
 }
 
 export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
@@ -449,7 +374,7 @@ export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
     if (typeDec.mode === 'ts') {
       continue;
     }
-    const queryPP = typeDec.query.ast.statement.body
+    const queryPP = typeDec.query.ir.statement
       .split('\n')
       .map((s: string) => ' * ' + s)
       .join('\n');
@@ -465,7 +390,7 @@ export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
       ` */\n`;
     typeDeclarations +=
       `export const ${typeDec.query.name} = ` +
-      `new PreparedQuery<${typeDec.query.paramTypeAlias},${typeDec.query.returnTypeAlias}>` +
+      `new TypedQuery<${typeDec.query.paramTypeAlias},${typeDec.query.returnTypeAlias}>` +
       `(${typeDec.query.name}IR);\n\n\n`;
   }
   return typeDeclarations;

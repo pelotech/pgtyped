@@ -1,22 +1,18 @@
-import {
-  parseSQLFile,
-  queryASTToIR,
-  SQLQueryIR,
-} from '@pelotech/pgtyped-parser';
+import { parseSqlFile, type QueryIR } from '@pelotech/pgtyped-runtime/internal';
 import { ParsedConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
 
 const enabled = { preparedStatements: true } as ParsedConfig;
 const disabled = { preparedStatements: false } as ParsedConfig;
 
-function parse(sql: string): { ir: SQLQueryIR; declaredName: string } {
-  const ast = parseSQLFile(sql).queries[0];
-  return { ir: queryASTToIR(ast), declaredName: ast.name };
+function parse(sql: string): QueryIR {
+  const { queries, errors } = parseSqlFile(sql);
+  expect(errors).toEqual([]);
+  return queries[0];
 }
 
 function nameFor(sql: string, config: ParsedConfig = enabled) {
-  const { ir, declaredName } = parse(sql);
-  return attachPreparedStatementName(ir, declaredName, config).name;
+  return attachPreparedStatementName(parse(sql), config).name;
 }
 
 const SCALAR_QUERY = `
@@ -34,11 +30,12 @@ describe('attachPreparedStatementName', () => {
   });
 
   test('leaves the rest of the IR untouched', () => {
-    const { ir, declaredName } = parse(SCALAR_QUERY);
-    const result = attachPreparedStatementName(ir, declaredName, enabled);
+    const ir = parse(SCALAR_QUERY);
+    const result = attachPreparedStatementName(ir, enabled);
+    expect(result.queryName).toEqual(ir.queryName);
     expect(result.statement).toEqual(ir.statement);
     expect(result.params).toEqual(ir.params);
-    expect(result.usedParamSet).toEqual(ir.usedParamSet);
+    expect(result.columns).toEqual(ir.columns);
   });
 
   // An array-spread param renders a different number of placeholders per call
@@ -81,18 +78,19 @@ describe('attachPreparedStatementName', () => {
     ).toMatch(/^InsertBook_[0-9a-f]{8}$/);
   });
 
-  // An array-spread param that is declared but never referenced in the
-  // statement cannot vary the rendered text, so it must not block naming.
+  // A declared-but-unused array-spread param is not in the IR at all — it is
+  // reported as a warning instead — so the query has zero params and is
+  // trivially nameable. It could not vary the rendered text either way.
   test('names a query whose array-spread param is declared but unused', () => {
-    expect(
-      nameFor(`
+    const sql = `
         /*
           @name CountBooks
           @param ids -> (...)
         */
         SELECT count(*) FROM books;
-      `),
-    ).toMatch(/^CountBooks_[0-9a-f]{8}$/);
+      `;
+    expect(parse(sql).params).toEqual([]);
+    expect(nameFor(sql)).toMatch(/^CountBooks_[0-9a-f]{8}$/);
   });
 
   test('is deterministic for identical SQL', () => {

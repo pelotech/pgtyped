@@ -4,15 +4,12 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    // Generated output, never hand-edited. The ANTLR parsers and the codegen
-    // fixtures were excluded under tslint too.
+    // Generated output, never hand-edited: build artifacts, and the files
+    // pgtyped's own codegen emits. Linting the latter would flag code no one
+    // can fix by hand.
     ignores: [
       '**/lib/**',
       '**/node_modules/**',
-      '**/*Lexer.ts',
-      '**/*Parser.ts',
-      '**/*ParserListener.ts',
-      '**/*ParserVisitor.ts',
       '**/*.queries.ts',
       '**/*.types.ts',
       'packages/example/src/sql/index.ts',

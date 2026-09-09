@@ -52,10 +52,7 @@ export async function getTypeDecs(
 
   if (transform.mode === 'sql') {
     // Second parameter has no effect here, we could have used any value
-    types.use(
-      { name: 'PreparedQuery', from: RUNTIME_MODULE },
-      TypeScope.Return,
-    );
+    types.use({ name: 'TypedQuery', from: RUNTIME_MODULE }, TypeScope.Return);
   }
   return await generateTypedecsFromFile(
     contents,

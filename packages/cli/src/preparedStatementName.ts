@@ -1,4 +1,4 @@
-import { SQLQueryIR, TransformType } from '@pelotech/pgtyped-parser';
+import type { QueryIR } from '@pelotech/pgtyped-runtime/internal';
 import { createHash } from 'crypto';
 import { ParsedConfig } from './config.js';
 
@@ -7,26 +7,21 @@ const MAX_STATEMENT_NAME_BYTES = 63;
 const HASH_LENGTH = 8;
 
 /**
- * Transforms whose placeholder count depends on the values passed at runtime:
- * `IN :ids` renders `IN ($1,$2)` for two ids and `IN ($1,$2,$3)` for three. A
- * query using one of them produces a different SQL text per call, so it can
- * never carry a stable server-side name — node-postgres rejects the second,
- * differing text with "Prepared statements must be unique".
+ * Whether the query renders the same SQL text on every call.
+ *
+ * `array_spread` and `pick_array_spread` render a placeholder per value passed
+ * at runtime: `IN :ids` becomes `IN ($1,$2)` for two ids and `IN ($1,$2,$3)`
+ * for three. One name would then map to many statement texts, which
+ * node-postgres rejects with "Prepared statements must be unique".
+ *
+ * Only referenced params are in the IR, so a declared-but-unused spread param
+ * cannot vary the rendered text and does not appear here at all.
  */
-const VARIABLE_ARITY_TRANSFORMS: TransformType[] = [
-  TransformType.ArraySpread,
-  TransformType.PickArraySpread,
-];
-
-function rendersFixedSQL(ir: SQLQueryIR): boolean {
-  return (
-    ir.params
-      // A param that is declared but never referenced is not interpolated, so
-      // it cannot vary the rendered text.
-      .filter((param) => param.name in ir.usedParamSet)
-      .every(
-        (param) => !VARIABLE_ARITY_TRANSFORMS.includes(param.transform.type),
-      )
+function rendersFixedSQL(ir: QueryIR): boolean {
+  return ir.params.every(
+    (p) =>
+      p.transform.type !== 'array_spread' &&
+      p.transform.type !== 'pick_array_spread',
   );
 }
 
@@ -39,10 +34,9 @@ function rendersFixedSQL(ir: SQLQueryIR): boolean {
  * exactly as before.
  */
 export function attachPreparedStatementName(
-  ir: SQLQueryIR,
-  declaredName: string,
+  ir: QueryIR,
   config: ParsedConfig,
-): SQLQueryIR {
+): QueryIR {
   if (!config.preparedStatements || !rendersFixedSQL(ir)) {
     return ir;
   }
@@ -56,10 +50,10 @@ export function attachPreparedStatementName(
     .digest('hex')
     .slice(0, HASH_LENGTH)}`;
 
-  // Query names come from the `@name` tag, which the grammar restricts to
-  // ASCII, so slicing by character is equivalent to slicing by byte here.
+  // Query names come from the `@name` annotation, which the scanner restricts
+  // to ASCII, so slicing by character is equivalent to slicing by byte here.
   // Truncation stays collision-safe because the hash suffix is preserved.
-  const prefix = declaredName.slice(
+  const prefix = ir.queryName.slice(
     0,
     MAX_STATEMENT_NAME_BYTES - suffix.length,
   );
