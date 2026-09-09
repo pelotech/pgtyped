@@ -35,7 +35,7 @@
     "pgtyped": "lib/index.js"
   },
   "dependencies": {
-    "@pelotech/pgtyped-runtime": "workspace:*",
+    "@pelotech/pgtyped-runtime": "workspace:^",
     "change-case": "^5.4.4",
     "chokidar": "^5.0.0",
     "debug": "^4.1.1",

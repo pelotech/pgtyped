@@ -48,7 +48,7 @@ importers:
   packages/cli:
     dependencies:
       '@pelotech/pgtyped-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../runtime
       change-case:
         specifier: ^5.4.4
@@ -112,10 +112,10 @@ importers:
   packages/example:
     dependencies:
       '@pelotech/pgtyped-cli':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../cli
       '@pelotech/pgtyped-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../runtime
       pg:
         specifier: ^8.23.0

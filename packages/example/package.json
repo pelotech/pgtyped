@@ -22,8 +22,8 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@pelotech/pgtyped-cli": "workspace:*",
-    "@pelotech/pgtyped-runtime": "workspace:*",
+    "@pelotech/pgtyped-cli": "workspace:^",
+    "@pelotech/pgtyped-runtime": "workspace:^",
     "pg": "^8.23.0",
     "typescript": "^6.0.3"
   },
