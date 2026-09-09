@@ -60,12 +60,13 @@ function assertRunOptions(value: unknown, queryName: string | undefined): void {
  * template; both carry the same IR, which is why there is one class rather
  * than a base and two subclasses.
  *
- * Owns argument handling, statement-name resolution and result shaping. Only
- * queries from .sql files can carry a canonical statement name, and only when
- * prepared statements are enabled and the query renders a fixed SQL text.
+ * Owns argument handling, statement-name resolution and result shaping. A
+ * query carries a canonical statement name only when it renders a fixed SQL
+ * text and its front-end asked for one: a .sql file with prepared statements
+ * enabled, or a `sql.named` tag. A plain `sql` tag never does.
  */
 export class TypedQuery<TParams, TResult> {
-  /** Canonical prepared statement name, when codegen assigned one. */
+  /** Canonical prepared statement name, when the query was granted one. */
   readonly name: string | undefined;
 
   /**
@@ -89,8 +90,8 @@ export class TypedQuery<TParams, TResult> {
   compile(...rest: QueryArgs<TParams>): QueryConfig {
     const [params, options] = this.split(rest);
     const { text, values } = this.interpolate(params);
-    // `options.name` may only override a name codegen already granted. Codegen
-    // withholds one from any query whose SQL varies per call, because
+    // `options.name` may only override a name the query was already granted.
+    // A name is withheld from any query whose SQL varies per call, because
     // node-postgres caches by name: naming a spread query would let a second
     // call with a longer array bind against the statement parsed for the
     // first, and Postgres rejects it with "bind message supplies N parameters,
