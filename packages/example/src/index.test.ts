@@ -2,9 +2,12 @@ import pg from 'pg';
 import {
   aggregateEmailsAndTest,
   countBooks,
+  countBooksTotal,
+  findBookByCategory,
   findBookById,
   findBookNameOrRank,
   findBookUnicode,
+  getBookCountries,
   getBooks,
   getBooksByAuthorName,
   insertBooks,
@@ -14,6 +17,7 @@ import {
 } from './books/books.queries.js';
 import {
   getAllComments,
+  getAllCommentsByIds,
   insertComment,
   selectExistsTest,
 } from './comments/comments.queries.js';
@@ -28,7 +32,7 @@ import {
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
 import { Category } from './customTypes.js';
-import { sql } from '@pelotech/pgtyped-runtime';
+import { sql, unprepared } from '@pelotech/pgtyped-runtime';
 import type { FindBookByIdTagQuery } from './index.test.types.js';
 
 const findBookByIdTag = sql<FindBookByIdTagQuery>`SELECT * FROM books WHERE id = $id`;
@@ -218,4 +222,40 @@ test('sql tag query', async () => {
   const books = await findBookByIdTag.run(client, { id: 1 });
   expect(findBookByIdTag.name).toBeUndefined(); // tags are never prepared
   expect(books).toMatchSnapshot();
+});
+
+test('@column total! removes null from the generated type and the value is a number', async () => {
+  const [row] = await countBooksTotal.run(client);
+  const n: number = row.total; // type-level: fails to compile if the hint did not apply
+  expect(typeof n).toBe('number');
+});
+
+describe('prepared statements', () => {
+  const prepared = async () =>
+    (
+      await client.query<{ name: string }>(
+        'SELECT name FROM pg_prepared_statements',
+      )
+    ).rows.map((r) => r.name);
+
+  test('a named query is prepared server-side once and reused', async () => {
+    const before = await prepared();
+    await getBookCountries.run(client);
+    await getBookCountries.run(client);
+    const added = (await prepared()).filter((n) => !before.includes(n));
+    expect(added).toStrictEqual([getBookCountries.name]);
+    expect(getBookCountries.name).toMatch(/^GetBookCountries_[0-9a-f]{8}$/);
+  });
+
+  test('an array-spread query is never named and survives differing lengths', async () => {
+    expect(getAllCommentsByIds.name).toBeUndefined();
+    await getAllCommentsByIds.run(client, { ids: [1, 2] });
+    await getAllCommentsByIds.run(client, { ids: [1, 2, 3] });
+  });
+
+  test('unprepared() sends the query with no statement name', async () => {
+    expect(findBookByCategory.name).toBeDefined();
+    await findBookByCategory.run(unprepared(client), { category: 'novel' });
+    expect(await prepared()).not.toContain(findBookByCategory.name);
+  });
 });

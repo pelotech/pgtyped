@@ -73,3 +73,9 @@ SELECT count(*) as book_count FROM books;
 
 /* @name GetBookCountries */
 SELECT * FROM book_country;
+
+/*
+  @name CountBooksTotal
+  @column total!
+*/
+SELECT count(*)::int AS total FROM books;
