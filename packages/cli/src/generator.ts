@@ -7,7 +7,8 @@ import {
   TSQueryAST,
 } from '@pelotech/pgtyped-parser';
 
-import { getTypes, TypeSource } from '@pelotech/pgtyped-query';
+import { getTypes, IQueryTypes, TypeSource } from './db/types.js';
+import type { TypeDb } from './db/type-db.js';
 import {
   ParameterTransform,
   parseTagged,
@@ -20,7 +21,6 @@ import { ParsedConfig, TransformConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
 import { parseCode as parseTypescriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
-import { IQueryTypes } from '@pelotech/pgtyped-query/lib/actions.js';
 
 /**
  * Old parser IR -> new runtime IR. Temporary until codegen parses through the
@@ -339,14 +339,14 @@ export type TypeDeclarationSet = {
 export async function generateTypedecsFromFile(
   contents: string,
   fileName: string,
-  connection: any,
+  db: TypeDb,
   transform: TransformConfig,
   types: TypeAllocator,
   config: ParsedConfig,
 ): Promise<TypeDeclarationSet> {
   const typedQueries: TypedQuery[] = [];
   const interfacePrefix = config.hungarianNotation ? 'I' : '';
-  const typeSource: TypeSource = (query) => getTypes(query, connection);
+  const typeSource: TypeSource = (query) => getTypes(query, db);
 
   const { queries, events } =
     transform.mode === 'sql'

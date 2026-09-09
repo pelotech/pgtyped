@@ -1,8 +1,7 @@
-import { startup } from '@pelotech/pgtyped-query';
-import { AsyncQueue } from '@pelotech/pgtyped-wire';
 import fs from 'fs-extra';
 import nun from 'nunjucks';
 import path from 'path';
+import pg from 'pg';
 import worker from 'piscina';
 import { ParsedConfig, TransformConfig } from './config.js';
 import {
@@ -10,15 +9,28 @@ import {
   generateTypedecsFromFile,
 } from './generator.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
+import { typeDb } from './db/type-db.js';
 import { RUNTIME_MODULE } from './runtimeModule.js';
 
 // disable autoescape as it breaks windows paths
 // see https://github.com/adelsz/pgtyped/issues/519 for details
 nun.configure({ autoescape: false });
 
-let connected = false;
-const connection = new AsyncQueue();
 const config: ParsedConfig = worker.workerData;
+
+// The pool is built here rather than handed in: piscina structure-clones
+// workerData, so a pool cannot cross the thread boundary. pg connects lazily,
+// so constructing it costs nothing until a query runs.
+const db = typeDb(
+  new pg.Pool({
+    host: config.db.host,
+    port: config.db.port,
+    user: config.db.user,
+    password: config.db.password,
+    database: config.db.dbName,
+    ssl: config.db.ssl,
+  }),
+);
 
 interface ExtendedParsedPath extends path.ParsedPath {
   dir_base: string;
@@ -35,12 +47,7 @@ export type IWorkerResult =
       relativePath: string;
     };
 
-async function connectAndGetFileContents(fileName: string) {
-  if (!connected) {
-    await startup(config.db, connection);
-    connected = true;
-  }
-
+function getFileContents(fileName: string) {
   // last part fixes https://github.com/adelsz/pgtyped/issues/390
   return fs.readFileSync(fileName).toString().replace(/\r\n/g, '\n');
 }
@@ -52,7 +59,7 @@ export async function getTypeDecs({
   fileName: string;
   transform: TransformConfig;
 }) {
-  const contents = await connectAndGetFileContents(fileName);
+  const contents = getFileContents(fileName);
   const types = new TypeAllocator(TypeMapping(config.typesOverrides));
 
   if (transform.mode === 'sql') {
@@ -65,7 +72,7 @@ export async function getTypeDecs({
   return await generateTypedecsFromFile(
     contents,
     fileName,
-    connection,
+    db,
     transform,
     types,
     config,

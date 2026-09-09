@@ -1,6 +1,6 @@
 /** @fileoverview Config file parser */
 
-import { Type } from '@pelotech/pgtyped-query';
+import { Type } from './db/type.js';
 import * as Either from 'fp-ts/lib/Either.js';
 import * as t from 'io-ts';
 import { reporter } from 'io-ts-reporters';

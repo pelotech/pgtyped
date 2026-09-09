@@ -1,0 +1,53 @@
+export type Type =
+  NamedType | ImportedType | AliasedType | EnumType | EnumArrayType;
+// May be a database source type name (string) or a typescript destination type (Type)
+export type MappableType = string | Type;
+
+export interface NamedType {
+  name: string;
+  definition?: string;
+  enumValues?: string[];
+}
+
+export interface ImportedType extends NamedType {
+  from: string;
+  aliasOf?: string;
+}
+
+export interface AliasedType extends NamedType {
+  definition: string;
+}
+
+export interface EnumType extends NamedType {
+  enumValues: string[];
+}
+
+export interface EnumArrayType extends NamedType {
+  name: string;
+  elementType: EnumType;
+}
+
+export function isImport(typ: Type): typ is ImportedType {
+  return 'from' in typ;
+}
+
+export function isAlias(typ: Type): typ is AliasedType {
+  return 'definition' in typ;
+}
+
+export function isEnum(typ: MappableType): typ is EnumType {
+  return typeof typ !== 'string' && 'enumValues' in typ;
+}
+
+export function isEnumArray(typ: MappableType): typ is EnumArrayType {
+  return typeof typ !== 'string' && 'elementType' in typ;
+}
+
+export const enum DatabaseTypeKind {
+  Base = 'b',
+  Composite = 'c',
+  Domain = 'd',
+  Enum = 'e',
+  Pseudo = 'p',
+  Range = 'r',
+}
