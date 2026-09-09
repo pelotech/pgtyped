@@ -36,8 +36,8 @@
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "typescript": "^6.0.3",
-    "vitest": "^5.0.0"
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
