@@ -322,7 +322,11 @@ export async function generateTypedecsFromFile(
     }
     queries = parsed.queries;
   } else {
-    const parsed = (await loadTypescriptParser()).parseCode(contents, fileName);
+    const parsed = (await loadTypescriptParser()).parseCode(
+      contents,
+      fileName,
+      interfacePrefix,
+    );
     for (const message of parsed.warnings) {
       console.warn(message);
     }

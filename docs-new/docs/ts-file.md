@@ -79,13 +79,21 @@ Eight hex digits with a name, sixteen without. With a name, the name already sep
 
 Codegen reads an explicit name off the tag rather than off the variable, so the generated types above are `GetAllNotificationsParams`, `GetAllNotificationsResult` and `GetAllNotificationsQuery` however the query is assigned. With no explicit name there is nothing to read, so the types follow the variable, exactly as for a plain `sql` tag.
 
-Because a name and the variable holding it are then easy to get out of step, codegen warns when the variable is not `camelCase` of the name:
+Because a name and the code around it are easy to get out of step, codegen warns about two kinds of drift. The variable holding a named tag should be `camelCase` of the name:
 
 ```
 src/notifications/notifications.ts: statement `GetEveryNotification` is held by variable `getAllNotifications`, expected `getEveryNotification`. ...
 ```
 
-The types are still correct, so it is only a warning — unless [`failOnError`](cli#configuration-file-format) is set, which turns it into a failed run.
+And the tag's type argument should be the `…Query` interface generated for that query — on any tag, prepared or plain, since a stale one still compiles while typing the query as some other query's rows:
+
+```
+src/notifications/notifications.ts: query `GetAllNotifications` is typed as `GetNotificationsQuery`, expected `GetAllNotificationsQuery`. ...
+```
+
+Writing the pair inline, as `` sql<{ params: …; result: … }>`…` ``, is a supported way to use the tag and has no generated interface to match, so it is not linted.
+
+The types are still correct in both cases, so these are only warnings — unless [`failOnError`](cli#configuration-file-format) is set, which turns them into a failed run.
 
 :::caution
 A query with a spread parameter (`$$ids`, `$$users(name, age)`) renders a different number of placeholders on every call, so a single name would have to stand for many different statement texts. Such a query stays unnamed even when you write `sql.prepared`, in either form, exactly as codegen leaves the equivalent `.sql` query unnamed. See [Prepared statements](cli#prepared-statements).

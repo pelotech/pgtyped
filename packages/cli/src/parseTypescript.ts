@@ -1,5 +1,5 @@
 import { parseTagged, type QueryIR } from '@pelotech/pgtyped-runtime/internal';
-import { camelCase } from 'change-case';
+import { camelCase, pascalCase } from 'change-case';
 import ts from 'typescript';
 
 interface INode {
@@ -13,7 +13,8 @@ interface INode {
  * still returned, but codegen must not emit from a file it only half read.
  *
  * `warnings` holds messages for tags that generate correctly but read badly,
- * such as a `sql.prepared` name that does not match the variable holding it.
+ * such as a `sql.prepared` name that does not match the variable holding it,
+ * or a type argument that names a different query's generated type.
  * They are printed and otherwise ignored, unless `failOnError` is set.
  */
 export type TSParseResult = {
@@ -86,11 +87,68 @@ function variableNameOf(node: ts.TaggedTemplateExpression) {
     : undefined;
 }
 
-export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
+/**
+ * The tag's type argument, when it is a plain type reference codegen can
+ * compare against the interface it generates.
+ *
+ * `sql<{ params: …; result: … }>` is a legitimate way to write the pair
+ * inline, and a generic reference has no generated counterpart either, so
+ * anything that is not a bare identifier is skipped rather than warned about.
+ * The type argument sits on the call for `sql.prepared<T>(…)` and on the
+ * tagged template itself for a plain `` sql<T>`…` ``.
+ */
+function typeArgumentNameOf(node: ts.TaggedTemplateExpression) {
+  const typeArguments = ts.isCallExpression(node.tag)
+    ? node.tag.typeArguments
+    : node.typeArguments;
+  const [arg] = typeArguments ?? [];
+  if (
+    !arg ||
+    !ts.isTypeReferenceNode(arg) ||
+    !ts.isIdentifier(arg.typeName) ||
+    arg.typeArguments !== undefined
+  ) {
+    return undefined;
+  }
+  return arg.typeName.text;
+}
+
+/**
+ * @param interfacePrefix the `hungarianNotation` prefix codegen puts on every
+ * generated interface, so the type-argument lint expects the same name codegen
+ * is about to write.
+ */
+export function parseFile(
+  sourceFile: ts.SourceFile,
+  interfacePrefix = '',
+): TSParseResult {
   const foundNodes: INode[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
   parseNode(sourceFile);
+
+  /**
+   * The generated `…Query` interface is the one type argument that makes
+   * sense on a tag, and it is named after the query. A stale or copy-pasted
+   * one still compiles — it is a valid `TypePair` — while typing the query as
+   * some other query's row shape.
+   */
+  function lintTypeArgument(
+    node: ts.TaggedTemplateExpression,
+    queryName: string,
+  ) {
+    const given = typeArgumentNameOf(node);
+    if (given === undefined) {
+      return;
+    }
+    const expected = `${interfacePrefix}${pascalCase(queryName)}Query`;
+    if (given !== expected) {
+      warnings.push(
+        `${sourceFile.fileName}: query \`${queryName}\` is typed as \`${given}\`, expected \`${expected}\`. ` +
+          `Codegen generates \`${expected}\` for this query, so a different type argument either belongs to another query or is left over from a rename.`,
+      );
+    }
+  }
 
   function parseNode(node: ts.Node) {
     if (ts.isTaggedTemplateExpression(node)) {
@@ -117,11 +175,13 @@ export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
               `which is the point of naming it.`,
           );
         }
+        lintTypeArgument(node, tag.name);
         foundNodes.push({ queryName: tag.name, queryText });
       } else if (tag) {
         // A plain tag, or a `sql.prepared()` that derives its name: either way
         // the variable is the only name codegen has to work from.
         const queryName = node.parent.getChildren()[0].getText();
+        lintTypeArgument(node, queryName);
         foundNodes.push({ queryName, queryText });
       }
     }
@@ -148,12 +208,16 @@ export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
   return { queries, errors, warnings };
 }
 
-export const parseCode = (fileContent: string, fileName = 'unnamed.ts') => {
+export const parseCode = (
+  fileContent: string,
+  fileName = 'unnamed.ts',
+  interfacePrefix = '',
+) => {
   const sourceFile = ts.createSourceFile(
     fileName,
     fileContent,
     ts.ScriptTarget.ES2015,
     true,
   );
-  return parseFile(sourceFile);
+  return parseFile(sourceFile, interfacePrefix);
 };

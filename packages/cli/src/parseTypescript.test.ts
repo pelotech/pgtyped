@@ -237,3 +237,113 @@ describe('a sql.prepared tag with no name', () => {
     ]);
   });
 });
+
+// The generated types for a query are `<Name>Params`, `<Name>Result` and
+// `<Name>Query`, so `<Name>Query` is the one type argument that fits. A stale
+// one still compiles — any `{ params; result }` pair does — while typing the
+// query as some other query's rows.
+describe('the type argument is linted against the query name', () => {
+  test('the matching generated type is quiet, on all three tag forms', () => {
+    const result = parseCode(
+      `
+      const getUsers = sql<GetUsersQuery>\`select id from users\`;
+      const listBooks = sql.prepared<ListBooksQuery>()\`select id from books\`;
+      const findOne = sql.prepared<FindOneQuery>('FindOne')\`select id from x\`;
+      `,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toEqual([]);
+  });
+
+  test('a mismatch warns, naming both sides and the expected type', () => {
+    const result = parseCode(
+      `const getUsers = sql.prepared<SomethingElse>('GetUsers')\`select id from users\`;`,
+      'queries.ts',
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('queries.ts:');
+    expect(result.warnings[0]).toContain('`SomethingElse`');
+    expect(result.warnings[0]).toContain('`GetUsersQuery`');
+    // Advisory: the query is still generated.
+    expect(result.queries.map((q) => q.queryName)).toEqual(['GetUsers']);
+  });
+
+  // The correspondence is just as useful on a plain tag, where the query is
+  // named after the variable.
+  test('it applies to a plain sql tag too', () => {
+    const result = parseCode(
+      `const getUsers = sql<FindBooksQuery>\`select id from users\`;`,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('`FindBooksQuery`');
+    expect(result.warnings[0]).toContain('`GetUsersQuery`');
+  });
+
+  test('and to the derived form, where the variable is the name', () => {
+    const result = parseCode(
+      `const getUsers = sql.prepared<FindBooksQuery>()\`select id from users\`;`,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('`GetUsersQuery`');
+  });
+
+  // Writing the pair inline is a supported way to use the tag and has no
+  // generated counterpart to match, so it must not warn.
+  test('an inline object type is not a stale reference and is left alone', () => {
+    const result = parseCode(
+      `
+      const getUsers = sql<{ params: { id: number }; result: { id: number } }>\`select id from users where id = $id\`;
+      const listBooks = sql.prepared<{ params: void; result: { id: number } }>('ListBooks')\`select id from books\`;
+      `,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toEqual([]);
+  });
+
+  test('no type argument at all is nothing to lint', () => {
+    const result = parseCode(
+      `const getUsers = sql\`select id from users\`;`,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toEqual([]);
+  });
+
+  // A generic reference is not a name codegen ever generates, so there is no
+  // stale-reference reading of it either.
+  test('a generic type reference is skipped', () => {
+    const result = parseCode(
+      `const getUsers = sql<Wrapper<GetUsersQuery>>\`select id from users\`;`,
+      'queries.ts',
+    );
+
+    expect(result.warnings).toEqual([]);
+  });
+
+  // hungarianNotation puts an `I` on every generated interface, so the lint
+  // has to expect the name codegen is actually about to write.
+  test('it expects the hungarian prefix when codegen emits one', () => {
+    expect(
+      parseCode(
+        `const getUsers = sql<IGetUsersQuery>\`select id from users\`;`,
+        'queries.ts',
+        'I',
+      ).warnings,
+    ).toEqual([]);
+    expect(
+      parseCode(
+        `const getUsers = sql<GetUsersQuery>\`select id from users\`;`,
+        'queries.ts',
+        'I',
+      ).warnings[0],
+    ).toContain('`IGetUsersQuery`');
+  });
+});

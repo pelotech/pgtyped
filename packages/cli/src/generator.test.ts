@@ -1226,3 +1226,61 @@ describe('a sql.prepared tag with no name', () => {
     }
   });
 });
+
+// The type argument names the interface codegen generates for the query, so a
+// mismatch means the tag is typed as some other query.
+describe('the type argument lint', () => {
+  const generate = (contents: string, failOnError = false) =>
+    generateTypedecsFromFile(
+      contents,
+      'queries.ts',
+      emptyDb,
+      { mode: 'ts', include: '*.ts' },
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false, failOnError } as ParsedConfig,
+    );
+
+  test('warns on a stale type argument, and still generates', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(
+        `const getUsers = sql<FindBooksQuery>\`SELECT 1 AS n\`;`,
+      );
+
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('`FindBooksQuery`');
+      expect(warn.mock.calls[0][0]).toContain('`GetUsersQuery`');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('says nothing about an inline params/result pair', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(
+        `const getUsers = sql<{ params: void; result: { n: number } }>\`SELECT 1 AS n\`;`,
+      );
+
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        generate(
+          `const getUsers = sql<FindBooksQuery>\`SELECT 1 AS n\`;`,
+          true,
+        ),
+      ).rejects.toThrow('expected `GetUsersQuery`');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
