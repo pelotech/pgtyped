@@ -10,15 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       # PRs are squash-merged, so the PR title becomes the commit subject on
       # master. That is what release-please reads, so it is what has to be
       # valid; the commit-msg hook covers individual commits locally.
       - name: Lint PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$PR_TITLE" | npx commitlint
+        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint

@@ -19,11 +19,12 @@ To get started, clone the repository and install the dependencies:
 ```bash
 git clone git@github.com:adelsz/pgtyped.git
 cd pgtyped
-npm install
+corepack enable
+pnpm install
 ```
 
-We use a mono-repo setup with [Lerna](https://lernajs.io/) and NPM workspaces.
-This means that running `npm install` will install all the dependencies for all the packages in the project.
+We use a mono-repo setup with [pnpm workspaces](https://pnpm.io/workspaces).
+This means that running `pnpm install` will install all the dependencies for all the packages in the project.
 It will also link the packages together, so that you can make changes to one package and immediately see the effects in another package.
 
 The `packages` directory contains the source code for the various components of pgTyped:
@@ -36,19 +37,19 @@ The `packages` directory contains the source code for the various components of 
 To build the project, run:
 
 ```bash
-npm run build
+pnpm build
 ```
 
 This will build all the packages in the project. To run build in watch mode, run:
 
 ```bash
-npm run watch
+pnpm watch
 ```
 
 To run the tests, run:
 
 ```bash
-npm test
+pnpm test
 ```
 
 It will run the tests for all the packages in the project, including end-to-end tests for the example project.
@@ -57,7 +58,7 @@ It will run the tests for all the packages in the project, including end-to-end 
 
 The `packages/example` project is an end-to-end test suite for pgTyped. It contains a simple example of a pgTyped project written as a Jest test suite.
 
-The packages `npm test` runs the following command:
+The packages `pnpm test` runs the following command:
 
 ```bash
 docker compose run build && docker compose run test && docker compose run test-cjs

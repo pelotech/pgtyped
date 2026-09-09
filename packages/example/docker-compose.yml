@@ -28,9 +28,14 @@ services:
       CI: $CI
     volumes:
       - ../../:/app
-      # Anonymous volume: keeps the image's node_modules from being shadowed by
+      # Anonymous volumes: keep the image's node_modules from being shadowed by
       # the host's, whose native binaries are built for the wrong platform.
+      # pnpm does not hoist, so each package has its own link farm to preserve
+      # alongside the root store.
       - /app/node_modules
+      - /app/packages/cli/node_modules
+      - /app/packages/example/node_modules
+      - /app/packages/runtime/node_modules
     working_dir: /app/packages/example
     deploy:
       restart_policy:
@@ -41,7 +46,9 @@ services:
 
   watch:
     <<: *build
-    command: npx pgtyped --watch --config config.json
+    # Invoked through node, like the build service: the CLI's lib/ is built on
+    # the host and bind-mounted in, so the image has no .bin/pgtyped to run.
+    command: node /app/packages/cli/lib/index.js --watch --config config.json
 
   test:
     <<: *build

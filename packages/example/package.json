@@ -17,18 +17,20 @@
   "scripts": {
     "test": "docker compose run build && docker compose run test",
     "typegen": "pgtyped -c config.json",
-    "build": "echo 'No build step required. Use npm test instead'",
-    "watch": "echo 'No build step required. Use npm test instead'",
+    "build": "echo 'No build step required. Use pnpm test instead'",
+    "watch": "echo 'No build step required. Use pnpm test instead'",
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@pelotech/pgtyped-cli": "^2.4.3",
-    "@pelotech/pgtyped-runtime": "^2.4.3",
+    "@pelotech/pgtyped-cli": "workspace:*",
+    "@pelotech/pgtyped-runtime": "workspace:*",
     "pg": "^8.23.0",
     "typescript": "^6.0.3"
   },
   "devDependencies": {
+    "@types/node": "^24.13.3",
     "@types/pg": "^8.23.1",
-    "ts-node": "10.9.2"
+    "ts-node": "10.9.2",
+    "vitest": "^5.0.0"
   }
 }
