@@ -9,12 +9,20 @@ import {
   escapeComment,
   generateDeclarations,
   generateInterface,
+  generateTypedecsFromFile,
   queryToTypeDeclarations,
 } from './generator.js';
+import type { TypeDb } from './db/type-db.js';
 import { parseCode as parseTypeScriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 
 const partialConfig = { hungarianNotation: true } as ParsedConfig;
+
+/** A database that describes every query as taking and returning nothing. */
+const emptyDb: TypeDb = {
+  describe: async () => ({ params: [], fields: [] }),
+  rows: async () => [],
+};
 
 type Mode = 'sql' | 'ts';
 
@@ -1043,5 +1051,108 @@ export const findBookById = new TypedQuery<IFindBookByIdParams,IFindBookByIdResu
         },
       ]),
     ).toEqual('/* types */\n');
+  });
+});
+
+// `sql.named` carries its own statement name, which the runtime sends to
+// Postgres. Codegen follows that name rather than the variable, exactly as it
+// follows `@name` in a `.sql` file.
+describe('a sql.named tag', () => {
+  const namedTag = `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT id FROM users WHERE id = $id\`;`;
+
+  test('names the generated types after the statement, not the variable', async () => {
+    const mockTypes: IQueryTypes = {
+      returnTypes: [
+        {
+          returnName: 'id',
+          columnName: 'id',
+          type: 'uuid',
+          nullable: false,
+        },
+      ],
+      paramMetadata: {
+        params: ['uuid'],
+        mapping: [
+          {
+            name: 'id',
+            type: ParameterTransform.Scalar,
+            assignedIndex: 1,
+            required: false,
+          },
+        ],
+      },
+    };
+
+    const result = await queryToTypeDeclarations(
+      parsedQuery('ts', namedTag),
+      async () => mockTypes,
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false } as ParsedConfig,
+    );
+
+    expect(result).toContain('export interface GetUsersParams');
+    expect(result).toContain('export interface GetUsersResult');
+    expect(result).toContain('export interface GetUsersQuery');
+    expect(result).not.toContain('interface UsersParams');
+  });
+
+  test('warns when the variable disagrees with the statement name', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generateTypedecsFromFile(
+        `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
+        'queries.ts',
+        emptyDb,
+        { mode: 'ts', include: '*.ts' },
+        new TypeAllocator(TypeMapping()),
+        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+      );
+
+      // Advisory only: the types are still generated, under the name.
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('`users`');
+      expect(warn.mock.calls[0][0]).toContain('`getUsers`');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('fails the file on a mismatch under failOnError', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        generateTypedecsFromFile(
+          `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
+          'queries.ts',
+          emptyDb,
+          { mode: 'ts', include: '*.ts' },
+          new TypeAllocator(TypeMapping()),
+          { hungarianNotation: false, failOnError: true } as ParsedConfig,
+        ),
+      ).rejects.toThrow('expected `getUsers`');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('reports an unreadable name as an error and generates nothing', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await generateTypedecsFromFile(
+        `const users = sql.named<GetUsersQuery>(name)\`SELECT 1 AS n\`;`,
+        'queries.ts',
+        emptyDb,
+        { mode: 'ts', include: '*.ts' },
+        new TypeAllocator(TypeMapping()),
+        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+      );
+
+      expect(result.typedQueries).toEqual([]);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][0]).toContain('string literal');
+    } finally {
+      error.mockRestore();
+    }
   });
 });
