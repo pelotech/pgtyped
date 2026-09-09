@@ -63,7 +63,7 @@ function assertRunOptions(value: unknown, queryName: string | undefined): void {
  * Owns argument handling, statement-name resolution and result shaping. A
  * query carries a canonical statement name only when it renders a fixed SQL
  * text and its front-end asked for one: a .sql file with prepared statements
- * enabled, or a `sql.named` tag. A plain `sql` tag never does.
+ * enabled, or a `sql.prepared` tag. A plain `sql` tag never does.
  */
 export class TypedQuery<TParams, TResult> {
   /** Canonical prepared statement name, when the query was granted one. */

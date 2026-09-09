@@ -13,7 +13,7 @@ interface INode {
  * still returned, but codegen must not emit from a file it only half read.
  *
  * `warnings` holds messages for tags that generate correctly but read badly,
- * such as a `sql.named` name that does not match the variable holding it.
+ * such as a `sql.prepared` name that does not match the variable holding it.
  * They are printed and otherwise ignored, unless `failOnError` is set.
  */
 export type TSParseResult = {
@@ -25,18 +25,20 @@ export type TSParseResult = {
 /**
  * A `sql` tag codegen owns:
  *  - `plain` is `` sql`…` ``, named after the variable it is assigned to.
- *  - `named` is `` sql.named<T>('GetUsers')`…` ``, which carries its own name.
- *  - `invalid` is a `sql.named` whose name codegen cannot read.
+ *  - `prepared` is `` sql.prepared<T>('GetUsers')`…` ``, which carries its own
+ *    name, or `` sql.prepared<T>()`…` ``, which derives one from the statement
+ *    at runtime and is named after its variable here, like a plain tag.
+ *  - `invalid` is a `sql.prepared` whose name codegen cannot read.
  */
 type SqlTag =
   | { kind: 'plain' }
-  | { kind: 'named'; name: string }
+  | { kind: 'prepared'; name?: string }
   | { kind: 'invalid'; reason: string };
 
 /**
  * Classifies the tag expression of a tagged template, on its AST shape rather
- * than its text: `sql.named<T>('X')` and `sql.named('X')` differ textually,
- * and so does any of them reformatted, but all are the same tag.
+ * than its text: `sql.prepared<T>('X')` and `sql.prepared('X')` differ
+ * textually, and so does any of them reformatted, but all are the same tag.
  */
 function readSqlTag(tag: ts.Expression): SqlTag | undefined {
   if (ts.isIdentifier(tag) && tag.text === 'sql') {
@@ -50,26 +52,26 @@ function readSqlTag(tag: ts.Expression): SqlTag | undefined {
     !ts.isPropertyAccessExpression(callee) ||
     !ts.isIdentifier(callee.expression) ||
     callee.expression.text !== 'sql' ||
-    callee.name.text !== 'named'
+    callee.name.text !== 'prepared'
   ) {
     return undefined;
   }
   const [nameArg] = tag.arguments;
   if (!nameArg) {
-    return {
-      kind: 'invalid',
-      reason: '`sql.named` was called without a statement name',
-    };
+    // No name is not a mistake: the runtime derives one from the statement
+    // hash. Codegen then names the generated types after the variable, as it
+    // does for a plain tag.
+    return { kind: 'prepared' };
   }
   // A no-substitution template is as readable here as a quoted string; a
   // variable, a concatenation or an interpolation is not.
   if (!ts.isStringLiteralLike(nameArg) || nameArg.text.trim() === '') {
     return {
       kind: 'invalid',
-      reason: `\`sql.named\` needs a non-empty string literal name, got \`${nameArg.getText()}\``,
+      reason: `\`sql.prepared\` needs a non-empty string literal name, got \`${nameArg.getText()}\`. Call it with no argument to derive one from the statement.`,
     };
   }
-  return { kind: 'named', name: nameArg.text };
+  return { kind: 'prepared', name: nameArg.text };
 }
 
 /**
@@ -103,7 +105,7 @@ export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
         // types should be called, and guessing would name them after a
         // variable the runtime never sees.
         errors.push(`${sourceFile.fileName}: ${tag.reason}`);
-      } else if (tag?.kind === 'named') {
+      } else if (tag?.kind === 'prepared' && tag.name !== undefined) {
         // The explicit name wins, exactly as `@name` does in a `.sql` file,
         // so the generated types follow the statement and not the variable.
         const variableName = variableNameOf(node);
@@ -116,11 +118,11 @@ export function parseFile(sourceFile: ts.SourceFile): TSParseResult {
           );
         }
         foundNodes.push({ queryName: tag.name, queryText });
-      } else if (tag?.kind === 'plain') {
-        foundNodes.push({
-          queryName: node.parent.getChildren()[0].getText(),
-          queryText,
-        });
+      } else if (tag) {
+        // A plain tag, or a `sql.prepared()` that derives its name: either way
+        // the variable is the only name codegen has to work from.
+        const queryName = node.parent.getChildren()[0].getText();
+        foundNodes.push({ queryName, queryText });
       }
     }
 

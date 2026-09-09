@@ -41,24 +41,45 @@ The connection comes first and the parameters second. A query that declares no p
 
 # Prepared statements
 
-A query written with a plain `sql` tag is sent unnamed, so Postgres parses and plans it on every call. The tag cannot see the variable it is assigned to, so there is no name to give the statement. `sql.named` supplies one explicitly — it is the `@name` a `.sql` query would have carried:
+A query written with a plain `sql` tag is sent unnamed, so Postgres parses and plans it on every call. `sql.prepared` opts the query into a server-side prepared statement name — the `@name` a `.sql` query would have carried. It takes the name as an argument, or derives one from the query itself.
 
 ```ts
 import { sql } from '@pelotech/pgtyped-runtime';
-import type { GetAllNotificationsQuery } from './notifications.types.js';
+import type {
+  GetAllNotificationsQuery,
+  CountNotificationsQuery,
+} from './notifications.types.js';
 
-export const getAllNotifications = sql.named<GetAllNotificationsQuery>(
+// Named: the statement goes out as `GetAllNotifications_2199d77a`.
+export const getAllNotifications = sql.prepared<GetAllNotificationsQuery>(
   'GetAllNotifications',
 )`
   SELECT * FROM notifications
 `;
 
-const notifications = await getAllNotifications.run(client);
+// Derived: the statement goes out as `pgtyped_f7b4ea6d854099ab`.
+export const countNotifications = sql.prepared<CountNotificationsQuery>()`
+  SELECT count(*)::int AS total FROM notifications
+`;
 ```
 
-The statement then goes out as `GetAllNotifications_2199d77a`: the name you passed, plus the first eight hex digits of a SHA-256 of the SQL text. Editing the query changes the hash and so renames the statement, which is what keeps a long-lived pooled connection from executing the text it prepared under the old name during a rolling deploy. `getAllNotifications.name` returns that full name; for a plain `sql` tag it is `undefined`.
+A named statement is the name you passed plus the first eight hex digits of a SHA-256 of the SQL text. A derived one is `pgtyped_` plus the first sixteen. Either way, editing the query changes the hash and so renames the statement, which is what keeps a long-lived pooled connection from executing the text it prepared under the old name during a rolling deploy. `getAllNotifications.name` returns the full name; for a plain `sql` tag it is `undefined`.
 
-Codegen reads the name off the tag rather than off the variable, so the generated types above are `GetAllNotificationsParams`, `GetAllNotificationsResult` and `GetAllNotificationsQuery` however the query is assigned. Because the two are then easy to get out of step, codegen warns when the variable is not `camelCase` of the name:
+## Which form to use
+
+Prefer an explicit name. It is greppable, and it is what you see in `pg_prepared_statements`, in `pg_stat_statements`, and in any error the server raises about the statement — so the identifier leads straight back to the query in your source. The derived form leads back to nothing without hashing candidate statements by hand.
+
+The derived form's advantage is that it costs nothing to adopt: nothing to invent, nothing to keep in sync, no lint to satisfy. It is the cheap way to turn prepared statements on across a file full of existing tags; name the ones that turn out to matter afterwards.
+
+## Why the hashes are different lengths
+
+Eight hex digits with a name, sixteen without. With a name, the name already separates one query from another and the hash only has to separate successive edits of that one query — a handful of versions never approaches 2<sup>32</sup>. With no name, the hash *is* the identifier and has to separate every query in the application: at 32 bits, 10,000 distinct queries collide with probability around 1.2%, and a collision means one query silently executing another's SQL. 64 bits takes that to about 3e-12.
+
+## What codegen checks
+
+Codegen reads an explicit name off the tag rather than off the variable, so the generated types above are `GetAllNotificationsParams`, `GetAllNotificationsResult` and `GetAllNotificationsQuery` however the query is assigned. With no explicit name there is nothing to read, so the types follow the variable, exactly as for a plain `sql` tag.
+
+Because a name and the variable holding it are then easy to get out of step, codegen warns when the variable is not `camelCase` of the name:
 
 ```
 src/notifications/notifications.ts: statement `GetEveryNotification` is held by variable `getAllNotifications`, expected `getEveryNotification`. ...
@@ -67,10 +88,10 @@ src/notifications/notifications.ts: statement `GetEveryNotification` is held by 
 The types are still correct, so it is only a warning — unless [`failOnError`](cli#configuration-file-format) is set, which turns it into a failed run.
 
 :::caution
-A query with a spread parameter (`$$ids`, `$$users(name, age)`) renders a different number of placeholders on every call, so a single name would have to stand for many different statement texts. Such a query stays unnamed even when you write `sql.named`, exactly as codegen leaves the equivalent `.sql` query unnamed. See [Prepared statements](cli#prepared-statements).
+A query with a spread parameter (`$$ids`, `$$users(name, age)`) renders a different number of placeholders on every call, so a single name would have to stand for many different statement texts. Such a query stays unnamed even when you write `sql.prepared`, in either form, exactly as codegen leaves the equivalent `.sql` query unnamed. See [Prepared statements](cli#prepared-statements).
 :::
 
-The CLI's `preparedStatements` option does not reach a tag: it gates the names codegen writes into `.sql` queries, while `sql.named` computes its name at runtime. To send a named tag unnamed, pass `{ prepared: false }` to the call or wrap the connection in `unprepared()`.
+The CLI's `preparedStatements` option does not reach a tag: it gates the names codegen writes into `.sql` queries, while `sql.prepared` computes its name at runtime. To send a prepared tag unnamed, pass `{ prepared: false }` to the call or wrap the connection in `unprepared()`.
 
 # Expansions
 

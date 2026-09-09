@@ -22,6 +22,7 @@ import {
   selectExistsTest,
 } from './comments/comments.queries.js';
 import {
+  countNotifications,
   getAllNotifications,
   insertNotification,
   insertNotifications,
@@ -269,7 +270,7 @@ describe('prepared statements', () => {
     expect(await prepared()).not.toContain(findBookByCategory.name);
   });
 
-  test('a sql.named tag is prepared server-side once and reused', async () => {
+  test('a named sql.prepared tag is prepared server-side once and reused', async () => {
     const before = await prepared();
     await getAllNotifications.run(client);
     await getAllNotifications.run(client);
@@ -278,6 +279,19 @@ describe('prepared statements', () => {
     expect(getAllNotifications.name).toMatch(
       /^GetAllNotifications_[0-9a-f]{8}$/,
     );
+  });
+
+  // The no-argument form. `countNotifications` is run by this test and no
+  // other, so the before/after diff is meaningful: pg_prepared_statements is
+  // per session, the suite shares one client, and the per-test ROLLBACK does
+  // not deallocate anything.
+  test('an unnamed sql.prepared tag is prepared under a derived name', async () => {
+    const before = await prepared();
+    expect(countNotifications.name).toMatch(/^pgtyped_[0-9a-f]{16}$/);
+    await countNotifications.run(client);
+    await countNotifications.run(client);
+    const added = (await prepared()).filter((n) => !before.includes(n));
+    expect(added).toStrictEqual([countNotifications.name]);
   });
 
   test('a plain sql tag is unnamed and prepares nothing', async () => {

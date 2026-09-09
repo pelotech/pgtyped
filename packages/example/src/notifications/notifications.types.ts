@@ -57,3 +57,17 @@ export interface GetAllNotificationsQuery {
   result: GetAllNotificationsResult;
 }
 
+/** 'CountNotifications' parameters type */
+export type CountNotificationsParams = void;
+
+/** 'CountNotifications' return type */
+export interface CountNotificationsResult {
+  total: number | null;
+}
+
+/** 'CountNotifications' query type */
+export interface CountNotificationsQuery {
+  params: CountNotificationsParams;
+  result: CountNotificationsResult;
+}
+

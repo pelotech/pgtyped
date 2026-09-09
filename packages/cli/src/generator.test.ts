@@ -1054,11 +1054,11 @@ export const findBookById = new TypedQuery<IFindBookByIdParams,IFindBookByIdResu
   });
 });
 
-// `sql.named` carries its own statement name, which the runtime sends to
-// Postgres. Codegen follows that name rather than the variable, exactly as it
-// follows `@name` in a `.sql` file.
-describe('a sql.named tag', () => {
-  const namedTag = `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT id FROM users WHERE id = $id\`;`;
+// `sql.prepared('X')` carries its own statement name, which the runtime sends
+// to Postgres. Codegen follows that name rather than the variable, exactly as
+// it follows `@name` in a `.sql` file.
+describe('a sql.prepared tag with an explicit name', () => {
+  const namedTag = `const users = sql.prepared<GetUsersQuery>('GetUsers')\`SELECT id FROM users WHERE id = $id\`;`;
 
   test('names the generated types after the statement, not the variable', async () => {
     const mockTypes: IQueryTypes = {
@@ -1100,7 +1100,7 @@ describe('a sql.named tag', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await generateTypedecsFromFile(
-        `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
+        `const users = sql.prepared<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
         'queries.ts',
         emptyDb,
         { mode: 'ts', include: '*.ts' },
@@ -1123,7 +1123,7 @@ describe('a sql.named tag', () => {
     try {
       await expect(
         generateTypedecsFromFile(
-          `const users = sql.named<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
+          `const users = sql.prepared<GetUsersQuery>('GetUsers')\`SELECT 1 AS n\`;`,
           'queries.ts',
           emptyDb,
           { mode: 'ts', include: '*.ts' },
@@ -1140,7 +1140,7 @@ describe('a sql.named tag', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const result = await generateTypedecsFromFile(
-        `const users = sql.named<GetUsersQuery>(name)\`SELECT 1 AS n\`;`,
+        `const users = sql.prepared<GetUsersQuery>(name)\`SELECT 1 AS n\`;`,
         'queries.ts',
         emptyDb,
         { mode: 'ts', include: '*.ts' },
@@ -1152,6 +1152,76 @@ describe('a sql.named tag', () => {
       expect(error).toHaveBeenCalledTimes(1);
       expect(error.mock.calls[0][0]).toContain('string literal');
     } finally {
+      error.mockRestore();
+    }
+  });
+
+  test('an empty name is unreadable too', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await generateTypedecsFromFile(
+        `const users = sql.prepared<UsersQuery>('')\`SELECT 1 AS n\`;`,
+        'queries.ts',
+        emptyDb,
+        { mode: 'ts', include: '*.ts' },
+        new TypeAllocator(TypeMapping()),
+        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+      );
+
+      expect(result.typedQueries).toEqual([]);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][0]).toContain('string literal');
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+// `sql.prepared()` derives its statement name from the SQL text at runtime, so
+// codegen has no name to read and falls back to the variable — the same name a
+// plain `sql` tag gets, and the same generated types.
+describe('a sql.prepared tag with no name', () => {
+  test('names the generated types after the variable', async () => {
+    const mockTypes: IQueryTypes = {
+      returnTypes: [
+        { returnName: 'id', columnName: 'id', type: 'uuid', nullable: false },
+      ],
+      paramMetadata: { params: [], mapping: [] },
+    };
+
+    const result = await queryToTypeDeclarations(
+      parsedQuery(
+        'ts',
+        `const getUsers = sql.prepared<GetUsersQuery>()\`SELECT id FROM users\`;`,
+      ),
+      async () => mockTypes,
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false } as ParsedConfig,
+    );
+
+    expect(result).toContain('export type GetUsersParams');
+    expect(result).toContain('export interface GetUsersResult');
+    expect(result).toContain('export interface GetUsersQuery');
+  });
+
+  test('generates without warning or error, unlike the unreadable name', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await generateTypedecsFromFile(
+        `const getUsers = sql.prepared<GetUsersQuery>()\`SELECT 1 AS n\`;`,
+        'queries.ts',
+        emptyDb,
+        { mode: 'ts', include: '*.ts' },
+        new TypeAllocator(TypeMapping()),
+        { hungarianNotation: false, failOnError: true } as ParsedConfig,
+      );
+
+      expect(result.typedQueries).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
       error.mockRestore();
     }
   });

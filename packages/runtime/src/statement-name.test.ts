@@ -2,7 +2,10 @@ import type { DatabaseConnection, QueryConfig } from './connection.js';
 import { unprepared } from './connection.js';
 import { parseSqlFile } from './parse-sql-file.js';
 import { sql } from './sql.js';
-import { preparedStatementName } from './statement-name.js';
+import {
+  derivedStatementName,
+  preparedStatementName,
+} from './statement-name.js';
 import { TypedQuery } from './typed-query.js';
 
 /**
@@ -17,11 +20,12 @@ import { TypedQuery } from './typed-query.js';
  * call that breaks it; it fails at the *next* call, inside the driver, with a
  * message naming neither the query nor the offending option.
  *
- * Two front-ends can grant a name: codegen, for a `.sql` file, and `sql.named`,
- * for a tag that opts in. Both go through the same `preparedStatementName`, so
- * both withhold a name from a variable-arity query, and both combine the name
- * with a hash of the statement text rather than using it bare. A plain `sql`
- * tag is never named at all.
+ * Two front-ends can grant a name: codegen, for a `.sql` file, and
+ * `sql.prepared`, for a tag that opts in. Both go through the same
+ * `rendersFixedSQL` gate, so both withhold a name from a variable-arity query,
+ * and neither uses a name bare — codegen and `sql.prepared('X')` append 8 hex
+ * of the statement hash, and `sql.prepared()` derives the whole name from 16
+ * hex of it. A plain `sql` tag is never named at all.
  *
  * These tests are the specification for that rule. If one of them starts
  * failing, the question to ask is not "how do I make it pass" but "can a
@@ -242,7 +246,7 @@ describe('the residual hole, pinned so a change to it is deliberate', () => {
   });
 });
 
-describe('a sql.named tag, which opts into a name', () => {
+describe('a sql.prepared tag with an explicit name', () => {
   // Pinned rather than merely self-consistent: the scheme is
   // `<name>_<first 8 hex of sha256(statement)>`, and a change to it renames
   // every statement in every deployed application at once.
@@ -250,7 +254,7 @@ describe('a sql.named tag, which opts into a name', () => {
   const HASH = 'a9cd4405';
 
   const named = <P>(name: string) =>
-    sql.named<{ params: P; result: unknown }>(name);
+    sql.prepared<{ params: P; result: unknown }>(name);
 
   test('its name is the given name plus a hash of the statement', () => {
     const q = named<{ id: number }>(
@@ -353,13 +357,13 @@ describe('a sql.named tag, which opts into a name', () => {
     'drop"; SELECT 1 --',
     'Ünïcode',
   ])('rejects the invalid name %j, naming the value', (bad) => {
-    expect(() => sql.named(bad)).toThrow(TypeError);
-    expect(() => sql.named(bad)).toThrow(JSON.stringify(bad));
+    expect(() => sql.prepared(bad)).toThrow(TypeError);
+    expect(() => sql.prepared(bad)).toThrow(JSON.stringify(bad));
   });
 
   test('accepts the same shape a .sql @name accepts', () => {
     expect(
-      sql.named<{ params: void; result: unknown }>('_Get_1')`SELECT 1 AS n`
+      sql.prepared<{ params: void; result: unknown }>('_Get_1')`SELECT 1 AS n`
         .name,
     ).toBe('_Get_1_4531145a');
   });
@@ -389,10 +393,153 @@ describe('a sql.named tag, which opts into a name', () => {
   // carries its hash would put two different statements under one name again,
   // so the prefix is what gives way.
   test('a long name is truncated to 63 bytes, keeping the whole hash', () => {
-    const q = sql.named<{ params: { id: number }; result: unknown }>(
+    const q = sql.prepared<{ params: { id: number }; result: unknown }>(
       'A'.repeat(80),
     )`SELECT * FROM books WHERE id = $id`;
     expect(Buffer.byteLength(q.name!, 'utf8')).toBe(63);
     expect(q.name).toBe(`${'A'.repeat(54)}_${HASH}`);
+  });
+});
+
+// A `sql.prepared()` with no argument still gets a canonical name, derived from
+// the statement text alone. It is the cheapest way to adopt prepared statements
+// — nothing to name, nothing to keep in sync — and it pays for that with an
+// identifier that tells you nothing when you meet it in pg_stat_statements.
+describe('a sql.prepared tag with no name, which derives one', () => {
+  // Pinned, like the named form: the scheme is
+  // `pgtyped_<first 16 hex of sha256(statement)>`, and changing it renames
+  // every derived statement in every deployed application at once.
+  const TEXT = 'SELECT * FROM books WHERE id = $id';
+  const HASH16 = 'a9cd44055b1c736f';
+
+  const derived = <P>() => sql.prepared<{ params: P; result: unknown }>();
+
+  test('its name is pgtyped_ plus sixteen hex digits of the statement hash', () => {
+    const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    expect(q.name).toMatch(/^pgtyped_[0-9a-f]{16}$/);
+    expect(q.name).toBe(`pgtyped_${HASH16}`);
+    expect(
+      derivedStatementName({
+        queryName: 'anything at all',
+        statement: TEXT,
+        params: [],
+        columns: [],
+      }),
+    ).toBe(`pgtyped_${HASH16}`);
+  });
+
+  // Sixteen and not eight, because here the hash is the *whole* identifier and
+  // has to separate every query in the application. 32 bits collides at ~1.2%
+  // across 10,000 queries and a collision runs the wrong SQL; 64 bits takes
+  // that to ~3e-12. With a name the prefix already does the separating, so its
+  // hash only has to tell successive edits of one query apart.
+  test('the derived hash is twice the length of the named one, on the same text', () => {
+    const named = sql.prepared<{ params: { id: number }; result: unknown }>(
+      'GetUsers',
+    )`SELECT * FROM books WHERE id = $id`;
+    expect(named.name).toBe('GetUsers_a9cd4405');
+    expect(`pgtyped_${HASH16}`.startsWith('pgtyped_a9cd4405')).toBe(true);
+  });
+
+  test('the derived name ignores the variable and the query name entirely', () => {
+    expect(
+      derivedStatementName({
+        queryName: 'GetUsers',
+        statement: TEXT,
+        params: [],
+        columns: [],
+      }),
+    ).toBe(
+      derivedStatementName({
+        queryName: 'somethingCompletelyDifferent',
+        statement: TEXT,
+        params: [],
+        columns: [],
+      }),
+    );
+  });
+
+  test('it sends that name, and the name is what reaches the connection', async () => {
+    const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    expect(q.compile({ id: 1 })).toStrictEqual({
+      name: `pgtyped_${HASH16}`,
+      text: 'SELECT * FROM books WHERE id = $1',
+      values: [1],
+    });
+
+    const { calls, connection } = recording();
+    await q.run(connection, { id: 1 });
+    expect(calls).toStrictEqual([
+      {
+        name: `pgtyped_${HASH16}`,
+        text: 'SELECT * FROM books WHERE id = $1',
+        values: [1],
+      },
+    ]);
+  });
+
+  // Same defence as the named form: same text, same name; edited text,
+  // different name. Here it is the only defence, since there is no prefix.
+  test('the same text names the same statement twice, an edit renames it', () => {
+    const first = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    const second = derived<{
+      id: number;
+    }>()`SELECT * FROM books WHERE id = $id`;
+    const edited = derived<{
+      id: number;
+    }>()`SELECT name FROM books WHERE id = $id`;
+    expect(second.name).toBe(first.name);
+    expect(edited.name).toBe('pgtyped_9d3c819e0aada145');
+    expect(edited.name).not.toBe(first.name);
+  });
+
+  // The load-bearing gate again. Withholding a name is not something the
+  // *caller* asked for by naming the query, so it has to hold for the derived
+  // form too — removing the `rendersFixedSQL` check in statement-name.ts makes
+  // exactly this test fail.
+  test('an array-spread param stays unnamed here too', () => {
+    const q = derived<{
+      ids: number[];
+    }>()`SELECT * FROM books WHERE id IN $$ids`;
+    expect(q.name).toBeUndefined();
+    expect(q.compile({ ids: [1] })).toStrictEqual({
+      text: 'SELECT * FROM books WHERE id IN ($1)',
+      values: [1],
+    });
+    expect(q.compile({ ids: [1, 2] })).toStrictEqual({
+      text: 'SELECT * FROM books WHERE id IN ($1,$2)',
+      values: [1, 2],
+    });
+  });
+
+  test('a pick-array-spread param stays unnamed too', () => {
+    const q = derived<{
+      books: { name: string }[];
+    }>()`INSERT INTO books VALUES $$books(name!)`;
+    expect(q.name).toBeUndefined();
+  });
+
+  test('prepared: false drops the derived name', () => {
+    const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    expect(q.compile({ id: 1 }, { prepared: false })).toStrictEqual({
+      text: 'SELECT * FROM books WHERE id = $1',
+      values: [1],
+    });
+  });
+
+  test('unprepared() strips it at the connection', async () => {
+    const { calls, connection } = recording();
+    const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    await q.run(unprepared(connection), { id: 1 });
+    expect(calls).toStrictEqual([
+      { text: 'SELECT * FROM books WHERE id = $1', values: [1] },
+    ]);
+  });
+
+  // Nothing to truncate: the derived name is a fixed 24 bytes, well inside
+  // Postgres' 63-byte identifier limit.
+  test('it is always well short of the 63-byte identifier limit', () => {
+    const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
+    expect(q.name).toHaveLength(24);
   });
 });
