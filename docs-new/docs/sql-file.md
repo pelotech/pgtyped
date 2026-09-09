@@ -28,7 +28,7 @@ PgTyped has a number of requirements for SQL file contents:
 4. Queries can contain parameters. Parameters should start with a colon, ex. `:paramName`.
 5. Annotations can include param expansions if needed using the `@param` tag.
 6. Parameters can be forced to be not nullable using an exclamation mark `:paramName!`.
-7. Nullability on output columns for output columns can be specified using column aliases such as `AS "name?"` or `AS "name!"`.
+7. Nullability on output columns can be specified in the annotation using the `@column` tag, ex. `@column name!` or `@column name?`.
 
 ## Parameter expansions
 
@@ -82,8 +82,7 @@ SELECT FROM users WHERE age in :ages;
 ```
 
 ```ts title="Execution:"
-const parameters = { ages: [25, 30, 35] };
-selectSomeUsers.run(parameters, connection);
+selectSomeUsers.run(connection, { ages: [25, 30, 35] });
 ```
 
 ```sql title="Resulting query:"
@@ -112,8 +111,7 @@ INSERT INTO users (name, age) VALUES :user RETURNING id;
 ```
 
 ```ts title="Execution:"
-const parameters = { user: { name: 'Rob', age: 56 } };
-insertUsers.run(parameters, connection);
+insertUsers.run(connection, { user: { name: 'Rob', age: 56 } });
 ```
 
 ```sql title="Resulting query:"
@@ -142,13 +140,12 @@ INSERT INTO users (name, age) VALUES :users RETURNING id;`;
 ```
 
 ```ts title="Execution:"
-const parameters = {
+insertUsers.run(connection, {
   users: [
     { name: 'Rob', age: 56 },
     { name: 'Tom', age: 45 },
   ],
-};
-insertUsers.run(parameters, connection);
+});
 ```
 
 ```sql title="Resulting query:"
@@ -172,39 +169,70 @@ SELECT * FROM book_comments WHERE id = :id! OR user_id = :id;
 ```
 
 ```ts title="Resulting code:"
-export interface IGetAllCommentsParams {
-  id: number | null | void;
+export interface GetAllCommentsParams {
+  id?: number | null | void;
 }
 
-export interface IGetAllCommentsStrictParams {
+export interface GetAllCommentsStrictParams {
   id: number;
 }
 ```
 
 ## Enforcing (non)-nullability on output columns
-Sometimes you might want to force pgTyped to use a (non-)nullable type for an output column as Postgres limits how much
-information can be automatically discovered. This can be the case with materialized views and function calls for
-example.   
-You can enforce nullability on output columns by aliasing the column by using `AS "name?"` to make it nullable or
-`AS "name!"` to enforce non-nullability.
+
+Sometimes you want to force pgTyped to use a (non-)nullable type for an output column, because Postgres limits how much
+information can be automatically discovered. This is common with aggregates, materialized views and function calls.
+
+Write a `@column` line in the query's annotation block. `@column name!` makes the column non-nullable, `@column name?`
+makes it nullable, and either one overrides whatever the catalog reported.
 
 #### Example:
 
 ```sql title="Query definition:"
-/* @name GetTotalUserScores */
-SELECT coalesce(sum(score), 0) AS "total_score!" FROM users WHERE id = :id!;
-/* @name GetUsersAndTheirNames */
-SELECT id, name AS "name?" FROM users LEFT JOIN names USING (id);
+/*
+  @name CountBooksTotal
+  @column total!
+*/
+SELECT count(*)::int AS total FROM books;
+
+/*
+  @name GetUsersAndTheirNames
+  @column name?
+*/
+SELECT id, name FROM users LEFT JOIN names USING (id);
 ```
 
 ```ts title="Resulting code:"
-export interface IGetTotalUserScoresResult {
-  total_score: number;
+export interface CountBooksTotalResult {
+  total: number;
 }
-export interface IGetUsersAndTheirNamesResult {
+export interface GetUsersAndTheirNamesResult {
   id: number;
   name: string | null;
 }
+```
+
+:::caution
+The name in `@column` is the **Postgres result column name**, exactly as the server reports it and **before**
+`camelCaseColumnNames` is applied. For `SELECT count(*) AS total_count`, write `@column total_count!`, not
+`@column totalCount!`. A hint whose name matches no result column is silently ignored, so a mismatch shows up as a type
+that is still nullable rather than as an error.
+:::
+
+:::note
+In PgTyped 2.x these hints were written as column aliases: `SELECT ... AS "total!"`. The suffix went to Postgres
+verbatim, so the server returned a column literally called `total!`, and the runtime stripped the trailing `!` off every
+row key on the way back. 3.0 does no such rewriting: write a plain alias and add a `@column` line. An alias left as
+`AS "total!"` now really names the column `total!`, in the generated type and in the rows.
+See [Upgrading from 2.x](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md#upgrading-from-2x).
+:::
+
+`@column` also works in `sql` tags in TS files, in a leading block comment:
+
+```ts
+const countBooksTotal = sql<CountBooksTotalQuery>`
+  /* @column total! */
+  SELECT count(*)::int AS total FROM books`;
 ```
 
 :::note

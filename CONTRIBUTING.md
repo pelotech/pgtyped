@@ -29,10 +29,9 @@ It will also link the packages together, so that you can make changes to one pac
 
 The `packages` directory contains the source code for the various components of pgTyped:
 
-- `packages/cli` - The CLI tool for generating TypeScript types from SQL files
-- `packages/parser` - The pgTyped SQL and TS language parser
-- `packages/runtime` - The pgTyped runtime library that provides the `sql` template tag and the `sql` function for executing queries.
-- `packages/example` - This repository contains a simple example of a pgTyped project written as a Jest test suite. We use this project both as a demonstration of pgTyped and as an end-to-end test suite for the project.
+- `packages/cli` - The CLI tool for generating TypeScript types from SQL and TS files.
+- `packages/runtime` - The pgTyped runtime library. It provides `TypedQuery`, the `sql` template tag, and the SQL parser shared by the CLI and the tag. It has no dependencies.
+- `packages/example` - A small pgTyped project written as a Vitest suite. We use it both as a demonstration of pgTyped and as an end-to-end test suite for the project.
 
 To build the project, run:
 
@@ -56,19 +55,16 @@ It will run the tests for all the packages in the project, including end-to-end 
 
 # The `packages/example` project
 
-The `packages/example` project is an end-to-end test suite for pgTyped. It contains a simple example of a pgTyped project written as a Jest test suite.
+The `packages/example` project is an end-to-end test suite for pgTyped. It contains a simple example of a pgTyped project written as a [Vitest](https://vitest.dev/) suite.
 
-The packages `pnpm test` runs the following command:
+The package's `pnpm test` runs the following command:
 
 ```bash
-docker compose run build && docker compose run test && docker compose run test-cjs
+docker compose run build && docker compose run test
 ```
 
-As you can see it runs the `build` target, then runs the `test` target twice, once with the `esm` module format and once with the `cjs` module format:
-
-- The `build` target runs pgTyped on the `sql` files in the `packages/example/src` directory generating the query code and type definitions. It also runs `git diff` to verify that the generated code matches the code in the repository.
-- The `test` target runs the queries in `packages/example/src/index.ts` and verifies that the results match the expected results.
-- The `test-cjs` target runs the same tests as the `test` target, but using the `cjs` module format to verify that the generated code works with both module formats.
+- The `build` target runs pgTyped on the `sql` and `ts` files in the `packages/example/src` directory, generating the query code and type definitions. It also runs `git diff` to verify that the generated code matches the code committed to the repository, so a change to codegen output has to be committed alongside the change that caused it.
+- The `test` target runs the queries in `packages/example/src/index.test.ts` against the live database and verifies that the results match the snapshots.
 
 All the targets are run in a Docker container, with a Postgres database running in a separate container spun up by Docker Compose.
 
