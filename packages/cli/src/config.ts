@@ -1,92 +1,71 @@
 /** @fileoverview Config file parser */
 
-import { Type } from './db/type.js';
-import * as Either from 'fp-ts/lib/Either.js';
-import * as t from 'io-ts';
-import { reporter } from 'io-ts-reporters';
 import { createRequire } from 'module';
 import { isAbsolute, join } from 'path';
-import tls from 'tls';
+import type tls from 'node:tls';
 import { DatabaseConfig, default as dbUrlModule } from 'ts-parse-database-url';
+import { z } from 'zod';
+import { Type } from './db/type.js';
 import { TypeDefinition } from './types.js';
 
 // module import hack
 const { default: parseDatabaseUri } = dbUrlModule as any;
 
-const transformCodecProps = {
-  include: t.string,
+const transformProps = {
+  include: z.string(),
+  emitTemplate: z.string().optional(),
   /** @deprecated emitFileName is deprecated */
-  emitFileName: t.union([t.string, t.undefined]),
-  emitTemplate: t.union([t.string, t.undefined]),
+  emitFileName: z.string().optional(),
 };
 
-const TSTransformCodec = t.type({
-  mode: t.literal('ts'),
-  ...transformCodecProps,
-});
-
-const TSTypedSQLTagTransformCodec = t.type({
-  mode: t.literal('ts-implicit'),
-  include: t.string,
-  functionName: t.string,
-  emitFileName: t.string,
-});
-
-export type TSTypedSQLTagTransformConfig = t.TypeOf<
-  typeof TSTypedSQLTagTransformCodec
->;
-
-const SQLTransformCodec = t.type({
-  mode: t.literal('sql'),
-  ...transformCodecProps,
-});
-
-const TransformCodec = t.union([
-  TSTransformCodec,
-  SQLTransformCodec,
-  TSTypedSQLTagTransformCodec,
+const Transform = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('sql'), ...transformProps }),
+  z.object({ mode: z.literal('ts'), ...transformProps }),
 ]);
 
-export type TransformConfig = t.TypeOf<typeof TransformCodec>;
+const Config = z
+  .object({
+    transforms: z.array(Transform),
+    srcDir: z.string(),
+    failOnError: z.boolean().default(false),
+    camelCaseColumnNames: z.boolean().default(false),
+    hungarianNotation: z.boolean().default(false),
+    nonEmptyArrayParams: z.boolean().default(false),
+    preparedStatements: z.boolean().default(true),
+    dbUrl: z.string().optional(),
+    db: z
+      .object({
+        host: z.string().optional(),
+        port: z.number().optional(),
+        user: z.string().optional(),
+        password: z.string().optional(),
+        dbName: z.string().optional(),
+        ssl: z
+          .union([
+            z.boolean(),
+            z.custom<tls.ConnectionOptions>(
+              (v) => typeof v === 'object' && v !== null,
+            ),
+          ])
+          .optional(),
+      })
+      .optional(),
+    typesOverrides: z
+      .record(
+        z.union([
+          z.string(),
+          z.object({
+            parameter: z.string().optional(),
+            return: z.string().optional(),
+          }),
+        ]),
+      )
+      .optional(),
+  })
+  .strict();
 
-const configParser = t.type({
-  // maximum number of worker threads to use for the codegen worker pool
-  maxWorkerThreads: t.union([t.number, t.undefined]),
-  transforms: t.array(TransformCodec),
-  srcDir: t.string,
-  failOnError: t.union([t.boolean, t.undefined]),
-  camelCaseColumnNames: t.union([t.boolean, t.undefined]),
-  hungarianNotation: t.union([t.boolean, t.undefined]),
-  nonEmptyArrayParams: t.union([t.boolean, t.undefined]),
-  preparedStatements: t.union([t.boolean, t.undefined]),
-  dbUrl: t.union([t.string, t.undefined]),
-  db: t.union([
-    t.type({
-      host: t.union([t.string, t.undefined]),
-      password: t.union([t.string, t.undefined]),
-      port: t.union([t.number, t.undefined]),
-      user: t.union([t.string, t.undefined]),
-      dbName: t.union([t.string, t.undefined]),
-      ssl: t.union([t.UnknownRecord, t.boolean, t.undefined]),
-    }),
-    t.undefined,
-  ]),
-  typesOverrides: t.union([
-    t.record(
-      t.string,
-      t.union([
-        t.string,
-        t.type({
-          parameter: t.union([t.string, t.undefined]),
-          return: t.union([t.string, t.undefined]),
-        }),
-      ]),
-    ),
-    t.undefined,
-  ]),
-});
-
-export type IConfig = typeof configParser._O;
+export type IConfig = z.input<typeof Config>;
+export type TransformConfig = z.infer<typeof Transform>;
 
 export interface ParsedConfig {
   db: {
@@ -97,14 +76,13 @@ export interface ParsedConfig {
     port: number;
     ssl?: tls.ConnectionOptions | boolean;
   };
-  maxWorkerThreads: number | undefined;
   failOnError: boolean;
   camelCaseColumnNames: boolean;
   hungarianNotation: boolean;
   nonEmptyArrayParams: boolean;
   preparedStatements: boolean;
-  transforms: IConfig['transforms'];
-  srcDir: IConfig['srcDir'];
+  transforms: TransformConfig[];
+  srcDir: string;
   typesOverrides: Record<string, Partial<TypeDefinition>>;
 }
 
@@ -170,10 +148,22 @@ export function parseConfig(
   const fullPath = isAbsolute(path) ? path : join(process.cwd(), path);
   const configObject = require(fullPath);
 
-  const result = configParser.decode(configObject);
-  if (Either.isLeft(result)) {
-    const message = reporter(result);
-    throw new Error(message[0]);
+  const declaredTransforms = (
+    configObject as { transforms?: { mode?: unknown }[] }
+  ).transforms;
+  if (declaredTransforms?.some((tr) => tr?.mode === 'ts-implicit')) {
+    throw new Error(
+      'Transform mode "ts-implicit" was removed in 3.0; use mode "ts" and import the sql tag from @pelotech/pgtyped-runtime directly.',
+    );
+  }
+
+  const result = Config.safeParse(configObject);
+  if (!result.success) {
+    throw new Error(
+      result.error.issues
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('\n'),
+    );
   }
 
   const defaultDBConfig = {
@@ -194,7 +184,6 @@ export function parseConfig(
   };
 
   const {
-    maxWorkerThreads,
     db = defaultDBConfig,
     dbUrl: configDbUri,
     transforms,
@@ -205,7 +194,7 @@ export function parseConfig(
     nonEmptyArrayParams,
     preparedStatements,
     typesOverrides,
-  } = configObject as IConfig;
+  } = result.data;
 
   // CLI connectionUri flag takes precedence over the env and config one
   const dbUri = argConnectionUri || envDBConfig.uri || configDbUri;
@@ -214,7 +203,7 @@ export function parseConfig(
     ? convertParsedURLToDBConfig(parseDatabaseUri(dbUri))
     : {};
 
-  if (transforms.some((tr) => tr.mode !== 'ts-implicit' && !!tr.emitFileName)) {
+  if (transforms.some((tr) => !!tr.emitFileName)) {
     // tslint:disable:no-console
     console.log(
       'Warning: Setting "emitFileName" is deprecated. Consider using "emitTemplate" instead.',
@@ -245,12 +234,11 @@ export function parseConfig(
     db: finalDBConfig,
     transforms,
     srcDir,
-    failOnError: failOnError ?? false,
-    camelCaseColumnNames: camelCaseColumnNames ?? false,
-    hungarianNotation: hungarianNotation ?? true,
-    nonEmptyArrayParams: nonEmptyArrayParams ?? false,
-    preparedStatements: preparedStatements ?? false,
+    failOnError,
+    camelCaseColumnNames,
+    hungarianNotation,
+    nonEmptyArrayParams,
+    preparedStatements,
     typesOverrides: parsedTypesOverrides,
-    maxWorkerThreads,
   };
 }

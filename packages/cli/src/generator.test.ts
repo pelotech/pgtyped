@@ -1,14 +1,14 @@
-import { parseSQLFile, TSQueryAST } from '@pelotech/pgtyped-parser';
 import { IQueryTypes } from './db/types.js';
-import { ParameterTransform } from '@pelotech/pgtyped-runtime/internal';
-import { pascalCase } from 'change-case';
+import {
+  ParameterTransform,
+  parseSqlFile,
+  type QueryIR,
+} from '@pelotech/pgtyped-runtime/internal';
 import { ParsedConfig } from './config.js';
 import {
   escapeComment,
+  generateDeclarations,
   generateInterface,
-  genTypedSQLOverloadFunctions,
-  TSTypedQuery,
-  ProcessingMode,
   queryToTypeDeclarations,
 } from './generator.js';
 import { parseCode as parseTypeScriptFile } from './parseTypescript.js';
@@ -16,17 +16,22 @@ import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 
 const partialConfig = { hungarianNotation: true } as ParsedConfig;
 
-function parsedQuery(
-  mode: ProcessingMode,
-  queryString: string,
-): Parameters<typeof queryToTypeDeclarations>[0] {
-  return mode === ProcessingMode.SQL
-    ? { mode, ast: parseSQLFile(queryString).queries[0] }
-    : { mode, ast: parseTypeScriptFile(queryString).queries[0] };
+type Mode = 'sql' | 'ts';
+
+/** Runs the same front-end codegen uses, so the tests exercise the real IR. */
+function parsedQuery(mode: Mode, queryString: string): QueryIR {
+  if (mode === 'sql') {
+    const { queries, errors } = parseSqlFile(queryString);
+    expect(errors).toEqual([]);
+    return queries[0];
+  }
+  const { queries, errors } = parseTypeScriptFile(queryString);
+  expect(errors).toEqual([]);
+  return queries[0];
 }
 
 describe('query-to-interface translation', () => {
-  [ProcessingMode.SQL, ProcessingMode.TS].forEach((mode) => {
+  (['sql', 'ts'] as const).forEach((mode) => {
     test(`TypeMapping and declarations (${mode})`, async () => {
       const queryStringSQL = `
     /* @name GetNotifications */
@@ -35,8 +40,7 @@ describe('query-to-interface translation', () => {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id = $userId\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -69,7 +73,7 @@ describe('query-to-interface translation', () => {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -78,7 +82,7 @@ describe('query-to-interface translation', () => {
         types,
         partialConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -111,11 +115,10 @@ export interface IGetNotificationsQuery {
       @name InsertNotifications
       @param notification -> (payload, user_id, type)
     */
-    INSERT INTO notifications (payload, user_id, type) VALUES :notification
+    INSERT INTO notifications (payload, user_id, type) VALUES :notification;
     `;
       const queryStringTS = `const insertNotifications = sql\`INSERT INTO notifications (payload, user_id, type) VALUES $notification(payload, user_id, type)\`;`;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [],
         paramMetadata: {
@@ -184,8 +187,7 @@ export interface IInsertNotificationsQuery {
       delete from users * where name = :userName and id = :userId and note = :userNote returning id, id, name, note as bote;
     `;
       const queryStringTS = `const deleteUsers = sql\`delete from users * where name = $userName and id = $userId and note = $userNote returning id, id, name, note as bote\``;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -271,8 +273,7 @@ export interface IDeleteUsersQuery {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id = $userId\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -304,7 +305,7 @@ export interface IDeleteUsersQuery {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -313,7 +314,7 @@ export interface IDeleteUsersQuery {
         types,
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -350,8 +351,7 @@ export interface IGetNotificationsQuery {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id in $userIds\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -383,7 +383,7 @@ export interface IGetNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -392,7 +392,7 @@ export interface IGetNotificationsQuery {
         types,
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -429,8 +429,7 @@ export interface IGetNotificationsQuery {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id in $userIds\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -462,7 +461,7 @@ export interface IGetNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -471,7 +470,7 @@ export interface IGetNotificationsQuery {
         types,
         { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -508,8 +507,7 @@ export interface IGetNotificationsQuery {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id in $userIds!\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -541,7 +539,7 @@ export interface IGetNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -550,7 +548,7 @@ export interface IGetNotificationsQuery {
         types,
         { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -582,11 +580,10 @@ export interface IGetNotificationsQuery {
       @name InsertNotifications
       @param notification -> ((payload, user_id, type)...)
     */
-    INSERT INTO notifications (payload, user_id, type) VALUES :notification
+    INSERT INTO notifications (payload, user_id, type) VALUES :notification;
     `;
       const queryStringTS = `const insertNotifications = sql\`INSERT INTO notifications (payload, user_id, type) VALUES $notification(payload, user_id, type)\`;`;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [],
         paramMetadata: {
@@ -661,8 +658,7 @@ export interface IInsertNotificationsQuery {
       const queryStringTS = `
       const getNotifications = sql\`SELECT payload, type FROM notifications WHERE id = $userId\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
@@ -693,7 +689,7 @@ export interface IInsertNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       // Test out imports
       types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+        { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
         TypeScope.Return,
       );
       const result = await queryToTypeDeclarations(
@@ -702,7 +698,7 @@ export interface IInsertNotificationsQuery {
         types,
         partialConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
+      const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
 export type PayloadType = 'dynamite' | 'message';
 
@@ -728,27 +724,35 @@ export interface IGetNotificationsQuery {
       expect(result).toEqual(expected);
     });
 
+    // `@column name!` / `@column name?` in the comment block override the
+    // catalog. The hint names the Postgres result column, never the camelCased
+    // field, and the suffix never reaches the server.
     test(`Columns with nullability hints (${mode})`, async () => {
       const queryStringSQL = `
-    /* @name GetNotifications */
-    SELECT payload as "payload!", type as "type?" FROM notifications WHERE id = :userId;
+    /*
+      @name CountNotifications
+      @column total!
+      @column maybe?
+    */
+    SELECT count(*)::int AS total, 1 AS maybe FROM notifications WHERE id = :userId;
     `;
       const queryStringTS = `
-      const getNotifications = sql\`SELECT payload as "payload!", type FROM notifications WHERE id = $userId\`;
+      const countNotifications = sql\`/* @column total! @column maybe? */ SELECT count(*)::int AS total, 1 AS maybe FROM notifications WHERE id = $userId\`;
       `;
-      const queryString =
-        mode === ProcessingMode.SQL ? queryStringSQL : queryStringTS;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
       const mockTypes: IQueryTypes = {
         returnTypes: [
           {
-            returnName: 'payload!',
-            columnName: 'payload!',
-            type: 'json',
+            returnName: 'total',
+            columnName: 'total',
+            type: 'int4',
+            // The catalog cannot prove an aggregate is non-null; the hint can.
+            nullable: true,
           },
           {
-            returnName: 'type?',
-            columnName: 'type?',
-            type: { name: 'PayloadType', enumValues: ['message', 'dynamite'] },
+            returnName: 'maybe',
+            columnName: 'maybe',
+            type: 'int4',
             nullable: false,
           },
         ],
@@ -766,41 +770,103 @@ export interface IGetNotificationsQuery {
       };
       const typeSource = async (_: any) => mockTypes;
       const types = new TypeAllocator(TypeMapping());
-      // Test out imports
-      types.use(
-        { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
-        TypeScope.Return,
-      );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
         typeSource,
         types,
         partialConfig,
       );
-      const expectedTypes = `import { PreparedQuery } from '@pelotech/pgtyped-runtime';
-
-export type PayloadType = 'dynamite' | 'message';
-
-export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };\n`;
-
-      expect(types.declaration('file.ts')).toEqual(expectedTypes);
-      const expected = `/** 'GetNotifications' parameters type */
-export interface IGetNotificationsParams {
+      const expected = `/** 'CountNotifications' parameters type */
+export interface ICountNotificationsParams {
   userId?: string | null | void;
 }
 
-/** 'GetNotifications' return type */
-export interface IGetNotificationsResult {
-  payload: Json;
-  type: PayloadType | null;
+/** 'CountNotifications' return type */
+export interface ICountNotificationsResult {
+  maybe: number | null;
+  total: number;
 }
 
-/** 'GetNotifications' query type */
-export interface IGetNotificationsQuery {
-  params: IGetNotificationsParams;
-  result: IGetNotificationsResult;
+/** 'CountNotifications' query type */
+export interface ICountNotificationsQuery {
+  params: ICountNotificationsParams;
+  result: ICountNotificationsResult;
 }\n\n`;
       expect(result).toEqual(expected);
+    });
+
+    // An unhinted column still follows the catalog, so a hint on one column
+    // cannot quietly change its neighbours.
+    test(`Hints apply only to the column they name (${mode})`, async () => {
+      const queryStringSQL = `
+    /*
+      @name CountNotifications
+      @column total!
+    */
+    SELECT count(*)::int AS total, 1 AS other FROM notifications;
+    `;
+      const queryStringTS = `
+      const countNotifications = sql\`/* @column total! */ SELECT count(*)::int AS total, 1 AS other FROM notifications\`;
+      `;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
+      const mockTypes: IQueryTypes = {
+        returnTypes: [
+          {
+            returnName: 'total',
+            columnName: 'total',
+            type: 'int4',
+            nullable: true,
+          },
+          { returnName: 'other', columnName: 'other', type: 'int4' },
+        ],
+        paramMetadata: { params: [], mapping: [] },
+      };
+      const typeSource = async (_: any) => mockTypes;
+      const types = new TypeAllocator(TypeMapping());
+      const result = await queryToTypeDeclarations(
+        parsedQuery(mode, queryString),
+        typeSource,
+        types,
+        partialConfig,
+      );
+      expect(result).toContain('total: number;');
+      expect(result).toContain('other: number | null;');
+    });
+
+    // Hints are matched before camelCaseColumnNames runs, so a user writes the
+    // Postgres column name and never the generated field name.
+    test(`Hints match the pre-camelCase column name (${mode})`, async () => {
+      const queryStringSQL = `
+    /*
+      @name CountNotifications
+      @column total_count!
+    */
+    SELECT count(*)::int AS total_count FROM notifications;
+    `;
+      const queryStringTS = `
+      const countNotifications = sql\`/* @column total_count! */ SELECT count(*)::int AS total_count FROM notifications\`;
+      `;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
+      const mockTypes: IQueryTypes = {
+        returnTypes: [
+          {
+            returnName: 'total_count',
+            columnName: 'total_count',
+            type: 'int4',
+            nullable: true,
+          },
+        ],
+        paramMetadata: { params: [], mapping: [] },
+      };
+      const typeSource = async (_: any) => mockTypes;
+      const types = new TypeAllocator(TypeMapping());
+      const result = await queryToTypeDeclarations(
+        parsedQuery(mode, queryString),
+        typeSource,
+        types,
+        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+      );
+      expect(result).toContain('totalCount: number;');
     });
   });
 });
@@ -874,11 +940,11 @@ test(`Fail on anonymous column return type`, async () => {
   const types = new TypeAllocator(TypeMapping());
   // Test out imports
   types.use(
-    { name: 'PreparedQuery', from: '@pelotech/pgtyped-runtime' },
+    { name: 'TypedQuery', from: '@pelotech/pgtyped-runtime' },
     TypeScope.Return,
   );
   const result = await queryToTypeDeclarations(
-    parsedQuery(ProcessingMode.SQL, queryString),
+    parsedQuery('sql', queryString),
     typeSource,
     types,
     partialConfig,
@@ -895,22 +961,87 @@ export type IGetNotificationsParams = never;
   expect(result).toEqual(expected);
 });
 
-test('should generate the correct SQL overload functions', async () => {
-  const queryStringTS = `
-      const getUsers = sql\`SELECT id from users\`;
-      `;
-  const query = parsedQuery(ProcessingMode.TS, queryStringTS);
-  const typedQuery: TSTypedQuery = {
-    mode: 'ts' as const,
-    fileName: 'test.ts',
-    query: {
-      name: query.ast.name,
-      ast: query.ast as TSQueryAST,
-      queryTypeAlias: `I${pascalCase(query.ast.name)}Query`,
-    },
-    typeDeclaration: '',
-  };
-  const result = genTypedSQLOverloadFunctions('sqlFunc', [typedQuery]);
-  const expected = `export function sqlFunc(s: \`SELECT id from users\`): ReturnType<typeof sourceSql<IGetUsersQuery>>;`;
-  expect(result).toEqual(expected);
+describe('generateDeclarations', () => {
+  test('emits a TypedQuery constructed from the serialised IR', () => {
+    const ir = parseSqlFile(`
+      /*
+        @name FindBookById
+        @column title!
+      */
+      SELECT title FROM books WHERE id = :id!;
+    `).queries[0];
+    const result = generateDeclarations([
+      {
+        mode: 'sql',
+        fileName: 'books.sql',
+        query: {
+          name: 'findBookById',
+          ir: { ...ir, name: 'FindBookById_abc12345' },
+          paramTypeAlias: 'IFindBookByIdParams',
+          returnTypeAlias: 'IFindBookByIdResult',
+        },
+        typeDeclaration: '/* types */\n',
+      },
+    ]);
+
+    expect(result).toEqual(
+      `/* types */
+const findBookByIdIR: any = {"queryName":"FindBookById","statement":"SELECT title FROM books WHERE id = :id!","params":[{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":35,"b":39}]}],"columns":[{"name":"title","nullable":false}],"name":"FindBookById_abc12345"};
+
+/**
+ * Query generated from SQL:
+ * \`\`\`
+ * SELECT title FROM books WHERE id = :id!
+ * \`\`\`
+ */
+export const findBookById = new TypedQuery<IFindBookByIdParams,IFindBookByIdResult>(findBookByIdIR);
+
+
+`,
+    );
+  });
+
+  // A block comment in the SQL reaches the doc comment verbatim, where an
+  // unescaped `*/` would close it early and break the whole generated file.
+  test('escapes a block comment terminator in the doc comment', () => {
+    const ir = parseSqlFile(`
+      /*
+        @name UpdateBooks
+      */
+      UPDATE books
+      /* ignored comment */
+      SET name = :name;
+    `).queries[0];
+    const result = generateDeclarations([
+      {
+        mode: 'sql',
+        fileName: 'books.sql',
+        query: {
+          name: 'updateBooks',
+          ir,
+          paramTypeAlias: 'UpdateBooksParams',
+          returnTypeAlias: 'UpdateBooksResult',
+        },
+        typeDeclaration: '',
+      },
+    ]);
+
+    expect(result).toContain('ignored comment *\\/');
+    expect(result).not.toMatch(/^ \* .*\*\/$/m);
+  });
+
+  // A tagged query builds its own TypedQuery at runtime, so codegen emits its
+  // types and nothing else.
+  test('emits only the type declaration for a tagged query', () => {
+    expect(
+      generateDeclarations([
+        {
+          mode: 'ts',
+          fileName: 'books.ts',
+          query: { name: 'findBookById', queryTypeAlias: 'IFindBookByIdQuery' },
+          typeDeclaration: '/* types */\n',
+        },
+      ]),
+    ).toEqual('/* types */\n');
+  });
 });

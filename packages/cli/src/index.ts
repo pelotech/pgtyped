@@ -2,60 +2,17 @@
 
 import chokidar from 'chokidar';
 import nun from 'nunjucks';
-
-import { Piscina as PiscinaPool } from 'piscina';
+import pg from 'pg';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { parseConfig, ParsedConfig, TransformConfig } from './config.js';
-import { TypedSqlTagTransformer } from './typedSqlTagTransformer.js';
+import { typeDb } from './db/type-db.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
-import { debug } from './util.js';
+import { debug, MAX_CONCURRENCY } from './util.js';
 
 // tslint:disable:no-console
 
 nun.configure({ autoescape: false });
-
-export interface TransformJob {
-  files: string[];
-}
-
-export class WorkerPool {
-  private pool: PiscinaPool;
-
-  constructor(private readonly config: ParsedConfig) {
-    this.pool = new PiscinaPool({
-      filename: new URL('./worker.js', import.meta.url).href,
-      maxThreads: config.maxWorkerThreads,
-      workerData: config,
-      recordTiming: false,
-    });
-    console.log(`Using a pool of ${this.pool.threads.length} threads.`);
-  }
-
-  public async shutdown() {
-    await this.pool.destroy();
-  }
-
-  public async run<T>(opts: T, functionName: string) {
-    try {
-      return this.pool.run(opts, { name: functionName });
-    } catch (err) {
-      if (err instanceof Error) {
-        const isWorkerTermination = err.message === 'Terminating worker thread';
-        if (isWorkerTermination) {
-          return;
-        }
-        console.log(
-          `Error processing file: ${err.stack || JSON.stringify(err)}`,
-        );
-        if (this.config.failOnError) {
-          await this.pool.destroy();
-          process.exit(1);
-        }
-      }
-    }
-  }
-}
 
 async function main(
   cfg: ParsedConfig | Promise<ParsedConfig>,
@@ -67,34 +24,47 @@ async function main(
   const config = await cfg;
   debug('starting codegenerator');
 
-  const pool = new WorkerPool(config);
+  // Codegen waits on the database, not on the CPU, so a small connection pool
+  // buys the parallelism a thread pool used to. pg connects lazily, so this
+  // costs nothing until the first query.
+  const pool = new pg.Pool({
+    host: config.db.host,
+    port: config.db.port,
+    user: config.db.user,
+    password: config.db.password,
+    database: config.db.dbName,
+    ssl: config.db.ssl,
+    max: MAX_CONCURRENCY,
+  });
+  const db = typeDb(pool);
 
   const transformTask = async (transform: TransformConfig) => {
-    if (transform.mode === 'ts-implicit') {
-      const transformer = new TypedSqlTagTransformer(pool, config, transform);
-      return transformer.start(isWatchMode);
-    } else {
-      const transformer = new TypescriptAndSqlTransformer(
-        pool,
-        config,
-        transform,
-      );
-      return transformer.start(isWatchMode);
-    }
+    const transformer = new TypescriptAndSqlTransformer(db, config, transform);
+    return transformer.start(isWatchMode, fileOverride);
   };
 
   const tasks = config.transforms.map(transformTask);
 
-  if (!isWatchMode) {
-    const transforms = await Promise.all(tasks);
-    if (fileOverride && !transforms.some((x) => x)) {
-      console.log(
-        'File override specified, but file was not found in provided transforms',
-      );
-    }
-    await pool.shutdown();
-    process.exit(0);
+  // In watch mode the pool stays open for the lifetime of the process.
+  if (isWatchMode) {
+    return;
   }
+
+  let transforms;
+  try {
+    transforms = await Promise.all(tasks);
+  } catch {
+    // The failing file has already been reported; failOnError got us here.
+    await pool.end();
+    process.exit(1);
+  }
+  if (fileOverride && !transforms.some((x) => x)) {
+    console.log(
+      'File override specified, but file was not found in provided transforms',
+    );
+  }
+  await pool.end();
+  process.exit(0);
 }
 
 const args = yargs(hideBin(process.argv))

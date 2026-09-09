@@ -18,7 +18,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/example/package.json ./packages/example/
-COPY packages/parser/package.json ./packages/parser/
 COPY packages/runtime/package.json ./packages/runtime/
 RUN npm ci
 

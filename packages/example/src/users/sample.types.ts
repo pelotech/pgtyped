@@ -1,12 +1,12 @@
 /** Types generated for queries found in "src/users/sample.ts" */
 
 /** 'GetUsersWithComments' parameters type */
-export interface IGetUsersWithCommentsParams {
+export interface GetUsersWithCommentsParams {
   minCommentCount: number;
 }
 
 /** 'GetUsersWithComments' return type */
-export interface IGetUsersWithCommentsResult {
+export interface GetUsersWithCommentsResult {
   /** Age (in years) */
   age: number | null;
   email: string;
@@ -18,22 +18,22 @@ export interface IGetUsersWithCommentsResult {
 }
 
 /** 'GetUsersWithComments' query type */
-export interface IGetUsersWithCommentsQuery {
-  params: IGetUsersWithCommentsParams;
-  result: IGetUsersWithCommentsResult;
+export interface GetUsersWithCommentsQuery {
+  params: GetUsersWithCommentsParams;
+  result: GetUsersWithCommentsResult;
 }
 
 /** 'SelectExistsQuery' parameters type */
-export type ISelectExistsQueryParams = void;
+export type SelectExistsQueryParams = void;
 
 /** 'SelectExistsQuery' return type */
-export interface ISelectExistsQueryResult {
+export interface SelectExistsQueryResult {
   isTransactionExists: boolean | null;
 }
 
 /** 'SelectExistsQuery' query type */
-export interface ISelectExistsQueryQuery {
-  params: ISelectExistsQueryParams;
-  result: ISelectExistsQueryResult;
+export interface SelectExistsQueryQuery {
+  params: SelectExistsQueryParams;
+  result: SelectExistsQueryResult;
 }
 

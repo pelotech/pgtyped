@@ -28,7 +28,10 @@ import {
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
 import { Category } from './customTypes.js';
-import { sql } from './sql/index.js';
+import { sql } from '@pelotech/pgtyped-runtime';
+import type { FindBookByIdTagQuery } from './index.test.types.js';
+
+const findBookByIdTag = sql<FindBookByIdTagQuery>`SELECT * FROM books WHERE id = $id`;
 
 const { Client } = pg;
 
@@ -211,9 +214,8 @@ test('select query with a bigint field', async () => {
   expect(row.book_count).toBe(BigInt(4));
 });
 
-test('ts-implicit mode query', async () => {
-  const books = await sql(`SELECT * FROM books WHERE id = $id`).run(client, {
-    id: 1,
-  });
+test('sql tag query', async () => {
+  const books = await findBookByIdTag.run(client, { id: 1 });
+  expect(findBookByIdTag.name).toBeUndefined(); // tags are never prepared
   expect(books).toMatchSnapshot();
 });

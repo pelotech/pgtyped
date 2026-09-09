@@ -63,6 +63,24 @@ describe('parseTagged', () => {
     expect(q.statement).toBe('SELECT count(*) AS total FROM t');
   });
 
+  test('drops a terminating semicolon, as the .sql front-end does', () => {
+    expect(parseTagged('SELECT 1;', 'q').statement).toBe('SELECT 1');
+    expect(parseTagged('SELECT 1 ;  ', 'q').statement).toBe('SELECT 1');
+    expect(parseTagged('SELECT 1', 'q').statement).toBe('SELECT 1');
+  });
+
+  test('a semicolon inside a string is not a terminator', () => {
+    expect(parseTagged("SELECT ';'", 'q').statement).toBe("SELECT ';'");
+  });
+
+  test('locs still index into the statement after the semicolon is dropped', () => {
+    const q = parseTagged('SELECT $a, $b;', 'q');
+    expect(q.statement).toBe('SELECT $a, $b');
+    for (const p of q.params) {
+      expect(q.statement.slice(p.locs[0].a, p.locs[0].b)).toBe(`$${p.name}`);
+    }
+  });
+
   test('defaults the name to "query"', () => {
     expect(parseTagged('SELECT 1').queryName).toBe('query');
   });

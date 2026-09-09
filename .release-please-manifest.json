@@ -1,5 +1,4 @@
 {
   "packages/cli": "2.4.3",
-  "packages/parser": "2.4.3",
   "packages/runtime": "2.4.3"
 }
