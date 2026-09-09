@@ -23,8 +23,8 @@ SELECT FROM users WHERE age in :ages;
 PgTyped has a number of requirements for SQL file contents:
 
 1. Each query must be preceded with an annotation (comment).
-2. An annotation must specify the query name using the `@name` tag.
-3. Each query must be a single SQL statement that ends with a semicolon.
+2. An annotation must open with the `@name` tag, which specifies the query name. Only whitespace and the `*` that decorates a multi-line comment may come before it, so a comment that starts with prose — `/* Get all users. @name GetUsers */` — is not read as an annotation at all. Put the prose after the tags, or in a comment of its own above the block.
+3. Each query must be a single SQL statement. Statements are separated by semicolons; the last statement in a file may leave its semicolon off.
 4. Queries can contain parameters. Parameters should start with a colon, ex. `:paramName`.
 5. Annotations can include param expansions if needed using the `@param` tag.
 6. Parameters can be forced to be not nullable using an exclamation mark `:paramName!`.

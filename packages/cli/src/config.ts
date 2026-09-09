@@ -19,10 +19,18 @@ const transformProps = {
 };
 
 const Transform = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('sql'), ...transformProps }),
-  z.object({ mode: z.literal('ts'), ...transformProps }),
+  z.object({ mode: z.literal('sql'), ...transformProps }).strict(),
+  z.object({ mode: z.literal('ts'), ...transformProps }).strict(),
 ]);
 
+/**
+ * Every object in the config is strict, not just the top level. A key the
+ * schema does not know is silently dropped otherwise, and a dropped key is
+ * indistinguishable from one that was never set: `db: { dbname: 'x' }` fell
+ * back to the default `postgres` database and generated types against the
+ * wrong schema without saying a word. The one exception is `db.ssl`, which is
+ * handed to node's TLS stack verbatim.
+ */
 const Config = z
   .object({
     transforms: z.array(Transform),
@@ -40,6 +48,9 @@ const Config = z
         user: z.string().optional(),
         password: z.string().optional(),
         dbName: z.string().optional(),
+        // Passed through to node-postgres, which hands it to node's TLS
+        // stack: an open set of options this schema has no business
+        // enumerating, so this one object stays permissive.
         ssl: z
           .union([
             z.boolean(),
@@ -49,15 +60,18 @@ const Config = z
           ])
           .optional(),
       })
+      .strict()
       .optional(),
     typesOverrides: z
       .record(
         z.union([
           z.string(),
-          z.object({
-            parameter: z.string().optional(),
-            return: z.string().optional(),
-          }),
+          z
+            .object({
+              parameter: z.string().optional(),
+              return: z.string().optional(),
+            })
+            .strict(),
         ]),
       )
       .optional(),
@@ -161,7 +175,16 @@ export function parseConfig(
   if (!result.success) {
     throw new Error(
       result.error.issues
-        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .flatMap((issue) =>
+          // Zod reports unknown keys against the enclosing object and lists
+          // them in the message, which reads as `db: Unrecognized key(s) ...`.
+          // Reported per key instead, the path is the thing to go and fix.
+          issue.code === 'unrecognized_keys'
+            ? issue.keys.map(
+                (key) => `${[...issue.path, key].join('.')}: unrecognized key`,
+              )
+            : [`${issue.path.join('.') || '(root)'}: ${issue.message}`],
+        )
         .join('\n'),
     );
   }

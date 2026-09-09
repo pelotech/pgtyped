@@ -56,6 +56,24 @@ PgTyped supports common PostgreSQL environment variables:
 
 These variables will override values provided in `config.json`.
 
+#### `PGOPTIONS`, and setting a `search_path`
+
+There is no `search_path` config option, but as of 3.0 you do not need one. The connection is made by node-postgres,
+which reads `PGOPTIONS` and forwards it to the server as libpq does, so command-line options set there apply to the
+session codegen runs its `DESCRIBE` calls on:
+
+```shell script
+PGOPTIONS='-c search_path=tenant1' npx pgtyped -c config.json
+```
+
+With that set, a query written as `SELECT id, label FROM widgets` resolves against `tenant1.widgets` and gets types from
+it; without it the same query fails with `relation "widgets" does not exist`. Any other `-c name=value` option works the
+same way — `PGOPTIONS='-c search_path=tenant1 -c statement_timeout=5000'` sets both.
+
+`PGOPTIONS` is read by node-postgres rather than by PgTyped, so it applies to your application's connections too, not
+just to codegen. Set it in both places if your queries depend on a non-default `search_path`: the types are generated
+against whatever schema codegen saw, and nothing checks that the application later connects the same way.
+
 ### Example configuration file
 
 Below is an example configuration file, with comments explaining each field.  
@@ -106,7 +124,7 @@ Configuration file can be also be written in CommonJS format and default exporte
 :::
 
 :::caution
-Unrecognised config keys are an error. A key that PgTyped does not know about used to be ignored silently; since 3.0 it fails the run, so a typo such as `camelCaseColumNames` is reported instead of being quietly dropped.
+Unrecognised config keys are an error, at every level of the file. A key that PgTyped does not know about used to be ignored silently; since 3.0 it fails the run, so a typo such as `camelCaseColumNames`, or `db.dbname` for `db.dbName`, is reported instead of being quietly dropped. The error names the full path to the key. The one exception is `db.ssl`, whose contents are passed to node's TLS stack untouched.
 :::
 
 ### Configuration file format
@@ -116,7 +134,7 @@ Unrecognised config keys are an error. A key that PgTyped does not know about us
 | `transforms`            | `Transform[]`            | An array of transforms to apply to the files.                                                                                                                              |
 | `srcDir`                | `string`                 | Directory to scan or watch for query files.                                                                                                                                |
 | `db`                    | `DatabaseConfig`         | A database config.                                                                                                                                                         |
-| `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes codegen warnings, such as a `sql.prepared` name or type argument that does not match the variable holding it, into failures. **Default:** `false`                                                                                      |
+| `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes every codegen warning into a failure, whichever kind of file the query lives in: a `sql.prepared` name or type argument that does not match the variable holding it, a result column left with a 2.x nullability suffix, and an `@param` declared in a `.sql` file but never used by the statement. **Default:** `false`                                                                                      |
 | `dbUrl?`                | `string`                 | A connection string to the database. Example: `postgres://user:password@host/database`. Overrides (merged) with `db` config.                                               |
 | `camelCaseColumnNames?` | `boolean`                | Whether to convert column names to camelCase. _Note that this only coverts the types. You need to do this at runtime independently using a library like `pg-camelcase`_.   |
 | `nonEmptyArrayParams?`  | `boolean`                | Whether the types for arrays parameters exclude empty arrays. This helps prevent runtime errors when accidentally providing empty input to a query.                        |

@@ -281,9 +281,54 @@ const countBooksTotal = sql<CountBooksTotalQuery>`
   SELECT count(*)::int AS total FROM books`;
 ```
 
+### Check that every annotation block opens with `@name`
+
+A `.sql` annotation block must now _start_ with `@name`. Only whitespace and the `*` that decorates a multi-line comment may come before it, so a comment that opens with prose is no longer a header at all:
+
+```sql
+-- no longer a header: reports `Statement has no /* @name ... */ block`
+/* Get all users. @name GetUsers */
+SELECT * FROM users;
+```
+
+The same goes for prose on its own line above the tag inside the block. Mentioning `@name` used to be enough, which meant an ordinary comment written _inside_ a statement — `/* WHERE id = :x, see @name GetUsersById */` — was promoted to a header, inventing a query and cutting the statement it was written in half. Requiring the tag to come first tells the two apart.
+
+Any of these keeps the prose:
+
+```sql
+/*
+  @name GetUsers
+  Get all users.
+*/
+SELECT * FROM users;
+
+-- Get all users.
+/* @name GetUsers */
+SELECT * FROM users;
+```
+
+This is an error rather than a warning, so codegen will tell you; grep your `.sql` files for a `/*` that is followed by anything other than `@name` if you would rather find them first.
+
+### `search_path` finally has an answer: `PGOPTIONS`
+
+There is still no `search_path` config option, and there does not need to be one. 3.0 connects through node-postgres, which reads `PGOPTIONS` from the environment and forwards it to the server, so:
+
+```shell
+PGOPTIONS='-c search_path=tenant1' npx pgtyped -c config.json
+```
+
+resolves the queries — and generates their types — against `tenant1`. It works for any `-c name=value` the server accepts, and it applies to your application's connections too, since it is node-postgres reading it rather than PgTyped. Set it in both places if your queries depend on a non-default `search_path`; nothing checks that the application connects the same way codegen did.
+
 ### Update the config file
 
-- **Unrecognised keys are now errors.** A 2.x config with a typo, or with a removed option, fails to parse instead of being quietly ignored. Read the error; it names the key.
+- **Unrecognised keys are now errors, at every level of the file.** A 2.x config with a typo, or with a removed option, fails to parse instead of being quietly ignored. Read the error; it names the full path to the key, such as `db.dbname: unrecognized key`.
+
+  Strictness inside the nested objects — `db`, each entry of `transforms`, and each `typesOverrides` entry — is newer than the rest of 3.0, so a config that survived an earlier 3.0 pre-release may still fail here. It is worth the noise: `db: { dbname: 'x' }` used to be dropped silently, leaving PgTyped connected to the default `postgres` database and generating types from whatever schema it found there. The one object still permissive is `db.ssl`, which is handed to node's TLS stack verbatim.
+
+- **`failOnError` now promotes warnings from `.sql` files, not just from `sql` tags.** It always failed the run on a tag lint; the `sql` file front-end printed its warnings and carried on. One option now means one thing whichever kind of file a query lives in.
+
+  The warning this reaches in practice is `Parameter "x" is defined but never used` — an `@param` declaration for a parameter the statement never mentions. If you set `failOnError` and have one, the run now fails. Either delete the stale `@param`, or — if leaving the parameter out of the statement was the mistake — put it in.
+
 - **`maxWorkerThreads` is removed.** Delete it.
 - **`ts-implicit` transform mode is removed.** Use `"mode": "ts"` and `import { sql } from '@pelotech/pgtyped-runtime'` in the files that hold your tags.
 - **`preparedStatements` now defaults to `true`.** Queries from `.sql` files are sent as named server-side prepared statements. If you connect through PgBouncer in transaction-pooling mode, set it to `false`, or wrap your connections in `unprepared()`.

@@ -43,7 +43,7 @@ PgTyped requires a `config.json` file to run, a basic config file looks like thi
 Refer to the [CLI page](cli) for more info on the config file, available CLI flags and environment variables.
 
 :::caution
-Unrecognised config keys are rejected. If you are upgrading from PgTyped 2.x, a key that was previously ignored — a typo, or a removed option such as `maxWorkerThreads` — will now fail the run with a message naming the key, and a non-zero exit code.
+Unrecognised config keys are rejected, at every level of the file. If you are upgrading from PgTyped 2.x, a key that was previously ignored — a typo, or a removed option such as `maxWorkerThreads` — will now fail the run with a message naming the key's full path, such as `db.dbname: unrecognized key`, and a non-zero exit code.
 :::
 
 :::note

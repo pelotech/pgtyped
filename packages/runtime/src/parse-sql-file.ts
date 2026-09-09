@@ -219,8 +219,13 @@ function readBlock(
  * Only comments *before* a block are ignored. A comment between the block and
  * the end of the statement is part of `statement`, verbatim — `statement` is
  * what codegen hashes into the prepared statement name, so it is reported
- * exactly as it will be sent. A statement with no block, a block with no
- * statement, and a statement not ended by `;` are all errors.
+ * exactly as it will be sent.
+ *
+ * A statement with no block and a block with no statement are errors. So is a
+ * statement ended by the next `@name` block rather than by `;`, since dropping
+ * the `;` there silently welds two queries together. The last statement in the
+ * file is deliberately exempt: end of input is an unambiguous end, so a file
+ * whose final query omits its `;` parses.
  *
  * `errors` is fatal: when it is non-empty, `queries` must not be used. A query
  * whose `@param` could not be read is still emitted, with that param fallen
