@@ -1,5 +1,5 @@
 import { parseSQLFile, TSQueryAST } from '@pelotech/pgtyped-parser';
-import { IQueryTypes } from '@pelotech/pgtyped-query/lib/actions.js';
+import { IQueryTypes } from './db/types.js';
 import { ParameterTransform } from '@pelotech/pgtyped-runtime/internal';
 import { pascalCase } from 'change-case';
 import { ParsedConfig } from './config.js';

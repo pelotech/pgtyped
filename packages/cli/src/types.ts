@@ -7,9 +7,9 @@ import {
   isImport,
   MappableType,
   Type,
-} from '@pelotech/pgtyped-query';
+} from './db/type.js';
 import os from 'os';
-import { AliasedType, EnumType } from '@pelotech/pgtyped-query/lib/type.js';
+import { AliasedType, EnumType } from './db/type.js';
 import path from 'path';
 import { RUNTIME_MODULE } from './runtimeModule.js';
 

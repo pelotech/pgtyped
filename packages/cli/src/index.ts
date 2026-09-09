@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import { startup } from '@pelotech/pgtyped-query';
-import { AsyncQueue } from '@pelotech/pgtyped-wire';
 import chokidar from 'chokidar';
 import nun from 'nunjucks';
 
@@ -67,11 +65,7 @@ async function main(
   fileOverride?: string,
 ) {
   const config = await cfg;
-  const connection = new AsyncQueue();
   debug('starting codegenerator');
-  await startup(config.db, connection);
-
-  debug('connected to database %o', config.db.dbName);
 
   const pool = new WorkerPool(config);
 

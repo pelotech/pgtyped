@@ -19,9 +19,7 @@ COPY package.json package-lock.json ./
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/example/package.json ./packages/example/
 COPY packages/parser/package.json ./packages/parser/
-COPY packages/query/package.json ./packages/query/
 COPY packages/runtime/package.json ./packages/runtime/
-COPY packages/wire/package.json ./packages/wire/
 RUN npm ci
 
 WORKDIR /app/packages/example
