@@ -54,8 +54,9 @@ names every source:
 
 ## Fixed on this branch
 
-Three of the cheap ones were taken as part of writing this document. They are listed first so nobody
-re-opens them, with the reproduction that justified each.
+Three of the cheap ones were taken as part of writing this document, and the mis-mapped types were
+taken straight after it. They are listed first so nobody re-opens them, with the reproduction that
+justified each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -162,7 +163,134 @@ unaffected.
 **`Buffer` was the only ambient non-ES global in generated output.** The rest of
 `DefaultTypeMapping` bottoms out in `string`/`number`/`boolean`/`undefined`, in `Date` (an ES lib
 global, available everywhere), or in locally-declared aliases (`Json`, `DateOrString`,
-`NumberOrString`, the `*Array` aliases). Enum unions are string literals.
+`NumberOrString`, `PgPoint`, `PgInterval`, the `*Array` aliases). Enum unions are string literals.
+
+### Six `DefaultTypeMapping` entries disagreed with what the runtime returns — issue #552, PR #553 — **FIXED**
+
+PR #553 only adds an `audio_books` table and a snapshot test for an `INTERVAL` column; it documents
+#552 without fixing it. Chasing it uncovered five more of the same kind.
+
+The generated types and the runtime values disagreed **silently** — `tsc` was happy and the value was
+wrong.
+
+Reproduction, table `mism` with columns `time`, `timetz`, `bit(3)`, `numeric[]`, `point`, `interval`,
+all `NOT NULL`:
+
+```sql
+/* @name GetMism */
+SELECT t, tz, b, n, p, iv FROM mism;
+```
+
+Generated, before the fix:
+
+```ts
+export type numberArray = number[];
+export type stringArray = string[];
+
+export interface GetMismResult {
+  b: boolean;
+  iv: string;
+  n: stringArray;
+  p: numberArray;
+  t: Date;
+  tz: Date;
+}
+```
+
+Actual values from `getMism.run(client)` through the fork's runtime:
+
+```
+  t:  String            = "01:02:03"
+  tz: String            = "01:02:03+00"
+  b:  String            = "101"
+  n:  Array             = [1.5]
+  p:  Object            = {"x":1,"y":2}
+  iv: PostgresInterval  = {"hours":1}
+```
+
+| Postgres type | declared     | actual                                                                                                     |
+| ------------- | ------------ | ---------------------------------------------------------------------------------------------------------- |
+| `interval`    | `string`     | `PostgresInterval { hours, minutes, seconds, … }`                                                          |
+| `time`        | `Date`       | `string` `"01:02:03"`                                                                                      |
+| `timetz`      | `Date`       | `string` `"01:02:03+00"`                                                                                   |
+| `bit`         | `boolean`    | `string` `"101"`                                                                                           |
+| `numeric[]`   | `(string)[]` | `(number)[]` — scalar `numeric` **is** correctly `string`; only the array form is parsed with `parseFloat` |
+| `point`       | `(number)[]` | `{ x, y }`                                                                                                 |
+
+A broader sweep of 36 type/value pairs confirmed everything else in `DefaultTypeMapping` agrees with
+pg-types: `int8`/`numeric`→string, `date`/`timestamp`/`timestamptz`→`Date`, `bytea`→`Buffer`,
+`json`/`jsonb`→parsed, `text[]`/`int4[]`/`int8[]`/`timestamptz[]` all correct.
+
+**Where this came from — a long-standing upstream bug, not a 3.0 regression.** It is tempting to
+explain these entries as describing what the deleted hand-rolled wire client used to return. That is
+wrong: the wire client only ever did codegen type discovery and never returned rows to users. The
+fork point confirms it — `git show 88a428f:packages/cli/src/types.ts` already has
+`time`/`timetz` → `Date`, `interval` → `String`, `point` → `getArray(Number)` and
+`bit: { parameter: Boolean, return: Boolean }` carrying a literal
+`// TODO: … bit array support`. These entries were already wrong upstream; the fork inherited them.
+Adopting node-postgres did not cause the mismatch, it only made it observable end to end.
+
+**Fixed.** `packages/cli/src/types.ts` now declares what the driver returns:
+
+| Postgres type | now          |
+| ------------- | ------------ |
+| `interval`    | `PgInterval` |
+| `time`        | `string`     |
+| `timetz`      | `string`     |
+| `bit`         | `string`     |
+| `numeric[]`   | `(number)[]` |
+| `point`       | `PgPoint`    |
+
+`PgInterval` and `PgPoint` are emitted into the generated file, the way `Json` and `DateOrString`
+already are, so generated output still imports nothing. `PgInterval` declares every field optional,
+which is what the parser actually produces — `'1 hour'` is `{ hours: 1 }` and `'0 seconds'` is `{}`,
+absent rather than zero — and includes the three real prototype methods `toPostgres`, `toISO` and
+`toISOString`. It deliberately omits `toString`, which is only the one inherited from `Object` and
+returns `'[object Object]'`.
+
+**The parameter direction moved too, and it was worse than the return direction.** Every non-string
+input form these entries allowed is rejected by the server, verified one at a time:
+
+| passed in                  | server says                                                           |
+| -------------------------- | --------------------------------------------------------------------- |
+| `Date` → `time`            | `invalid input syntax for type time: "2019-12-31T17:02:03.000-08:00"` |
+| `Date` → `timetz`          | `invalid input syntax for type time with time zone: …`                |
+| `Date` → `interval`        | `invalid input syntax for type interval: …`                           |
+| `true` → `bit`             | `"t" is not a valid binary digit`                                     |
+| `[1, 2]` → `point`         | `invalid input syntax for type point: "{"1","2"}"`                    |
+| `{ x: 1, y: 2 }` → `point` | `invalid input syntax for type point: "{"x":1,"y":2}"`                |
+
+So `time`, `timetz`, `interval`, `bit` and `point` all take a `string` in the parameter direction as
+well. The generated type was not merely imprecise there, it was admitting calls that could only ever
+fail at runtime. `numeric[]` needed no parameter change: the server takes numbers or strings as
+elements, exactly as it does for a scalar `numeric`.
+
+**`numeric[]` could not be fixed in the mapping table alone.** `TypeAllocator.use` derived every
+`_`-prefixed type by wrapping its element type's mapping, and that branch ran _before_ the mapping
+was consulted, so no entry could describe an array type — and a `typesOverrides` entry naming one
+was silently ignored for the same reason. An exact mapping entry now wins over the derivation, which
+fixes both.
+
+**Previously marked Unverified, now verified.** The earlier probe covered only six array OIDs. A
+sweep of 21 array types against PostgreSQL 17 — `_text`, `_int4`, `_int8`, `_numeric`, `_float4`,
+`_float8`, `_bool`, `_date`, `_timestamp`, `_timestamptz`, `_time`, `_timetz`, `_interval`, `_point`,
+`_bit`, `_uuid`, `_bytea`, `_json`, `_jsonb`, `_money`, `_inet` — comparing each array's elements
+against the same value as a scalar found `_numeric` to be **the only** type whose elements are parsed
+differently from its scalar. It is therefore the only exception the mapping needs.
+
+**One further mismatch found by that sweep, and left alone:** `_bit` is not returned as an array at
+all. pg-types has no parser registered for it, so a `bit(3)[]` column arrives as the raw literal
+string `'{101}'` while the generated type says `(string)[]`. That is a seventh bug of the same
+family, out of scope here, and worth its own entry if anyone selects a `bit[]`.
+
+**Regression cover.** `packages/cli/src/types.test.ts` pins all six entries in both directions,
+alongside the neighbours that were correct and must not move with them (scalar `numeric`, `date`,
+`timestamp`, `timestamptz`, `_int4`, `_text`), and pins the two emitted aliases verbatim.
+`packages/example` grows a `driver_types` table with a column of each type and asserts, against the
+live server, both that the value has the declared shape and — via `const x: T = row.col` — that the
+declaration compiles. The example is now typechecked in CI, which it was not before: it had a
+`check` script that nothing ran, so a `check:test` was added for the existing CI step to pick up.
+Without that the type half of the assertion would be stripped by vitest and prove nothing.
 
 ---
 
@@ -400,83 +528,6 @@ Realistically **~40–60 lines in `db/types.ts` plus tests**, not the 44 in the 
 **Scope limit:** this fixes result columns that are direct column references only. Domain-typed
 _parameters_ and domain-typed _expressions_ (`upper(contact)`) stay flattened, and no OID trick can
 fix that.
-
-### Six `DefaultTypeMapping` entries disagree with what the runtime actually returns — issue #552, PR #553
-
-PR #553 only adds an `audio_books` table and a snapshot test for an `INTERVAL` column; it documents
-#552 without fixing it. Chasing it uncovered five more of the same kind.
-
-The generated types and the runtime values disagree **silently** — `tsc` is happy and the value is
-wrong.
-
-Reproduction, table `mism` with columns `time`, `timetz`, `bit(3)`, `numeric[]`, `point`, `interval`,
-all `NOT NULL`:
-
-```sql
-/* @name GetMism */
-SELECT t, tz, b, n, p, iv FROM mism;
-```
-
-Generated:
-
-```ts
-export type numberArray = number[];
-export type stringArray = string[];
-
-export interface GetMismResult {
-  b: boolean;
-  iv: string;
-  n: stringArray;
-  p: numberArray;
-  t: Date;
-  tz: Date;
-}
-```
-
-Actual values from `getMism.run(client)` through the fork's runtime:
-
-```
-  t:  String            = "01:02:03"
-  tz: String            = "01:02:03+00"
-  b:  String            = "101"
-  n:  Array             = [1.5]
-  p:  Object            = {"x":1,"y":2}
-  iv: PostgresInterval  = {"hours":1}
-```
-
-| Postgres type | declared     | actual                                                                                                     |
-| ------------- | ------------ | ---------------------------------------------------------------------------------------------------------- |
-| `interval`    | `string`     | `PostgresInterval { hours, minutes, seconds, … }`                                                          |
-| `time`        | `Date`       | `string` `"01:02:03"`                                                                                      |
-| `timetz`      | `Date`       | `string` `"01:02:03+00"`                                                                                   |
-| `bit`         | `boolean`    | `string` `"101"`                                                                                           |
-| `numeric[]`   | `(string)[]` | `(number)[]` — scalar `numeric` **is** correctly `string`; only the array form is parsed with `parseFloat` |
-| `point`       | `(number)[]` | `{ x, y }`                                                                                                 |
-
-A broader sweep of 36 type/value pairs confirmed everything else in `DefaultTypeMapping` agrees with
-pg-types: `int8`/`numeric`→string, `date`/`timestamp`/`timestamptz`→`Date`, `bytea`→`Buffer`,
-`json`/`jsonb`→parsed, `text[]`/`int4[]`/`int8[]`/`timestamptz[]` all correct.
-
-**Where this came from — a long-standing upstream bug, not a 3.0 regression.** It is tempting to
-explain these entries as describing what the deleted hand-rolled wire client used to return. That is
-wrong: the wire client only ever did codegen type discovery and never returned rows to users. The
-fork point confirms it — `git show 88a428f:packages/cli/src/types.ts` already has
-`time`/`timetz` → `Date`, `interval` → `String`, `point` → `getArray(Number)` and
-`bit: { parameter: Boolean, return: Boolean }` carrying a literal
-`// TODO: … bit array support`. These entries were already wrong upstream; the fork inherited them.
-Adopting node-postgres did not cause the mismatch, it only made it observable end to end.
-
-**Cost.** Cheap for the mapping table itself (six entries in one frozen object, ~10 lines), plus a
-decision per type about what shape to name — `interval` wants an exported `PostgresInterval`-shaped
-alias or an import from `postgres-interval`; `point` wants `{ x: number; y: number }`. It is a
-**breaking change to generated output** for anyone using those types, so it belongs with a changelog
-note. The expensive part is the test that stops it regressing: ideally one example-package query
-selecting one column of every mapped type and asserting the runtime value's shape. That test does
-not exist today.
-
-**Unverified:** the `numeric[]` → `number[]` mismatch was found via a direct `pg` probe and then
-confirmed end to end through codegen, but only six array OIDs were probed (`_text`, `_int4`, `_int8`,
-`_numeric`, `_timestamptz`, `_point`). Other array OIDs may hold further surprises.
 
 ### Array elements are typed as non-nullable — issues #613, #460; PR #614
 

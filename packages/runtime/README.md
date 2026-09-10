@@ -340,6 +340,67 @@ resolves the queries — and generates their types — against `tenant1`. It wor
 
 `typescript` is now an **optional** peer dependency of the CLI, supported at `>=5 <7` and loaded lazily. If all your transforms are `sql` mode, you no longer need it installed for PgTyped's sake.
 
+### Regenerate: six types were declared as something the driver never returns
+
+Six entries in the built-in type mapping disagreed with what node-postgres actually hands back, for as long as PgTyped has existed. They are corrected in 3.0, which changes generated output — **regenerate, then compile.** The compiler will find the affected code, because every one of these is a type change rather than a rename.
+
+| Postgres type | was          | is now       | what you actually get |
+| ------------- | ------------ | ------------ | --------------------- |
+| `interval`    | `string`     | `PgInterval` | `{ hours: 1 }`        |
+| `time`        | `Date`       | `string`     | `'01:02:03'`          |
+| `timetz`      | `Date`       | `string`     | `'01:02:03+00'`       |
+| `bit`         | `boolean`    | `string`     | `'101'`               |
+| `numeric[]`   | `(string)[]` | `(number)[]` | `[1.5]`               |
+| `point`       | `(number)[]` | `PgPoint`    | `{ x: 1, y: 2 }`      |
+
+A lone `numeric` is unchanged: it really is a `string`, and stays one. Only the array form differs, because pg-types keeps the full precision of a scalar `numeric` but parses the elements of a `numeric[]` with `parseFloat`. `date`, `timestamp` and `timestamptz` are unchanged too, and really are `Date`s.
+
+`PgInterval` and `PgPoint` are emitted into the generated file itself, like `Json` and `DateOrString`, so nothing new is added to your dependencies:
+
+```ts
+export type PgPoint = { x: number; y: number };
+
+export type PgInterval = {
+  years?: number;
+  months?: number;
+  days?: number;
+  hours?: number;
+  minutes?: number;
+  seconds?: number;
+  milliseconds?: number;
+  toPostgres(): string;
+  toISO(): string;
+  toISOString(): string;
+};
+```
+
+`PgInterval` is the shape of the `PostgresInterval` that node-postgres returns. **Every field is optional**, because the parser sets only the ones the interval uses — `'1 hour'` parses to `{ hours: 1 }`, and `'0 seconds'` to `{}`. So test the field, do not assume it is `0`:
+
+```ts
+// wrong: `hours` is absent, not zero, for an interval of '3 days'
+const h = row.duration.hours + 1; // TS error, and NaN if you cast past it
+
+// right
+const h = (row.duration.hours ?? 0) + 1;
+```
+
+Code that treated an `interval` as a string needs rewriting rather than adjusting — the old declaration was never true, so `row.duration.trim()` was already a runtime error, and `` `${row.duration}` `` still produces `'[object Object]'`. Use `toISO()` for a machine-readable form, or `toPostgres()` for something the server will take back.
+
+**Parameters changed too, and this is the half most likely to be hiding a live bug.** `time`, `timetz` and `interval` used to accept `Date | string`, `bit` a `boolean`, and `point` a `number[]`. None of those non-string forms ever worked: node-postgres serialises a `Date` to a full ISO timestamp, which none of the three time types can parse, and the other two fare no better. All five now take a `string`:
+
+```ts
+await insertShift.run(client, {
+  startTime: '07:08:09', // was `Date | string`; a Date is `invalid input syntax for type time`
+  duration: '2 hours', // ditto
+  flags: '011', // was boolean; a boolean arrives as 't', not a binary digit
+  location: '(3,4)', // was number[]; neither [3, 4] nor { x: 3, y: 4 } is valid input
+});
+```
+
+If any of those call sites passed the non-string form, it was failing against the server already and the generated type was hiding it; the narrowed parameter turns it into a compile error. To pass an interval you have read back from another query, call `toPostgres()` on it.
+
+`numeric[]` parameters are unchanged — the server takes numbers or strings either way.
+
 ### Two smaller behaviour changes
 
 - **Mid-statement block comments are kept in the statement text** rather than blanked out. Because a query's prepared statement name is a hash of its text, editing a comment inside a query renames its statement. That is harmless — it just means a fresh `Parse` — but it is why an unrelated-looking comment edit changes generated output.
