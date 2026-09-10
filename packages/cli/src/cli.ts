@@ -22,7 +22,11 @@ import { fatal } from './util.js';
 
 const args = yargs(hideBin(process.argv))
   .version()
-  .env()
+  // Prefixed. `.env()` with no prefix mapped every option onto a bare
+  // environment variable, so an ambient `FILE` — a common enough name in a
+  // Makefile or a shell function — set `--file` and the run quietly generated
+  // nothing, or refused to start in watch mode (#579).
+  .env('PGTYPED')
   .options({
     config: {
       alias: 'c',

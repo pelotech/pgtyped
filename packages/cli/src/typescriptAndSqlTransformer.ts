@@ -55,6 +55,27 @@ export function findQueryFiles(
   });
 }
 
+/**
+ * The entry of `fileList` naming the same file as `--file`, if any.
+ *
+ * This used to be `fileList.includes(fileOverride)` — raw string equality
+ * against glob output — so exactly one spelling of the path worked. `./x.sql`,
+ * an absolute path, and the Windows reporter's `multi\a\one.sql` all missed
+ * and the run did nothing (#579). Resolving both sides against the working
+ * directory compares files rather than strings, and lets the platform decide
+ * what a separator is.
+ *
+ * The glob's own spelling is what is returned, so the paths that end up in the
+ * log do not depend on how the flag was typed.
+ */
+export function matchFileOverride(
+  fileList: string[],
+  fileOverride: string,
+): string | undefined {
+  const target = path.resolve(fileOverride);
+  return fileList.find((fileName) => path.resolve(fileName) === target);
+}
+
 export type ProcessFileResult =
   | {
       skipped: boolean;
@@ -182,7 +203,8 @@ export class TypescriptAndSqlTransformer {
      */
     let fileList = findQueryFiles(this.config.srcDir, this.transform);
     if (fileOverride) {
-      fileList = fileList.includes(fileOverride) ? [fileOverride] : [];
+      const match = matchFileOverride(fileList, fileOverride);
+      fileList = match ? [match] : [];
       if (fileList.length > 0) {
         this.fileOverrideUsed = true;
       }

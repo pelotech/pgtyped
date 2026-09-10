@@ -36,11 +36,18 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function runCli(args: string[], cwd: string): SpawnSyncReturns<string> {
+function runCli(
+  args: string[],
+  cwd: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [cliEntry, ...args], {
     cwd,
     encoding: 'utf-8',
-    env: childEnv(),
+    env: { ...childEnv(), ...extraEnv },
+    // A safety net, not part of any assertion: every run here is meant to end
+    // on its own. A CLI that waits forever should fail the suite, not hang it.
+    timeout: 60_000,
   });
 }
 
@@ -279,6 +286,89 @@ describe('the package can be imported without running the CLI', () => {
         bin: Record<string, string>;
       },
     ).toMatchObject({ bin: { pgtyped: 'lib/cli.js' } });
+  });
+});
+
+/**
+ * `yargs.env()` was called with no prefix, so every option was also settable
+ * from a bare environment variable of that name. An ambient `FILE` — common
+ * enough in a Makefile or a shell function — became `--file`, and the run
+ * quietly generated nothing. Upstream #579.
+ */
+describe('environment variables need the PGTYPED_ prefix', () => {
+  /**
+   * Watch mode is the discriminator that needs no database: `--file` is
+   * declared `conflicts: 'watch'`, so yargs refuses the combination before the
+   * CLI connects to anything. Whether that refusal appears tells us whether
+   * the environment variable reached `--file` at all.
+   */
+  const watchRefusal = 'Arguments file and watch are mutually exclusive';
+
+  /**
+   * Every project here points at a port nothing is listening on. Whichever way
+   * the `--file`/`--watch` question is decided, the run then ends at the
+   * connection check rather than settling into a watch loop that never
+   * returns.
+   */
+  let unreachable: string;
+  beforeAll(async () => {
+    const port = await closedPort();
+    unreachable = JSON.stringify(
+      sqlProject({
+        db: {
+          host: '127.0.0.1',
+          port,
+          user: 'postgres',
+          password: 'password',
+          dbName: 'postgres',
+        },
+      }),
+    );
+  });
+  const unreachableProject = () => project(JSON.parse(unreachable));
+
+  test('a bare FILE no longer sets --file', () => {
+    const dir = unreachableProject();
+
+    const { stderr } = runCli(['-c', 'config.json', '-w'], dir, {
+      FILE: 'nonexistent.sql',
+    });
+
+    expect(stderr).not.toContain(watchRefusal);
+    expect(stderr).toContain('Could not connect');
+  }, 30_000);
+
+  test('PGTYPED_FILE does', () => {
+    const dir = unreachableProject();
+
+    const { status, stderr } = runCli(['-c', 'config.json', '-w'], dir, {
+      PGTYPED_FILE: 'nonexistent.sql',
+    });
+
+    expect(stderr).toContain(watchRefusal);
+    expect(status).not.toBe(0);
+  }, 30_000);
+
+  test('a bare CONFIG no longer supplies the required --config', () => {
+    const dir = unreachableProject();
+
+    const { status, stderr } = runCli([], dir, { CONFIG: 'config.json' });
+
+    expect(stderr).toContain('Missing required argument: config');
+    expect(status).not.toBe(0);
+  });
+
+  test('PGTYPED_CONFIG does', () => {
+    const dir = project(sqlProject({ maxWorkerThreads: 4 }));
+
+    const { status, stderr } = runCli([], dir, {
+      PGTYPED_CONFIG: 'config.json',
+    });
+
+    // It got as far as reading the config, which is all this needs to show.
+    expect(stderr).not.toContain('Missing required argument');
+    expect(stderr).toContain('Failed to parse config file');
+    expect(status).not.toBe(0);
   });
 });
 

@@ -76,11 +76,16 @@ export async function main(
     await pool.end();
     return 1;
   }
+  let exitCode = 0;
   if (fileOverride && !transforms.some((x) => x)) {
-    console.log(
+    // A `--file` that matched nothing generated nothing, and said so on
+    // stdout while exiting 0 — so a targeted regeneration step could silently
+    // do nothing and still report success (#579).
+    console.error(
       'File override specified, but file was not found in provided transforms',
     );
+    exitCode = 1;
   }
   await pool.end();
-  return 0;
+  return exitCode;
 }

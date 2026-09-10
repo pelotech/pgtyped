@@ -455,16 +455,61 @@ describe('codegen exit code', () => {
     new URL('../../cli/lib/cli.js', import.meta.url),
   );
 
+  /**
+   * The queries are already generated and committed, so none of these rewrite
+   * anything; it is the exit code, and which files get processed, that are
+   * under test.
+   */
+  const codegen = (...args: string[]) =>
+    spawnSync(process.execPath, [cliEntry, '-c', 'config.json', ...args], {
+      cwd: exampleDir,
+      encoding: 'utf-8',
+      timeout: 120_000,
+    });
+
   test('a successful run exits 0', () => {
-    // The queries are already generated and committed, so this rewrites
-    // nothing; it is the exit code that is under test.
-    const { status, stdout } = spawnSync(
-      process.execPath,
-      [cliEntry, '-c', 'config.json'],
-      { cwd: exampleDir, encoding: 'utf-8' },
-    );
+    const { status, stdout } = codegen();
 
     expect(stdout).toContain('Processing');
     expect(status).toBe(0);
   }, 120_000);
+
+  /**
+   * `--file` was compared to glob output with raw string equality, so only the
+   * spelling glob happens to produce worked; every other one printed
+   * "file was not found in provided transforms" and exited 0. Upstream #579.
+   */
+  describe('--file', () => {
+    const relative = 'src/books/books.sql';
+    const absolute = fileURLToPath(new URL('books/books.sql', import.meta.url));
+
+    test.each([
+      ['as glob spells it', relative],
+      ['with a leading ./', `./${relative}`],
+      ['as an absolute path', absolute],
+    ])(
+      'is found when written %s',
+      (_label, spelling) => {
+        const { status, stdout } = codegen('-f', spelling);
+
+        expect(stdout).toContain(`Processing ${relative}`);
+        expect(stdout).not.toContain('was not found in provided transforms');
+        // Only that one file: the other transforms are not run.
+        expect(stdout).not.toContain('src/comments/comments.sql');
+        expect(status).toBe(0);
+      },
+      120_000,
+    );
+
+    test('a file that matches nothing fails the run', () => {
+      const { status, stderr } = codegen('-f', 'src/books/no-such-file.sql');
+
+      expect(stderr).toContain(
+        'File override specified, but file was not found in provided transforms',
+      );
+      // It used to exit 0, so a targeted regeneration step could do nothing
+      // at all and still report success.
+      expect(status).not.toBe(0);
+    }, 120_000);
+  });
 });

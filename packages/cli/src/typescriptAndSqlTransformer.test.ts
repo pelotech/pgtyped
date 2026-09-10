@@ -5,6 +5,7 @@ import { TransformConfig } from './config.js';
 import {
   findQueryFiles,
   isUnderNodeModules,
+  matchFileOverride,
 } from './typescriptAndSqlTransformer.js';
 
 const sqlTransform = {
@@ -81,5 +82,40 @@ describe('query file discovery', () => {
     ])('%s is not ignored', (fileName) => {
       expect(isUnderNodeModules(fileName)).toBe(false);
     });
+  });
+});
+
+/**
+ * `--file` was matched with `fileList.includes(fileOverride)` — raw string
+ * equality against glob output — so exactly one spelling of the path worked
+ * and every other one printed "file was not found in provided transforms" and
+ * generated nothing. Upstream #579.
+ */
+describe('--file matching', () => {
+  const fileList = ['multi/a/one.sql', 'multi/b/two.sql'];
+
+  test('the spelling glob happens to produce still matches', () => {
+    expect(matchFileOverride(fileList, 'multi/a/one.sql')).toBe(
+      'multi/a/one.sql',
+    );
+  });
+
+  test.each([
+    ['a leading ./', './multi/a/one.sql'],
+    ['an absolute path', join(process.cwd(), 'multi', 'a', 'one.sql')],
+    ['a redundant segment', 'multi/b/../a/one.sql'],
+  ])('%s matches too', (_label, spelling) => {
+    expect(matchFileOverride(fileList, spelling)).toBe('multi/a/one.sql');
+  });
+
+  test('the glob spelling is what is returned, not the one typed', () => {
+    // So the `Processing …` lines do not depend on how the flag was written.
+    expect(matchFileOverride(fileList, './multi/b/two.sql')).toBe(
+      'multi/b/two.sql',
+    );
+  });
+
+  test('a file the transform does not cover still matches nothing', () => {
+    expect(matchFileOverride(fileList, 'multi/c/three.sql')).toBeUndefined();
   });
 });
