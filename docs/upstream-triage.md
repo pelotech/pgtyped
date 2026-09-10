@@ -56,15 +56,16 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Seven entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Eight entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
 escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
 keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
 it raises is recorded there and stays open), the silence around an ambient `PG*` variable
-displacing an explicit config value (its precedence is deliberately unchanged), and the pre-flight
+displacing an explicit config value (its precedence is deliberately unchanged), the pre-flight
 privilege check of PR #563, whose technique was prototyped against a live server before anything was
-built on it and which shipped as the opt-in `checkPrivileges`. The last four entries below are not
-bugs but adoptions — PR #563 and the cheapest three in **Worth adopting from upstream** (PRs #580,
+built on it and which shipped as the opt-in `checkPrivileges`, and the element nullability of array
+results, which absorbs the PR #614 adoption entry. PR #563 is an adoption rather than a bug, as are
+the last three entries below — the cheapest three in **Worth adopting from upstream** (PRs #580,
 #624 and #642), which have also been taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
 
@@ -1032,6 +1033,66 @@ already been described successfully, so it is known to be valid SQL.
 Covered by a live test in `packages/example` that creates a role, revokes one table outright, grants
 two columns of another, and runs codegen as that role.
 
+### Array elements were typed as non-nullable — issues #613, #460; PR #614 — **FIXED**
+
+`getArray` produced `(T)[]`. A Postgres array may hold NULL elements whatever the column's own
+nullability, so `(string)[]` was a lie for every `text[]` result. Reproduced:
+
+```sql
+/* @name GetTextArray */
+SELECT ARRAY['a', NULL, 'c']::text[] AS vals;
+```
+
+```ts
+export type stringArray = (string)[];
+…
+vals: stringArray | null;
+```
+
+```
+actual rows: [{"vals":["a",null,"c"]}]
+```
+
+Also reproduced from #613's own angle: `SELECT pg_typeof(:input!::text[])` →
+`export type stringArray = (string)[];`. #613 and #460 are the same request, and are closed
+together.
+
+**A result now says so; a parameter is deliberately unchanged.** `TypeScope.Return` emits
+`nullableStringArray = (string | null)[]`, and `TypeScope.Parameter` keeps
+`stringArray = (string)[]`. Upstream's #614 applies the suffix in both scopes and renames every
+alias `TArray` → `NullTArray`; the idea was taken and the patch was not. A caller passing `string[]`
+was always correct, and widening what the input accepts is neither what #613 nor what #460 reports —
+it only loosens the contract for every project that already compiles.
+
+**The return scope's alias needs a name of its own**, which is the part of this that is not obvious.
+`TypeAllocator` registers aliases by name with first occurrence winning, and one allocator serves
+both scopes of a generated file. Two definitions under one name would emit whichever scope was
+reached first and silently hand the other the wrong type. `packages/example` reaches both:
+`categoryArray` is a result in four queries and a parameter in `InsertBooks`.
+
+That collision turned out to be live already. `config.json` overrides `category` in the **return**
+scope only, so the parameter direction resolves to the enum union — and yet `InsertBooks` generated
+`categoryArray = (Category)[]`, the return scope's definition, because the return scope was reached
+first. Splitting the names corrects the parameter to `(category)[]` as well as adding the elements'
+`| null` to the result, which is why `books.queries.ts` shows both changes.
+
+Element nullability lives inside the alias and the column's own nullability stays outside it, so a
+nullable column of a nullable element type is `nullableCategoryArray | null`. `_json` is left
+alone: `Json` already admits null as the first member of its union, so `JsonArray = (Json)[]` needs
+no suffix and, having one definition in both scopes, no second name either. `formatArrayType` in
+`generator.ts` is untouched too — it builds the list of bind values for a spread parameter
+(`id IN :ids`), which is not a Postgres array type.
+
+**Breaking, which is the point:** `row.tags.map((t) => t.toUpperCase())` stops being a silent
+`TypeError` waiting to happen.
+
+**Covered by** `packages/cli/src/types.test.ts`: both scopes of `_text`, `_int4`, the hand-written
+`_numeric` entry and an enum array, pinned by definition string rather than by alias name — no test
+asserted an array definition at all before, which is how this survived several passes over that
+file — plus a regression test that drives both scopes through one allocator and asserts each alias
+is emitted independently. In `packages/example`, a `@ts-expect-error` on
+`const amounts: number[] = row.amounts` fails the build if the nullability is ever taken back off.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -1116,42 +1177,6 @@ the runtime — the reason the sweep stops where it does:
 ---
 
 ## Still open — medium
-
-### Array elements are typed as non-nullable — issues #613, #460; PR #614
-
-`getArray` produces `(T)[]`; Postgres arrays can always contain NULL elements, so `(string)[]` is a
-lie. Reproduced:
-
-```sql
-/* @name GetTextArray */
-SELECT ARRAY['a', NULL, 'c']::text[] AS vals;
-```
-
-```ts
-export type stringArray = (string)[];
-…
-vals: stringArray | null;
-```
-
-```
-actual rows: [{"vals":["a",null,"c"]}]
-```
-
-Also reproduced from #613's own angle: `SELECT pg_typeof(:input!::text[])` →
-`export type stringArray = (string)[];`. #613 and #460 are the same request and should be resolved
-together.
-
-**Take the idea, not the patch.** Upstream's #614 applies `(null | T)[]` in **both** scopes and
-renames every alias `TArray` → `NullTArray`, a gratuitous rename of every generated alias. The
-parameter side does not need it — a caller passing `string[]` is already fine, and widening the
-accepted input is not the bug reported.
-
-**Suggested scope:** make `getArray` scope-aware in `TypeAllocator.use` — keep
-`stringArray = (string)[]` for `TypeScope.Parameter`, emit a distinct
-`nullableStringArray = (string | null)[]` for `TypeScope.Return`. Roughly 20 lines in
-`packages/cli/src/types.ts`, plus tests, plus regenerating `packages/example`. Breaking for consumers
-who index array results without a null check — which is the point:
-`row.tags.map(t => t.toUpperCase())` stops being a silent `TypeError` waiting to happen.
 
 ### No way to type the keys of a `VALUES :rows` pick — issues #498, #517, #630
 
@@ -1254,15 +1279,6 @@ now agree, so if this flag is built it should govern both together rather than m
 parameter optional and the other not.
 
 **Unverified:** the current output and the patched branch were confirmed; the flag was not built.
-
-### PR #614 — array element nullability
-
-**Effort: ~20 lines in `types.ts`, plus tests, plus regenerating `packages/example`.** See
-[Array elements are typed as non-nullable](#array-elements-are-typed-as-non-nullable--issues-613-460-pr-614).
-Adopt the idea scope-aware; reject the blanket `TArray` → `NullTArray` rename.
-
-**What it buys:** `row.tags.map(t => t.toUpperCase())` stops being a silent `TypeError` waiting to
-happen. Closes #613 and #460.
 
 ### PR #524 — env-var templating in config
 
@@ -1461,7 +1477,7 @@ Triaged and closed out. Nobody needs to look at these again.
 | PR #580 (mechanism)        | —                                                    | The goal was right and is [taken](#query-name-not-reachable-at-runtime--issue-522-pr-580--fixed); the mechanism — a second positional constructor argument rewriting every generated file — was wrong here, because the fork already serialises `queryName` inside the IR, so the property is read off it instead.                                                                                                                                                                                                                                                                                                                           |
 | PR #637 (as written)       | —                                                    | The technique was right and is [taken](#domain-types-were-flattened-to-their-base-type--issues-503-594-pr-637--fixed); the patch was not merged verbatim, because unamended it converts working `string`/`number`/enum columns into `unknown` plus a hard codegen error for any project with domain columns and no per-domain `typesOverrides` entry.                                                                                                                                                                                                                                                                                        |
 | PR #620 (as written)       | —                                                    | Re-splits the CLI into a second `@pgtyped/typegen` package, against the deliberate 6→3 consolidation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| PR #614 (as written)       | —                                                    | Applies `(null \| T)[]` in both scopes and renames every generated alias `TArray` → `NullTArray`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| PR #614 (as written)       | —                                                    | The idea was right and is [taken](#array-elements-were-typed-as-non-nullable--issues-613-460-pr-614--fixed); the patch was not, because it applies `(null \| T)[]` in both scopes — widening what a parameter accepts, which neither issue asks for — and renames every generated alias `TArray` → `NullTArray`.                                                                                                                                                                                                                                                                                                                             |
 | PR #524 (as written)       | —                                                    | `parseEnvTemplate` slices the whole input rather than the match, so only an exact `{{VAR}}` value works; non-template literals are discarded; and it loosens `db.port` to `number \| string`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ---
@@ -1521,19 +1537,19 @@ Every triaged number, and where it is covered.
 #213 **FIXED here** · #221 **FIXED here** (diagnosis) · #263 limitation · #273 **FIXED here** (diagnosis) · #292 fixed · #314 **FIXED here** (diagnosis) · #316 NA ·
 #317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
-#460 open · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
+#460 **FIXED here** · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
 #566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
-#613 open · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
+#613 **FIXED here** · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
 
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 **FIXED here** ·
 #580 **FIXED here** · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
-#614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
+#614 **FIXED here** (rescoped) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
 #622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·
 #632 already fixed · #633 already fixed · #635 already fixed · #637 **FIXED here** (amended) ·
 #639 NA · #641 already fixed · #642 **FIXED here** · #643 already fixed

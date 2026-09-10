@@ -7,11 +7,13 @@ export type Iso31661Alpha2 = 'AD' | 'AE' | 'AF' | 'AG' | 'AI' | 'AL' | 'AM' | 'A
 
 export type category = 'novel' | 'science-fiction' | 'thriller';
 
-export type categoryArray = (Category)[];
+export type categoryArray = (category)[];
+
+export type nullableCategoryArray = (Category | null)[];
+
+export type nullableStringArray = (string | null)[];
 
 export type numberArray = (number)[];
-
-export type stringArray = (string)[];
 
 /** 'FindBookById' parameters type */
 export interface FindBookByIdParams {
@@ -21,7 +23,7 @@ export interface FindBookByIdParams {
 /** 'FindBookById' return type */
 export interface FindBookByIdResult {
   author_id: number | null;
-  categories: categoryArray | null;
+  categories: nullableCategoryArray | null;
   id: number;
   name: string | null;
   rank: number | null;
@@ -52,7 +54,7 @@ export interface FindBookByCategoryParams {
 /** 'FindBookByCategory' return type */
 export interface FindBookByCategoryResult {
   author_id: number | null;
-  categories: categoryArray | null;
+  categories: nullableCategoryArray | null;
   id: number;
   name: string | null;
   rank: number | null;
@@ -112,7 +114,7 @@ export type FindBookUnicodeParams = void;
 /** 'FindBookUnicode' return type */
 export interface FindBookUnicodeResult {
   author_id: number | null;
-  categories: categoryArray | null;
+  categories: nullableCategoryArray | null;
   id: number;
   name: string | null;
   rank: number | null;
@@ -273,7 +275,7 @@ export interface GetBooksByAuthorNameParams {
 /** 'GetBooksByAuthorName' return type */
 export interface GetBooksByAuthorNameResult {
   author_id: number | null;
-  categories: categoryArray | null;
+  categories: nullableCategoryArray | null;
   id: number;
   name: string | null;
   rank: number | null;
@@ -306,7 +308,7 @@ export interface AggregateEmailsAndTestParams {
 /** 'AggregateEmailsAndTest' return type */
 export interface AggregateEmailsAndTestResult {
   agetest: boolean | null;
-  emails: stringArray;
+  emails: nullableStringArray;
 }
 
 /** 'AggregateEmailsAndTest' query type */

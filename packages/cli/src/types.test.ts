@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { MappableType } from './db/type.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 
 describe('TypeAllocator', () => {
@@ -31,7 +32,9 @@ describe('TypeAllocator', () => {
     const types = new TypeAllocator(TypeMapping());
     // `_bytea` is the PG type name for an array of bytea values; the element
     // type has to be used for its import to reach the declaration.
-    expect(types.use('_bytea', TypeScope.Return)).toEqual('BufferArray');
+    expect(types.use('_bytea', TypeScope.Return)).toEqual(
+      'nullableBufferArray',
+    );
     expect(types.declaration('out.ts')).toContain(
       "import type { Buffer } from 'node:buffer';",
     );
@@ -57,7 +60,9 @@ describe('TypeAllocator', () => {
     );
     expect(types.use('_text', TypeScope.Return)).toEqual('TextTuple');
     // Unoverridden array types still derive from their element type.
-    expect(types.use('_varchar', TypeScope.Return)).toEqual('stringArray');
+    expect(types.use('_varchar', TypeScope.Return)).toEqual(
+      'nullableStringArray',
+    );
   });
 
   /**
@@ -209,7 +214,7 @@ describe('DefaultTypeMapping agrees with the driver', () => {
       ['time', 'string', "'01:02:03'"],
       ['timetz', 'string', "'01:02:03+00'"],
       ['bit', 'string', "'101'"],
-      ['_numeric', 'numberArray', '[1.5]'],
+      ['_numeric', 'nullableNumberArray', '[1.5]'],
       ['point', 'PgPoint', '{ x: 1, y: 2 }'],
     ])('%s is %s, because the driver returns %s', (pgType, expected) => {
       expect(use(pgType, TypeScope.Return)).toEqual(expected);
@@ -225,8 +230,8 @@ describe('DefaultTypeMapping agrees with the driver', () => {
       ['timestamp', 'Date'],
       ['timestamptz', 'Date'],
       ['bool', 'boolean'],
-      ['_int4', 'numberArray'],
-      ['_text', 'stringArray'],
+      ['_int4', 'nullableNumberArray'],
+      ['_text', 'nullableStringArray'],
     ])('%s is still %s', (pgType, expected) => {
       expect(use(pgType, TypeScope.Return)).toEqual(expected);
     });
@@ -303,6 +308,132 @@ describe('DefaultTypeMapping agrees with the driver', () => {
       expect(syntaxErrors(types.declaration('out.ts'))).toStrictEqual([]);
     });
   });
+});
+
+/**
+ * A Postgres array may hold NULL elements whatever the column's own
+ * nullability, so `(string)[]` was a lie for every `text[]` result — issues
+ * #613 and #460, and upstream PR #614.
+ *
+ * These pin the alias *definitions*, not just the names. Nothing did before,
+ * which is how `(...)[]` stayed wrong through several passes over this file.
+ */
+describe('array element nullability (issues #613, #460)', () => {
+  /** The declaration `pgType` produces in `scope`, alias name and all. */
+  const declarationOf = (pgType: MappableType, scope: TypeScope): string => {
+    const types = new TypeAllocator(TypeMapping());
+    types.use(pgType, scope);
+    return types.declaration('out.ts');
+  };
+
+  const category = { name: 'category', enumValues: ['novel', 'thriller'] };
+  const categoryArray = { name: '_category', elementType: category };
+
+  describe('a result says so', () => {
+    test.each([
+      ['_text', 'export type nullableStringArray = (string | null)[];'],
+      ['_int4', 'export type nullableNumberArray = (number | null)[];'],
+      // The hand-written `_numeric` entry is consulted before the derivation
+      // below ever runs, so it carries its own scope-aware definition.
+      ['_numeric', 'export type nullableNumberArray = (number | null)[];'],
+    ])('%s declares %s', (pgType, expected) => {
+      expect(declarationOf(pgType, TypeScope.Return)).toContain(expected);
+    });
+
+    test('an enum array declares its elements nullable too', () => {
+      expect(declarationOf(categoryArray, TypeScope.Return)).toContain(
+        'export type nullableCategoryArray = (category | null)[];',
+      );
+    });
+
+    test('an overridden enum array keeps the override, and gains the null', () => {
+      const types = new TypeAllocator(
+        TypeMapping({
+          category: {
+            return: { name: 'Category', from: './customTypes.js' },
+          },
+        }),
+      );
+      types.use(categoryArray, TypeScope.Return);
+      expect(types.declaration('out.ts')).toContain(
+        'export type nullableCategoryArray = (Category | null)[];',
+      );
+    });
+  });
+
+  describe('a parameter does not', () => {
+    // Widening what a caller may pass is not what those issues report, and
+    // would loosen the contract for every project that already compiles.
+    test.each([
+      ['_text', 'export type stringArray = (string)[];'],
+      ['_int4', 'export type numberArray = (number)[];'],
+      ['_numeric', 'export type NumberOrStringArray = (number | string)[];'],
+    ])('%s still declares %s', (pgType, expected) => {
+      expect(declarationOf(pgType, TypeScope.Parameter)).toContain(expected);
+    });
+
+    test('an enum array still takes its elements non-null', () => {
+      expect(declarationOf(categoryArray, TypeScope.Parameter)).toContain(
+        'export type categoryArray = (category)[];',
+      );
+    });
+  });
+
+  /**
+   * Why the return scope gets a name of its own. `TypeAllocator` registers
+   * aliases by name, first occurrence winning, and one allocator serves both
+   * scopes of a file — `packages/example` has `categoryArray` as a result and
+   * as a parameter. Sharing the name would emit whichever definition was
+   * reached first, and silently give the other scope the wrong type.
+   */
+  describe('both scopes of one allocator, emitted independently', () => {
+    test('a text array is declared twice, correctly each time', () => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use('_text', TypeScope.Parameter)).toEqual('stringArray');
+      expect(types.use('_text', TypeScope.Return)).toEqual(
+        'nullableStringArray',
+      );
+      const declaration = types.declaration('out.ts');
+      expect(declaration).toContain('export type stringArray = (string)[];');
+      expect(declaration).toContain(
+        'export type nullableStringArray = (string | null)[];',
+      );
+    });
+
+    test('so is an enum array, whichever scope is reached first', () => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use(categoryArray, TypeScope.Return)).toEqual(
+        'nullableCategoryArray',
+      );
+      expect(types.use(categoryArray, TypeScope.Parameter)).toEqual(
+        'categoryArray',
+      );
+      const declaration = types.declaration('out.ts');
+      expect(declaration).toContain(
+        'export type categoryArray = (category)[];',
+      );
+      expect(declaration).toContain(
+        'export type nullableCategoryArray = (category | null)[];',
+      );
+      expect(syntaxErrors(declaration)).toStrictEqual([]);
+    });
+  });
+
+  /**
+   * `Json` already admits null — it is the first member of the union — so the
+   * suffix would be redundant, and with one definition for both scopes there
+   * is no collision to name apart. Covers issue #323's alias as well.
+   */
+  test.each([TypeScope.Parameter, TypeScope.Return])(
+    '_json is JsonArray in the %s scope, unchanged',
+    (scope) => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use('_json', scope)).toEqual('JsonArray');
+      expect(types.declaration('out.ts')).toContain(
+        'export type JsonArray = (Json)[];',
+      );
+    },
+  );
 });
 
 /** The syntax errors TypeScript reports for `source`, if any. */

@@ -14,6 +14,11 @@ import { AliasedType, EnumType } from './db/type.js';
 import path from 'path';
 import { RUNTIME_MODULE } from './runtimeModule.js';
 
+export enum TypeScope {
+  Parameter = 'parameter',
+  Return = 'return',
+}
+
 const String: Type = { name: 'string' };
 const Number: Type = { name: 'number' };
 const NumberOrString: Type = {
@@ -77,10 +82,40 @@ const PgInterval: Type = {
   toISOString(): string;
 }`,
 };
-const getArray = (baseType: Type): Type => ({
-  name: `${baseType.name}Array`,
-  definition: `(${baseType.definition ?? baseType.name})[]`,
-});
+/**
+ * The TypeScript type for a Postgres array of `baseType`.
+ *
+ * A Postgres array may hold NULL elements whatever the column's own
+ * nullability, so a *result* is `(T | null)[]` (#613, #460). The column's
+ * nullability is a separate suffix the generator appends outside the alias, so
+ * a nullable column of a nullable element type is `nullableTArray | null`.
+ *
+ * A *parameter* keeps `(T)[]`. Accepting `(T | null)[]` would only widen what
+ * a caller may pass, which is not what those issues report — upstream PR #614
+ * applies the suffix in both scopes, and renames every alias to match.
+ *
+ * The return scope's alias needs a name of its own because both scopes share
+ * one allocator, whose registry is keyed by name with first occurrence
+ * winning: one name standing for two definitions would silently give whichever
+ * scope came second the other's type. `packages/example` reaches both, with
+ * `categoryArray` as a result and as a parameter.
+ */
+const getArray = (baseType: Type, scope: TypeScope): Type => {
+  const definition = baseType.definition ?? baseType.name;
+  // `Json` already admits null — that is the first member of its union — so
+  // the suffix would be redundant, and `JsonArray` keeps one name and one
+  // definition in both scopes.
+  if (scope !== TypeScope.Return || baseType.name === Json.name) {
+    return { name: `${baseType.name}Array`, definition: `(${definition})[]` };
+  }
+  return {
+    name: `nullable${capitalise(baseType.name)}Array`,
+    definition: `(${definition} | null)[]`,
+  };
+};
+
+const capitalise = (name: string): string =>
+  `${name[0].toUpperCase()}${name.slice(1)}`;
 
 export const DefaultTypeMapping = Object.freeze({
   // Integer types
@@ -151,7 +186,7 @@ export const DefaultTypeMapping = Object.freeze({
   // Only the six built-in range types are listed. A user-defined range (or a
   // multirange, PG14+) still needs a `typesOverrides` entry, and an *array* of
   // ranges is the `_bit` case: pg-types cannot parse it either, so `_tstzrange`
-  // arrives as one string rather than the `stringArray` derived here.
+  // arrives as one string rather than the `nullableStringArray` derived here.
   int4range: { parameter: String, return: String },
   int8range: { parameter: String, return: String },
   numrange: { parameter: String, return: String },
@@ -188,7 +223,14 @@ export const DefaultTypeMapping = Object.freeze({
   //
   // The parameter direction needs no exception: the server accepts both
   // numbers and strings as elements, exactly as it does for a lone `numeric`.
-  _numeric: { parameter: getArray(NumberOrString), return: getArray(Number) },
+  //
+  // Being named outright, this entry is consulted before `TypeAllocator.use`
+  // reaches its `_`-prefix branch, so it has to pick its own scope's array
+  // form rather than inherit the one that branch derives.
+  _numeric: {
+    parameter: getArray(NumberOrString, TypeScope.Parameter),
+    return: getArray(Number, TypeScope.Return),
+  },
 });
 
 export type BuiltinTypes = keyof typeof DefaultTypeMapping;
@@ -335,11 +377,6 @@ function declareStringUnion(name: string, values: string[]) {
   return declareAlias(name, values.sort().map(quoteString).join(' | '));
 }
 
-export enum TypeScope {
-  Parameter = 'parameter',
-  Return = 'return',
-}
-
 type importsType = { [k: string]: ImportedType[] };
 
 export type TypeDefinitions = {
@@ -386,7 +423,7 @@ export class TypeAllocator {
         // ^ Converts _varchar -> varchar, then wraps the type in an array
 
         const mappedType = this.use(arrayValueType, scope);
-        typ = getArray({ name: mappedType });
+        typ = getArray({ name: mappedType }, scope);
       } else {
         if (!this.isMappedType(typeNameOrType)) {
           if (this.allowUnmappedTypes) {
@@ -420,13 +457,16 @@ export class TypeAllocator {
         typ = mapped;
       } else if (isEnumArray(typeNameOrType)) {
         if (this.mapping[typeNameOrType.elementType.name]?.[scope]) {
-          typ = getArray({
-            name: typeNameOrType.elementType.name,
-            definition:
-              this.mapping[typeNameOrType.elementType.name][scope].name,
-          });
+          typ = getArray(
+            {
+              name: typeNameOrType.elementType.name,
+              definition:
+                this.mapping[typeNameOrType.elementType.name][scope].name,
+            },
+            scope,
+          );
         } else {
-          typ = getArray(typeNameOrType.elementType);
+          typ = getArray(typeNameOrType.elementType, scope);
         }
         // make sure the element type is used so it appears in the declaration
         this.use(typeNameOrType.elementType, scope);
