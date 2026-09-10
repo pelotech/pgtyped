@@ -24,7 +24,7 @@ export type PgInterval = {
 
 export type PgPoint = { x: number; y: number };
 
-export type numberArray = (number)[];
+export type nullableNumberArray = (number | null)[];
 
 /** 'GetDriverTypes' parameters type */
 export type GetDriverTypesParams = void;
@@ -32,7 +32,7 @@ export type GetDriverTypesParams = void;
 /** 'GetDriverTypes' return type */
 export interface GetDriverTypesResult {
   amount: string;
-  amounts: numberArray;
+  amounts: nullableNumberArray;
   contact: EmailAddress;
   duration: PgInterval;
   flags: string;

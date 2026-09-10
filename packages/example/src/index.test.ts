@@ -314,12 +314,21 @@ describe('generated types describe what the driver really returns', () => {
     expect(flags).toBe('101');
 
     // `numeric[]` was `(string)[]`, inherited from scalar `numeric`. The
-    // elements are parsed with parseFloat even though the scalar is not.
-    const amounts: number[] = row.amounts;
+    // elements are parsed with parseFloat even though the scalar is not, so
+    // this is `(number | null)[]`: a Postgres array may hold NULL elements
+    // whatever the column's own nullability (issues #613, #460).
+    //
+    // The next assignment is the assertion. It must not compile — if it ever
+    // does, the elements have gone back to being typed non-nullable, and
+    // `tsc --noEmit` fails on the unused directive rather than here.
+    // @ts-expect-error - the elements are nullable; see issues #613 and #460
+    const nonNullableAmounts: number[] = row.amounts;
+    const amounts: (number | null)[] = row.amounts;
+    expect(nonNullableAmounts).toEqual([1.5, 2.5]);
     expect(amounts).toEqual([1.5, 2.5]);
     expect(amounts.map((a) => typeof a)).toEqual(['number', 'number']);
 
-    // `point` was `(number)[]`.
+    // `point` was `(number)[]`, before it was an object rather than a tuple.
     const location: PgPoint = row.location;
     expect(location).toEqual({ x: 1, y: 2 });
 
