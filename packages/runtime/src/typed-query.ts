@@ -66,6 +66,15 @@ function assertRunOptions(value: unknown, queryName: string | undefined): void {
  * enabled, or a `sql.prepared` tag. A plain `sql` tag never does.
  */
 export class TypedQuery<TParams, TResult> {
+  /**
+   * The query's own name: a .sql file's `@name`, or for a tag the name given
+   * to `sql.prepared` or derived from the variable it was assigned to. Always
+   * present, never hashed, and stable across edits to the SQL — which is what
+   * makes it the identifier to use for metrics, span names and slow-query
+   * logs. Not `name`, which is the prepared statement name.
+   */
+  readonly queryName: string;
+
   /** Canonical prepared statement name, when the query was granted one. */
   readonly name: string | undefined;
 
@@ -76,6 +85,7 @@ export class TypedQuery<TParams, TResult> {
   private readonly hasParams: boolean;
 
   constructor(private readonly ir: QueryIR) {
+    this.queryName = ir.queryName;
     this.name = ir.name;
     // Same rule codegen applies when deciding whether to emit `Params = void`:
     // only params that are actually referenced in the statement count, and the

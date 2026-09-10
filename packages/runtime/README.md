@@ -144,6 +144,29 @@ A query written with a plain `sql` tag **is not** named, which is a default rath
 
 Queries with no name are simply sent unnamed, and `TypedQuery.name` is `undefined` for them.
 
+#### `queryName`, which is not `name`
+
+A query object carries two identifiers, and they answer different questions:
+
+```ts
+findBookById.queryName; // 'FindBookById'
+findBookById.name; // 'FindBookById_ddfa9eb1', or undefined
+```
+
+`queryName` is the query's own name — a `.sql` file's `@name`, or the name passed to `sql.prepared`. It is a `string`, never `undefined`, and it does not move: editing the SQL leaves it alone. That makes it the thing to key a metrics label, an OpenTelemetry span name or a slow-query log on:
+
+```ts
+const started = performance.now();
+const rows = await findBookById.run(client, { bookId: 5 });
+metrics.histogram('db.query.duration', performance.now() - started, {
+  query: findBookById.queryName,
+});
+```
+
+`name` is the prepared statement name, which is the identifier the _server_ knows — what you see in `pg_prepared_statements` and in a `Prepared statements must be unique` error. It is `undefined` for the three cases above (`preparedStatements: false`, a plain `sql` tag, a query with a spread parameter), and where it is set its `_ddfa9eb1` suffix is a hash of the SQL text, so it changes every time the query is edited. Both properties make it unusable as a stable identifier for anything you aggregate over time.
+
+One case to know about: a tag has no name of its own at runtime unless you give it one. Codegen derives a tag's name from the variable it is assigned to, but that happens while generating types and never reaches the query object, so a plain `sql` tag and a `sql.prepared()` called with no name both report `queryName` as the placeholder `'query'`. Pass a name to `sql.prepared` for any tag you intend to measure.
+
 #### `RunOptions`
 
 Every call takes an optional last argument:
