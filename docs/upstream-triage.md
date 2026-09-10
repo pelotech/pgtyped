@@ -1195,10 +1195,24 @@ Not cheap: needs new annotation syntax plus IR and renderer support.
 
 ### Shared type aliases collide across generated files — issue #565
 
-Confirmed directly from two generated files: both declare
-`export type DateOrString = Date | string;`, and both declare `lobby_statusArray` — with _different_
-definitions (`(lobby_status)[]` vs `(LobbyStatus)[]`). `export *` from both gives exactly the
-reported TS2308.
+Still open, and re-checked after `197c625` gave the return and parameter scopes distinct array
+alias names. That commit does not shrink this.
+
+Reproduced on `197c625^` with two files that between them use one `lobby_status[]` in both
+directions and a `typesOverrides` entry naming only the return scope. The result file declared
+`export type lobby_statusArray = (LobbyStatus)[];`, the parameter file
+`export type lobby_statusArray = (lobby_status)[];`, and both declared
+`export type DateOrString = Date | string;`; `export *` from both gave TS2308 for
+`lobby_statusArray` and for `DateOrString`.
+
+On `197c625` that particular pair no longer disagrees: the result file declares
+`nullableLobby_statusArray = (LobbyStatus | null)[]`, the parameter file keeps
+`lobby_statusArray = (lobby_status)[]`, and `export *` reports only `DateOrString`. But the two
+definitions disagreeing was a separate defect — one name standing for two types, which #30 fixed
+for its own reasons — and this issue never depended on it. Every alias that two generated files
+both need is still declared in both. Verified on `197c625`: two files selecting the array each
+emit `nullableLobby_statusArray = (LobbyStatus | null)[]` and `export *` still gives TS2308; two
+files passing it as a parameter collide on `lobby_status` and on `lobby_statusArray` alike.
 
 Not cheap: needs a shared-emit target plus a watch-mode invalidation story, which the reporter
 flagged as the hard part themselves.
