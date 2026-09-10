@@ -117,6 +117,20 @@ export interface FindByTagsParams {
 The two aliases are named apart because one generated file may need both directions of the same
 Postgres type.
 
+### Where the shared aliases live
+
+`nullableStringArray`, an enum's string union, `PgInterval`, `Json` and the type a `typesOverrides`
+entry imports all belong to the schema rather than to any one query, so they are declared once — in
+`<srcDir>/pgtyped-shared.ts` — and imported by each generated file that names one:
+
+```ts title="src/tags/tags.queries.ts"
+import type { nullableStringArray } from '../pgtyped-shared.js';
+```
+
+Per-query types stay where their query is. See [Shared types](cli#shared-types) for the
+`sharedTypesFile` option, what to do when two files disagree about a name, and how to get the old
+per-file declarations back.
+
 ### Default mapping
 The default mapping is as follows:
 

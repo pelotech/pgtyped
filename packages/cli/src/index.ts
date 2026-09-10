@@ -2,6 +2,7 @@ import nun from 'nunjucks';
 import pg from 'pg';
 import { ParsedConfig, TransformConfig } from './config.js';
 import { typeDb, verifyConnection } from './db/type-db.js';
+import { SharedTypeRegistry } from './sharedTypes.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
 import { debug, fatal, MAX_CONCURRENCY } from './util.js';
 
@@ -56,8 +57,17 @@ export async function main(
     );
   }
 
+  // One registry for every transform: a project with both `.sql` files and
+  // `sql` tags shares one set of aliases between them.
+  const sharedTypes = new SharedTypeRegistry(config);
+
   const transformTask = async (transform: TransformConfig) => {
-    const transformer = new TypescriptAndSqlTransformer(db, config, transform);
+    const transformer = new TypescriptAndSqlTransformer(
+      db,
+      config,
+      transform,
+      sharedTypes,
+    );
     return transformer.start(isWatchMode, fileOverride);
   };
 
@@ -77,6 +87,29 @@ export async function main(
     return 1;
   }
   let exitCode = 0;
+  // Written once every transform has finished, because its contents are the
+  // union over all of them. A `--file` run has only described the one file it
+  // was given, so it knows nothing about what the rest still need and leaves
+  // the union alone rather than truncating it to one file's share.
+  if (sharedTypes.enabled) {
+    if (fileOverride) {
+      console.log(
+        `Left ${sharedTypes.relativePath} alone: --file describes one file, which is not ` +
+          `enough to know what the others still share. Run without --file if a new shared ` +
+          `type is missing from it.`,
+      );
+    } else {
+      try {
+        if (await sharedTypes.write()) {
+          console.log(`Saved shared types to ${sharedTypes.relativePath}`);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : err);
+        await pool.end();
+        return 1;
+      }
+    }
+  }
   if (fileOverride && !transforms.some((x) => x)) {
     // A `--file` that matched nothing generated nothing, and said so on
     // stdout while exiting 0 — so a targeted regeneration step could silently

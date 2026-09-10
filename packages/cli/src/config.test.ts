@@ -42,6 +42,39 @@ describe('parseConfig', () => {
     ).toBe(true);
   });
 
+  /**
+   * On by default: the aliases every generated file shares are declared once,
+   * so `export *` from two of them is no longer TS2308 (#565).
+   */
+  test('sharedTypesFile defaults to pgtyped-shared.ts', () => {
+    expect(parseConfig(configFile({})).sharedTypesFile).toBe(
+      'pgtyped-shared.ts',
+    );
+  });
+
+  test('sharedTypesFile can be named', () => {
+    expect(
+      parseConfig(configFile({ sharedTypesFile: 'types/shared.ts' }))
+        .sharedTypesFile,
+    ).toBe('types/shared.ts');
+  });
+
+  test('sharedTypesFile: false is the opt-out', () => {
+    expect(
+      parseConfig(configFile({ sharedTypesFile: false })).sharedTypesFile,
+    ).toBe(false);
+  });
+
+  test.each([
+    ['a name that is not TypeScript', 'shared.js'],
+    ['an absolute path', '/tmp/shared.ts'],
+    ['true, which names no file', true],
+  ])('sharedTypesFile rejects %s', (_label, value) => {
+    expect(() => parseConfig(configFile({ sharedTypesFile: value }))).toThrow(
+      /sharedTypesFile/,
+    );
+  });
+
   test('explicit values are honoured', () => {
     const c = parseConfig(
       configFile({ preparedStatements: false, hungarianNotation: true }),

@@ -1,7 +1,5 @@
 /** Types generated for queries found in "src/index.test.ts" */
-import type { Category } from './customTypes.js';
-
-export type nullableCategoryArray = (Category | null)[];
+import type { nullableCategoryArray } from './pgtyped-shared.js';
 
 /** 'FindBookByIdTag' parameters type */
 export interface FindBookByIdTagParams {

@@ -1,30 +1,7 @@
 /** Types generated for queries found in "src/driverTypes/driverTypes.sql" */
 import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
-import type { EmailAddress } from '../customTypes.js';
-
-export type DateOrString = Date | string;
-
-export type NumberOrString = number | string;
-
-export type NumberOrStringArray = (number | string)[];
-
-export type PgInterval = {
-  years?: number;
-  months?: number;
-  days?: number;
-  hours?: number;
-  minutes?: number;
-  seconds?: number;
-  milliseconds?: number;
-  toPostgres(): string;
-  toISO(): string;
-  toISOString(): string;
-};
-
-export type PgPoint = { x: number; y: number };
-
-export type nullableNumberArray = (number | null)[];
+import type { DateOrString, EmailAddress, NumberOrString, NumberOrStringArray, PgInterval, PgPoint, nullableNumberArray } from '../pgtyped-shared.js';
 
 /** 'GetDriverTypes' parameters type */
 export type GetDriverTypesParams = void;

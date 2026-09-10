@@ -12,6 +12,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.queries.ts',
       '**/*.types.ts',
+      '**/pgtyped-shared.ts',
       'packages/example/src/sql/index.ts',
       'docs-new/**',
     ],

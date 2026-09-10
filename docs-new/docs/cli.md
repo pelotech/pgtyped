@@ -126,6 +126,7 @@ For a full list of options, see the [Configuration file format](#configuration-f
   "nonEmptyArrayParams": false, // Whether the type for an array parameter should exclude empty arrays (an empty array has no SQL to render, and throws)
   "preparedStatements": true, // Whether to give each eligible query a server-side prepared statement name
   "checkPrivileges": false, // Whether to also check that the connecting role is allowed to execute each query (costs one round trip per query)
+  "sharedTypesFile": "pgtyped-shared.ts", // Where the type aliases every generated file shares are declared, relative to srcDir; false to declare them in each file instead
   "dbUrl": "postgres://user:password@host/database", // DB URL (optional - will be merged with db if provided)
   "db": {
     "dbName": "testdb", // DB name
@@ -166,6 +167,7 @@ Unrecognised config keys are an error, at every level of the file. A key that Pg
 | `hungarianNotation?`    | `boolean`                | Whether to prefix generated interface names with `I`, so `FindBookByIdResult` becomes `IFindBookByIdResult`. **Default:** `false`                                          |
 | `preparedStatements?`   | `boolean`                | Whether to give each eligible query a server-side prepared statement name. See [Prepared statements](#prepared-statements). **Default:** `true`                            |
 | `checkPrivileges?`      | `boolean`                | Whether to check that the connecting role is allowed to *execute* each query, not merely to describe it. See [Checking privileges](#checking-privileges). **Default:** `false` |
+| `sharedTypesFile?`      | `string` or `false`      | Where the type aliases every generated file shares — enum unions, array aliases, driver types such as `PgInterval`, and the imports `typesOverrides` produces — are declared. A path relative to `srcDir`, or `false` to have each generated file declare its own copy of every alias it needs, as PgTyped did before 3.0. See [Shared types](#shared-types). **Default:** `"pgtyped-shared.ts"` |
 | `typesOverrides?`       | `Record<string, string>` | A map of type overrides, **keyed by Postgres type name** — including a domain's name, which is why `CREATE DOMAIN` is the way to give one column a type of its own. A key containing a dot (`"lobbies.status"`) is rejected: column-scoped overrides are not supported, and used to be accepted and then ignored. Similarly to `camelCaseColumnNames`, this only affects the types. _You need to do this at runtime independently using a library like `pg-types`._ |
 
 Fields marked with `?` are optional.
@@ -246,6 +248,88 @@ Queries that end up with no name are simply sent unnamed, and `TypedQuery.name` 
 For a stable identifier — one that is always present and does not move when the SQL is edited — use `TypedQuery.queryName`, which is the `@name` itself. That is the one to label metrics, spans and slow-query logs with; see the [runtime README](https://github.com/pelotech/pgtyped/tree/HEAD/packages/runtime/README.md#queryname-which-is-not-name).
 
 Setting `preparedStatements: false` withholds a name from every query codegen names. It does not reach a `sql.prepared` tag, which computes its name at runtime. You can also disable naming per call or per connection at runtime; see the [runtime README](https://github.com/pelotech/pgtyped/tree/HEAD/packages/runtime/README.md) for `RunOptions` and `unprepared()`, which are what you want under PgBouncer in transaction-pooling mode.
+
+### Shared types
+
+Most of what a generated file declares belongs to the query above it: `FindBookByIdParams`,
+`FindBookByIdResult`. A handful of declarations do not. An enum's string union, an array alias such
+as `nullableStringArray`, a driver type such as `PgInterval` or `Json`, and the type a
+`typesOverrides` entry imports are all properties of the *schema*, and every query that touches them
+needs the same one.
+
+Every generated file used to declare its own copy. Two of them re-exported from one barrel is then a
+compile error, because the same name arrives twice:
+
+```ts
+export * from './books/books.queries.js';
+export * from './notifications/notifications.queries.js';
+// error TS2308: Module './books/books.queries.js' has already exported a member named 'Json'.
+```
+
+They are declared once instead, in the file `sharedTypesFile` names — `<srcDir>/pgtyped-shared.ts`
+by default — and each generated file imports the ones it uses:
+
+```ts title="src/books/books.queries.ts"
+/** Types generated for queries found in "src/books/books.sql" */
+import { TypedQuery } from '@pelotech/pgtyped-runtime';
+
+import type { category, nullableCategoryArray } from '../pgtyped-shared.js';
+```
+
+```ts title="src/pgtyped-shared.ts"
+/** Types shared by every file PgTyped generates. */
+export type category = 'novel' | 'science-fiction' | 'thriller';
+
+export type nullableCategoryArray = (category | null)[];
+```
+
+The file is written to `srcDir`, so the import is a relative specifier from wherever the generated
+file sits, however deep that is. It is generated output: commit it alongside the rest, and do not
+edit it. If nothing in the project needs a shared type at all, no file is written.
+
+:::caution
+This changed in 3.0. Code that imported one of these aliases **from a generated file** has to import
+it from the shared file instead:
+
+```ts
+- import type { PgInterval } from './driverTypes/driverTypes.queries.js';
++ import type { PgInterval } from './pgtyped-shared.js';
+```
+
+Per-query types are unaffected — `FindBookByIdParams` and `FindBookByIdResult` are still declared and
+exported by the file generated for the query. Setting `sharedTypesFile: false` restores the old
+output exactly.
+:::
+
+#### When two files disagree
+
+One name can only stand for one definition in the shared file. If two generated files would declare
+the same name differently — two schemas with an enum of the same name, say, reached through
+different `search_path`s — PgTyped says so rather than silently picking one:
+
+```
+Two generated files define the shared type "lobby_status" differently, and
+src/pgtyped-shared.ts can only declare one of them:
+  export type lobby_status = 'playing' | 'waiting';  (from src/a.queries.ts)
+  export type lobby_status = 'closed' | 'open';  (from src/b.queries.ts)
+```
+
+The first is what is emitted, chosen by file path so that regeneration stays byte-identical. Under
+[`failOnError`](#configuration-file-format) the disagreement fails the run instead. The fix is to
+give one of them a name of its own — a `typesOverrides` entry, or a `CREATE DOMAIN` — or to set
+`sharedTypesFile: false`.
+
+#### Watch mode, and `--file`
+
+In `--watch`, the shared file is kept in step with the whole session, not just the file in front of
+it. An alias survives as long as any watched file still needs it, disappears when the last one stops,
+and is released when a query file is **deleted** — along with the declaration file generated from it,
+which could not stand on its own once its imports are gone.
+
+`--file` is the one case where the shared file is left alone. That run only describes the file it was
+given, so it does not know what the rest of the project still shares and would truncate the union to
+one file's worth. If a targeted regeneration introduces a shared type the file does not yet declare,
+run codegen without `--file`.
 
 ### Customizing generated file paths
 

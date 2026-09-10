@@ -1,4 +1,4 @@
-import chokidar from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 import fs from 'fs-extra';
 import { globSync } from 'glob';
 import { minimatch } from 'minimatch';
@@ -7,10 +7,12 @@ import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
 import type { TypeDb } from './db/type-db.js';
 import {
+  declarationFileHeader,
   generateDeclarationFile,
   generateTypedecsFromFile,
 } from './generator.js';
 import { RUNTIME_MODULE } from './runtimeModule.js';
+import { SharedTypeRegistry } from './sharedTypes.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 import { debug, mapConcurrent, MAX_CONCURRENCY } from './util.js';
 
@@ -42,17 +44,29 @@ export function isUnderNodeModules(fileName: string): boolean {
   return fileName.split(/[\\/]/).includes('node_modules');
 }
 
-/** The query files a transform applies to. */
+/**
+ * The query files a transform applies to.
+ *
+ * `exclude` names files that are generated output rather than query source —
+ * the shared types file, which a `**\/*.ts` include would otherwise sweep up
+ * and parse for `sql` tags on every run.
+ */
 export function findQueryFiles(
   srcDir: string,
   transform: TransformConfig,
+  exclude?: string | null,
 ): string[] {
-  return globSync(`${srcDir}/**/${transform.include}`, {
+  const files = globSync(`${srcDir}/**/${transform.include}`, {
     ignore: [
       NODE_MODULES_GLOB,
       ...(transform.emitFileName ? [`${srcDir}${transform.emitFileName}`] : []),
     ],
   });
+  // Filtered rather than added to `ignore`: a glob pattern has to match the
+  // spelling the glob produces, and `srcDir` may or may not carry a `./`.
+  return exclude
+    ? files.filter((file) => path.resolve(file) !== path.resolve(exclude))
+    : files;
 }
 
 /**
@@ -116,21 +130,28 @@ export async function getTypeDecs(
   );
 }
 
+/** The file `transform` writes the declarations for `fileName` into. */
+export function declarationFileName(
+  transform: TransformConfig,
+  fileName: string,
+): string {
+  const ppath = path.parse(fileName) as ExtendedParsedPath;
+  ppath.dir_base = path.basename(ppath.dir);
+  if ('emitTemplate' in transform && transform.emitTemplate) {
+    return nun.renderString(transform.emitTemplate, ppath);
+  }
+  const suffix = transform.mode === 'ts' ? 'types.ts' : 'ts';
+  return path.resolve(ppath.dir, `${ppath.name}.${suffix}`);
+}
+
 export async function processFile(
   db: TypeDb,
   config: ParsedConfig,
   transform: TransformConfig,
   fileName: string,
+  sharedTypes?: SharedTypeRegistry,
 ): Promise<ProcessFileResult> {
-  const ppath = path.parse(fileName) as ExtendedParsedPath;
-  ppath.dir_base = path.basename(ppath.dir);
-  let decsFileName;
-  if ('emitTemplate' in transform && transform.emitTemplate) {
-    decsFileName = nun.renderString(transform.emitTemplate, ppath);
-  } else {
-    const suffix = transform.mode === 'ts' ? 'types.ts' : 'ts';
-    decsFileName = path.resolve(ppath.dir, `${ppath.name}.${suffix}`);
-  }
+  const decsFileName = declarationFileName(transform, fileName);
 
   let typeDecSet;
   try {
@@ -144,7 +165,14 @@ export async function processFile(
   const relativePath = path.relative(process.cwd(), decsFileName);
 
   if (typeDecSet.typedQueries.length > 0) {
-    const declarationFileContents = await generateDeclarationFile(typeDecSet);
+    // Before the write, and whether or not the file itself changed: the shared
+    // file's contents are the union over every generated file, so a file that
+    // regenerates identically still has to hold its claim on what it uses.
+    sharedTypes?.register(decsFileName, typeDecSet.typeDefinitions);
+    const declarationFileContents = generateDeclarationFile(
+      typeDecSet,
+      sharedTypes?.specifier(decsFileName),
+    );
     const oldDeclarationFileContents = (await fs.pathExists(decsFileName))
       ? await fs.readFile(decsFileName, { encoding: 'utf-8' })
       : null;
@@ -156,6 +184,9 @@ export async function processFile(
         relativePath,
       };
     }
+  } else {
+    // Nothing is generated for this file any more, so it needs nothing shared.
+    sharedTypes?.release(decsFileName);
   }
   return {
     skipped: true,
@@ -166,11 +197,14 @@ export async function processFile(
 
 export class TypescriptAndSqlTransformer {
   private fileOverrideUsed = false;
+  private watching = false;
+  private watcher?: FSWatcher;
 
   constructor(
     private readonly db: TypeDb,
     private readonly config: ParsedConfig,
     private readonly transform: TransformConfig,
+    private readonly sharedTypes?: SharedTypeRegistry,
   ) {}
 
   private async watch() {
@@ -178,7 +212,7 @@ export class TypescriptAndSqlTransformer {
       return this.processFile(fileName);
     };
 
-    chokidar
+    this.watcher = chokidar
       .watch(this.config.srcDir, {
         persistent: true,
         // Returning true for the directory itself stops chokidar descending
@@ -186,14 +220,27 @@ export class TypescriptAndSqlTransformer {
         // watch descriptors nor describes (#534).
         ignored: (fileName, stats) =>
           isUnderNodeModules(fileName) ||
+          // Generated output, and written into srcDir: watching it would have
+          // every rewrite of it call back into codegen.
+          !!this.sharedTypes?.isSharedFile(fileName) ||
           (!!stats?.isFile() && !minimatch(fileName, this.transform.include)),
       })
       .on('add', cb)
-      .on('change', cb);
+      .on('change', cb)
+      // A deleted query file has to give up its share of the shared types, or
+      // an alias only it used outlives the query that needed it for the rest
+      // of the session.
+      .on('unlink', (fileName: string) => this.forgetFile(fileName));
+  }
+
+  /** Stops watching. Only the tests need this; the CLI watches until killed. */
+  public async close(): Promise<void> {
+    await this.watcher?.close();
   }
 
   public async start(watch: boolean, fileOverride?: string) {
     if (watch) {
+      this.watching = true;
       return this.watch();
     }
 
@@ -201,7 +248,11 @@ export class TypescriptAndSqlTransformer {
      * If the user didn't provide the -f paramter, we're using the list of files we got from glob.
      * If he did, we're using glob file list to detect if his provided file should be used with this transform.
      */
-    let fileList = findQueryFiles(this.config.srcDir, this.transform);
+    let fileList = findQueryFiles(
+      this.config.srcDir,
+      this.transform,
+      this.sharedTypes?.filePath,
+    );
     if (fileList.length === 0) {
       // Running the CLI from another directory with an absolute `-c` path
       // produced no output whatsoever and exited 0, because `srcDir` is
@@ -246,6 +297,7 @@ export class TypescriptAndSqlTransformer {
         this.config,
         this.transform,
         fileName,
+        this.sharedTypes,
       );
     } catch (err) {
       console.log(
@@ -276,6 +328,48 @@ export class TypescriptAndSqlTransformer {
       console.log(
         `Saved ${result.typeDecsLength} query types from ${fileName} to ${result.relativePath}`,
       );
+    }
+
+    // One run writes the shared file once, after every transform has finished
+    // — see main(). A watch session has no such moment, so the union is
+    // rewritten whenever it changes.
+    if (this.watching) {
+      await this.writeSharedTypes();
+    }
+  }
+
+  /**
+   * Forgets a query file that has just been deleted.
+   *
+   * The declaration file generated from it goes too: with a shared types file
+   * it can no longer stand on its own, because the aliases it imports are
+   * about to be released. Only a file this transform recognises as its own
+   * output is removed — the header names the query file it came from.
+   */
+  private async forgetFile(fileName: string) {
+    fileName = path.relative(process.cwd(), fileName);
+    const decsFileName = declarationFileName(this.transform, fileName);
+    this.sharedTypes?.release(decsFileName);
+
+    if (await fs.pathExists(decsFileName)) {
+      const contents = await fs.readFile(decsFileName, { encoding: 'utf-8' });
+      if (contents.startsWith(declarationFileHeader(fileName))) {
+        await fs.remove(decsFileName);
+        console.log(
+          `Removed ${path.relative(process.cwd(), decsFileName)}: ${fileName} was deleted`,
+        );
+      }
+    }
+
+    await this.writeSharedTypes();
+  }
+
+  private async writeSharedTypes() {
+    if (!this.sharedTypes?.enabled) {
+      return;
+    }
+    if (await this.sharedTypes.write()) {
+      console.log(`Saved shared types to ${this.sharedTypes.relativePath}`);
     }
   }
 }

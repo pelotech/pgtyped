@@ -393,6 +393,9 @@ export class TypeAllocator {
   imports: { [k: string]: ImportedType[] } = {};
   // name -> definition (if any)
   types: { [k: string]: Type } = {};
+  // The names `use` has handed back to a caller, which is what a generated
+  // file actually spells out. See the note on `use`.
+  directUses = new Set<string>();
 
   constructor(
     private mapping: TypeMapping,
@@ -403,8 +406,25 @@ export class TypeAllocator {
     return name in this.mapping;
   }
 
-  /** Lookup a database-provided type name in the allocator's map */
+  /**
+   * Lookup a database-provided type name in the allocator's map.
+   *
+   * The name returned is one the *caller* is about to write into a field type,
+   * which is not the same as the set of names the file declares: `_category`
+   * returns `nullableCategoryArray` and registers `category` alongside it,
+   * because the alias's definition names it. `directUses` is the first set,
+   * and is what decides which shared names a generated file has to import —
+   * `category` is only reachable from inside the alias, so importing it would
+   * name something the file never mentions.
+   */
   use(typeNameOrType: MappableType, scope: TypeScope): string {
+    const name = this.resolve(typeNameOrType, scope);
+    this.directUses.add(name);
+    return name;
+  }
+
+  /** `use`, minus the direct-use bookkeeping, for the recursive calls. */
+  private resolve(typeNameOrType: MappableType, scope: TypeScope): string {
     let typ: Type | null;
 
     if (typeof typeNameOrType == 'string') {
@@ -422,7 +442,7 @@ export class TypeAllocator {
         const arrayValueType = typeNameOrType.slice(1);
         // ^ Converts _varchar -> varchar, then wraps the type in an array
 
-        const mappedType = this.use(arrayValueType, scope);
+        const mappedType = this.resolve(arrayValueType, scope);
         typ = getArray({ name: mappedType }, scope);
       } else {
         if (!this.isMappedType(typeNameOrType)) {
@@ -452,7 +472,7 @@ export class TypeAllocator {
         // string` becomes `contact: unknown` plus a codegen error.
         const mapped = this.mapping[typeNameOrType.name]?.[scope];
         if (!mapped) {
-          return this.use(typeNameOrType.baseType, scope);
+          return this.resolve(typeNameOrType.baseType, scope);
         }
         typ = mapped;
       } else if (isEnumArray(typeNameOrType)) {
@@ -469,7 +489,7 @@ export class TypeAllocator {
           typ = getArray(typeNameOrType.elementType, scope);
         }
         // make sure the element type is used so it appears in the declaration
-        this.use(typeNameOrType.elementType, scope);
+        this.resolve(typeNameOrType.elementType, scope);
       } else {
         typ = this.mapping[typeNameOrType.name]?.[scope] ?? typeNameOrType;
       }
