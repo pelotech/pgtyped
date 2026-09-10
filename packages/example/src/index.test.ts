@@ -452,7 +452,7 @@ describe('prepared statements', () => {
 describe('codegen exit code', () => {
   const exampleDir = fileURLToPath(new URL('..', import.meta.url));
   const cliEntry = fileURLToPath(
-    new URL('../../cli/lib/index.js', import.meta.url),
+    new URL('../../cli/lib/cli.js', import.meta.url),
   );
 
   test('a successful run exits 0', () => {

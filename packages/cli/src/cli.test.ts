@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url';
  * the built CLI for real. They need `pnpm build` to have run first, which CI
  * does before `pnpm test`.
  */
-const cliEntry = fileURLToPath(new URL('../lib/index.js', import.meta.url));
+const cliEntry = fileURLToPath(new URL('../lib/cli.js', import.meta.url));
 
 /**
  * The config file's db block is only a default: parseConfig lets PGHOST and
@@ -201,6 +202,84 @@ describe('cli exit codes', () => {
     );
     expect(readdirSync(src).sort()).toEqual(['q.queries.ts', 'q.sql']);
   }, 30_000);
+});
+
+/**
+ * `packages/cli` had no `"."` export and mapped `"./*"` onto `./lib/index.js`,
+ * which was the bin: a `#!/usr/bin/env node` module with top-level yargs
+ * parsing and `process.exit`. So the package could not be imported at all, and
+ * any subpath import ran the CLI's argv parsing in the *importing* process —
+ * printing --help and "Missing required argument: config" and taking the host
+ * down with it. Found while evaluating PR #620.
+ *
+ * These resolve through the real `exports` map, from a scratch project with
+ * the package symlinked into `node_modules`, because that map is the thing
+ * under test.
+ */
+describe('the package can be imported without running the CLI', () => {
+  const packageRoot = fileURLToPath(new URL('..', import.meta.url));
+
+  /** A scratch project with `@pelotech/pgtyped-cli` installed into it. */
+  function consumer(source: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'pgtyped-consumer-'));
+    mkdirSync(join(dir, 'node_modules', '@pelotech'), { recursive: true });
+    symlinkSync(
+      packageRoot,
+      join(dir, 'node_modules', '@pelotech', 'pgtyped-cli'),
+      'dir',
+    );
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ type: 'module' }),
+    );
+    writeFileSync(join(dir, 'probe.mjs'), source);
+    return dir;
+  }
+
+  function runNode(dir: string): SpawnSyncReturns<string> {
+    return spawnSync(process.execPath, ['probe.mjs'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      env: childEnv(),
+    });
+  }
+
+  test('the package entry point exports main and parses no argv', () => {
+    const dir = consumer(
+      "const m = await import('@pelotech/pgtyped-cli');\n" +
+        "console.log('main:' + typeof m.main);\n",
+    );
+
+    const { status, stdout, stderr } = runNode(dir);
+
+    expect(stderr).toBe('');
+    expect(stdout).toBe('main:function\n');
+    expect(status).toBe(0);
+  }, 30_000);
+
+  test('a subpath import gives that module, not the CLI', () => {
+    const dir = consumer(
+      "const m = await import('@pelotech/pgtyped-cli/generator.js');\n" +
+        "console.log('gen:' + typeof m.generateInterface);\n",
+    );
+
+    const { status, stdout, stderr } = runNode(dir);
+
+    // The whole symptom: --help and a demandOption failure in someone else's
+    // process, with a non-zero exit nobody asked for.
+    expect(stderr).not.toContain('Missing required argument');
+    expect(stdout).not.toContain('--help');
+    expect(stdout).toBe('gen:function\n');
+    expect(status).toBe(0);
+  }, 30_000);
+
+  test('the bin is a separate module from the library entry point', () => {
+    expect(
+      JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf-8')) as {
+        bin: Record<string, string>;
+      },
+    ).toMatchObject({ bin: { pgtyped: 'lib/cli.js' } });
+  });
 });
 
 /**
