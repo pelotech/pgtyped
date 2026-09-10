@@ -1764,3 +1764,124 @@ describe('a type the mapping does not support', () => {
     }
   });
 });
+
+/**
+ * Two result columns landing on the same generated field emitted an interface
+ * declaring the same key twice — `id: number; id: number;` — which is TS2300,
+ * with codegen exiting 0 and the failure surfacing as a compile error in a
+ * file the user did not write. Pre-existing, not a 3.0 regression: 2.x had no
+ * dedup either.
+ */
+describe('duplicate keys in a generated interface', () => {
+  const describing = (names: string[]) => async () => ({
+    returnTypes: names.map((returnName) => ({
+      returnName,
+      columnName: returnName,
+      type: 'int4' as const,
+      nullable: false,
+    })),
+    paramMetadata: { params: [], mapping: [] },
+  });
+
+  const generate = (
+    queryString: string,
+    columns: string[],
+    config: Partial<ParsedConfig> = {},
+  ) =>
+    queryToTypeDeclarations(
+      parsedQuery('sql', queryString),
+      'src/queries.sql',
+      describing(columns) as any,
+      new TypeAllocator(TypeMapping()),
+      { hungarianNotation: false, ...config } as ParsedConfig,
+    );
+
+  const collect = async (run: () => Promise<string>) => {
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, 'error')
+      .mockImplementation((...args: [unknown]) => {
+        errors.push(format(...args));
+      });
+    try {
+      return { result: await run(), errors };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  // The collision the user cannot see in their SQL, because in their SQL the
+  // two columns have different names.
+  test('camelCaseColumnNames collapsing two columns names both of them', async () => {
+    const { result, errors } = await collect(() =>
+      generate(
+        '/* @name Dup */ SELECT "userName", user_name FROM mixed;',
+        ['userName', 'user_name'],
+        { camelCaseColumnNames: true },
+      ),
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBe(
+      `Query 'Dup' has 2 result columns that camelCaseColumnNames collapses onto the field ` +
+        `"userName": "userName", "user_name". A TypeScript interface cannot declare the same key ` +
+        `twice, so no result type can be generated for it. Alias one of them to a name that does ` +
+        `not collide, or turn camelCaseColumnNames off.`,
+    );
+    expect(result).toContain('export type DupResult = never;');
+    expect(result).not.toContain('userName: number;');
+  });
+
+  // Two columns genuinely named the same thing, which is also the case a
+  // `@column id!` hint cannot disambiguate: it matches by name, so it applies
+  // to both.
+  test('two columns of the same name are reported without blaming camelCase', async () => {
+    const { result, errors } = await collect(() =>
+      generate(
+        `/*
+           @name DupHint
+           @column id!
+         */
+         SELECT a.id, b."aId" AS id FROM "A" a LEFT JOIN "B" b ON a.id = b."aId";`,
+        ['id', 'id'],
+      ),
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBe(
+      `Query 'DupHint' has 2 result columns named "id". A TypeScript interface cannot declare ` +
+        `the same key twice, so no result type can be generated for it. Alias one of them to a ` +
+        `different name.`,
+    );
+    expect(errors[0]).not.toContain('camelCase');
+    expect(result).toContain('export type DupHintResult = never;');
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        generate('/* @name DupHint */ SELECT 1 AS id, 2 AS id;', ['id', 'id'], {
+          failOnError: true,
+        }),
+      ).rejects.toThrow(`Query 'DupHint' has 2 result columns named "id"`);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  // The guard has to stay quiet for the columns that merely look alike.
+  test('columns that camelCase to distinct fields still generate', async () => {
+    const { result, errors } = await collect(() =>
+      generate(
+        '/* @name Fine */ SELECT user_name, user_id FROM mixed;',
+        ['user_name', 'user_id'],
+        { camelCaseColumnNames: true },
+      ),
+    );
+
+    expect(errors).toEqual([]);
+    expect(result).toContain('userName: number;');
+    expect(result).toContain('userId: number;');
+  });
+});

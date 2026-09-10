@@ -25,6 +25,13 @@ services:
       PGUSER: postgres
       PGDATABASE: postgres
       PGPASSWORD: password
+      # The CLI's --uri flag, as an environment variable. config.json's `dbUrl`
+      # points at localhost, which is what a run on the host wants; in here the
+      # server is `db`. Saying so through the flag makes the difference
+      # deliberate — an ambient PGHOST displacing an explicit config value is
+      # warned about now, and this setup would otherwise earn the warning on
+      # every build.
+      PGTYPED_URI: postgres://postgres:password@db/postgres
       CI: $CI
     volumes:
       - ../../:/app

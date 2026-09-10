@@ -87,6 +87,49 @@ function nullabilitySuffixWarning(
   );
 }
 
+/**
+ * Two result columns that land on the same generated field emit an interface
+ * declaring the same key twice — TS2300, and the generated file does not
+ * compile. There is no sensible way to merge two distinct columns onto one
+ * name, so the query is reported as invalid rather than generated broken.
+ *
+ * `camelCaseColumnNames` can *create* the collision out of columns that were
+ * distinct in SQL — `"userName"` and `user_name` both camelCase to `userName` —
+ * so when the field is not simply the column name repeated, the message names
+ * the source columns that collapsed onto it.
+ *
+ * It is also what keeps `@column` hints unambiguous. A hint is keyed by the
+ * Postgres result column name, so a single `@column id!` matches *both* columns
+ * of `SELECT a.id, b."aId" AS id` and silently applies to each; that query can
+ * no longer generate at all, which is the only coherent answer — the hint says
+ * nothing about which of the two it meant.
+ */
+function duplicateFieldErrors(
+  returnTypes: IQueryTypes['returnTypes'],
+  queryName: string,
+  camelCaseColumnNames: boolean,
+): string[] {
+  const sources = new Map<string, string[]>();
+  for (const { returnName } of returnTypes) {
+    const field = camelCaseColumnNames ? camelCase(returnName) : returnName;
+    sources.set(field, [...(sources.get(field) ?? []), returnName]);
+  }
+  const quoted = (names: string[]) => names.map((n) => `"${n}"`).join(', ');
+  return [...sources]
+    .filter(([, columns]) => columns.length > 1)
+    .map(([field, columns]) =>
+      columns.every((column) => column === field)
+        ? `Query '${queryName}' has ${columns.length} result columns named "${field}". ` +
+          `A TypeScript interface cannot declare the same key twice, so no result type can be ` +
+          `generated for it. Alias one of them to a different name.`
+        : `Query '${queryName}' has ${columns.length} result columns that camelCaseColumnNames ` +
+          `collapses onto the field "${field}": ${quoted(columns)}. ` +
+          `A TypeScript interface cannot declare the same key twice, so no result type can be ` +
+          `generated for it. Alias one of them to a name that does not collide, or turn ` +
+          `camelCaseColumnNames off.`,
+    );
+}
+
 export async function queryToTypeDeclarations(
   ir: QueryIR,
   fileName: string,
@@ -114,7 +157,19 @@ export async function queryToTypeDeclarations(
       ({ returnName }) => returnName === '?column?',
     );
 
-  if (typeError || hasAnonymousColumns) {
+  // Only asked once the columns are known to be describable and named: an
+  // anonymous column is reported as itself, and every `?column?` would
+  // otherwise be reported a second time as a collision.
+  const duplicateFields =
+    typeError || hasAnonymousColumns
+      ? []
+      : duplicateFieldErrors(
+          (typeData as IQueryTypes).returnTypes,
+          queryName,
+          config.camelCaseColumnNames,
+        );
+
+  if (typeError || hasAnonymousColumns || duplicateFields.length > 0) {
     // tslint:disable:no-console
     if (typeError) {
       // Named, because on the default failOnError: false path this is the only
@@ -131,14 +186,23 @@ export async function queryToTypeDeclarations(
           `Query "${queryName}" is invalid. Can't generate types.`,
         );
       }
-    } else {
+    } else if (hasAnonymousColumns) {
       console.error(
         `Query '${queryName}' is invalid. Query contains an anonymous column. Consider giving the column an explicit name.`,
       );
+    } else {
+      duplicateFields.forEach((message) => console.error(message));
+      // Fatal under failOnError, like the type error above: the run wrote
+      // `never` for a query it was asked to type, and that is a failure.
+      if (config.failOnError) {
+        throw new Error(duplicateFields.join('\n'));
+      }
     }
     let explanation = '';
     if (hasAnonymousColumns) {
       explanation = `Query contains an anonymous column. Consider giving the column an explicit name.`;
+    } else if (duplicateFields.length > 0) {
+      explanation = duplicateFields.join(' ');
     }
 
     const returnInterface = generateTypeAlias(

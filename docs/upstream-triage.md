@@ -56,9 +56,12 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Three entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Six entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
-escalation for a type the mapping does not know, and the column-shaped `typesOverrides` key. The last three entries below are not bugs but adoptions — the
+escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
+keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
+it raises is recorded there and stays open), and the silence around an ambient `PG*` variable
+displacing an explicit config value (its precedence is deliberately unchanged). The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -757,6 +760,190 @@ wanted, and would have silently failed before
 `{ return }` form, that every bad key is reported rather than only the first, and that a plain type
 name — the thing this must not break — still parses into the same override it always did.
 
+### Ambient `PG*` environment variables overrode an explicit `dbUrl` silently — found while evaluating PR #524 — **FIXED (the silence)**
+
+`parseConfig` merges `envDBConfig` last. Reproduced:
+
+```
+$ PGDATABASE=nonexistent_db node packages/cli/lib/index.js -c config.json
+Could not connect to the database at localhost:55444 as user "postgres". No files were written.
+database "nonexistent_db" does not exist
+```
+
+It failed loudly here only because `verifyConnection` now exists. With a _valid_ but wrong
+`PGDATABASE` — a developer with `PGDATABASE=prod` exported in their shell — codegen would connect
+happily and generate types from the wrong schema.
+
+**The precedence is unchanged, and that is the decision.** Environment over config is a normal
+convention, it is what this project has always done, and someone is relying on it — including this
+repository's own example, which reaches the database in the compose network that way. Changing it
+would break those setups to fix a problem they do not have. The defect was never the order; it was
+that the displacement happened without a word, so the only case that ever surfaced was the one where
+the displaced value was unreachable.
+
+**Fixed by reporting the conflict.** When a `PG*` variable displaces a value the config file set
+**explicitly**, `parseConfig` names both the variable and the field it replaced:
+
+```
+Warning: environment variable PGDATABASE overrides dbName from the config file: "prod" replaces
+"app_dev", set by dbUrl. Environment variables take precedence over the config file, so that is what
+PgTyped will connect with — unset PGDATABASE if it is not what you meant.
+```
+
+The source is named as `dbUrl` or as `db.<field>`, whichever set it. `PGURI`/`DATABASE_URL`
+displacing the config's `dbUrl` is reported the same way, with neither URI quoted into the message —
+a connection string carries the password. `PGPASSWORD` is named but never printed for the same
+reason.
+
+**Staying quiet is the harder half, and it is what the tests are mostly about.** Nothing is said
+when the variable fills in a field the config left unset, which is the intended way to configure
+PgTyped from the environment; when the config has no `db` section at all, so the value it "set" was
+a default; when the variable agrees with the config; when it is the empty string, which `merge`
+skips anyway; or when something between the config and the environment already displaced the value —
+a `--uri` flag, or a `PGURI` that replaced the whole connection string — since then the environment
+is not what the config lost to.
+
+**One repository change followed from it, and it is the intended fix rather than a workaround.**
+`packages/example`'s compose services set `PGHOST: db` over a config whose `dbUrl` says `localhost`,
+which is exactly the shape being reported. They now pass `PGTYPED_URI` instead: the `--uri` flag
+outranks both, so the container's connection is stated deliberately rather than arrived at by an
+override nobody can see. Codegen for the example is silent again.
+
+**A second defect was found doing it, and fixed with it.** `const { default: parseDatabaseUri } =
+dbUrlModule` — the "module import hack" — depends on who performed the CJS interop. It is right under
+node and wrong under vitest, where `dbUrlModule` is already the function, so **every code path that
+parsed a connection string threw `parseDatabaseUri is not a function` in the test suite** while
+working in the built CLI. No test had ever set `dbUrl`, so nothing noticed. Both shapes are accepted
+now, which is what makes the `dbUrl` half of this entry testable at all.
+
+**Regression cover.** `packages/cli/src/config.test.ts` pins both message shapes verbatim, that the
+`db.<field>` source is named as such, that `PGPASSWORD`'s value appears in neither direction, and —
+in four separate tests — each of the ways this must stay quiet. Every case also asserts the merged
+result, so the precedence itself is pinned where it is.
+
+### Empty array in a spread rendered `IN ()` — issues #221, #314, #273 — **FIXED (the diagnosis)**
+
+Reproduced in three shapes:
+
+```
+compile({ids:[1,2,3]}) -> {"text":"SELECT id, name FROM books WHERE id IN ($1,$2,$3)","values":[1,2,3]}
+compile({ids:[]})      -> {"text":"SELECT id, name FROM books WHERE id IN ()","values":[]}
+run(c, {ids:[]})       -> THREW: 42601 syntax error at or near ")"
+```
+
+- **#221** — `@param things -> ((column1, column2)…)` with `things: []` renders
+  `INSERT INTO jt (id, doc) VALUES ()` → `42601 syntax error at or near ")"`, the exact error in the
+  report.
+- **#314** — `SELECT * FROM jt WHERE id IN ()` → `42601`. Same root cause.
+- **#273** — `$$evtTypes is NULL or evt_type in $$evtTypes` with `evtTypes: []` renders
+  `( () is NULL or evt_type in () )` → `42601`.
+
+**What is fixed is the report, not the rendering, and the split is deliberate.** There is still **no
+correct SQL for "zero rows" in every position**: `IN (NULL)` is right for `IN` and wrong for
+`VALUES`, where it would insert a row, and skipping the statement or substituting `WHERE false`
+changes what the query means. That needs a design decision, and this is not it. What needed no
+decision at all is _who_ the error is reported to. The user used to be handed the server's
+`42601 syntax error at or near ")"`, which points at a paren in SQL they never wrote, in a statement
+PgTyped generated, and names neither the parameter nor the call.
+
+`render` now refuses an empty array before anything is sent, from both spread branches:
+
+```
+Query selectSomeUsers was passed an empty array for parameter "ids" (array_spread): a spread renders
+one placeholder per element, and there is no SQL for zero of them — "IN ()" is a syntax error, and no
+substitute is correct in every position. Check the array is non-empty before running the query. The
+nonEmptyArrayParams codegen option makes a statically empty array a compile error, but cannot see the
+length of one built at runtime.
+```
+
+It names the query, the parameter and its transform, so it identifies the offending call rather than
+the SQL — which is the half of these three reports that was always answerable. `compile`, `execute`
+and `run` all go through `render`, so all three refuse it, and nothing reaches the server.
+
+**`nonEmptyArrayParams` keeps its default, and that is a decision rather than an omission.** It types
+the param as `readonly [T, ...T[]]` and covers both `array_spread` and `pick_array_spread` —
+verified: `ids: readonly [number | null | void, ...(number | null | void)[]]`, so the empty literal
+becomes a compile error. But it is a **type-level guard only**: an array whose length is not known
+statically was never covered by it, which is why the runtime check is the one that closes these
+issues. Turning it on by default would be a breaking change to every project that passes an array
+variable, and 3.0.0 has shipped; that belongs to the next major. The two guards are complements —
+one catches the literal at compile time, the other catches the variable at call time.
+
+**The documentation gap the earlier note asked for is closed.** `docs-new/docs/cli.md` described
+`nonEmptyArrayParams` without ever mentioning `IN ()` or the runtime error it exists to prevent, and
+`docs-new/docs/dynamic-queries.md` recommended the `:param::TEXT IS NULL` optional-filter pattern
+without saying that it works for **scalars only** — a spread has no value that means "no filter",
+since `null` is not an array and `[]` renders nothing between the parens. Both now say so, and the
+FAQ entry describes the throw rather than the syntax error.
+
+**Regression cover.** `packages/runtime/src/render.test.ts` pins the message verbatim for
+`array_spread` and, since the two render through different branches, separately for
+`pick_array_spread` — plus the `$$ids` tag form, and the cases that must keep working: a
+one-element array, and the no-params mapping form, which describes the shape of the query rather
+than one call and so has no array to be empty.
+
+### Duplicate keys in generated interfaces — not reported upstream — **FIXED**
+
+Two result columns landing on the same field name emitted a TypeScript interface that will not
+compile (TS2300), and codegen exited **0** — so the first signal was a type error in a file the user
+did not write. Both spellings reproduced:
+
+```sql
+/* @name Dup */ SELECT "userName", user_name FROM mixed;          -- with camelCaseColumnNames
+/* @name DupHint */ SELECT a.id, b."aId" AS id FROM "A" a LEFT JOIN "B" b ON a.id = b."aId";
+```
+
+```ts
+export interface DupResult {
+  userName: string;
+  userName: string;
+}
+export interface DupHintResult {
+  id: number;
+  id: number;
+}
+```
+
+**Pre-existing, not a 3.0 regression** — 2.x's `generateInterface` and `returnTypes.forEach` (checked
+at `88a428f`) had no dedup either.
+
+**Fixed by reporting it, because there is nothing to merge.** Two distinct columns cannot share one
+field: dropping either loses a column the query selects, and renaming one invents a name the caller
+would have to guess. So the query joins the family `queryToTypeDeclarations` already has for a query
+whose result shape cannot be expressed — the one an anonymous column lands in. It is reported on
+stderr, its `Result` and `Params` are emitted as `never` with the reason in a doc comment, and the
+rest of the file still generates. Under `failOnError` it fails the run, like the type error beside
+it.
+
+**The message has two shapes, because the collision has two causes.** Where the columns really do
+share a name, the SQL says so:
+
+```
+Query 'DupHint' has 2 result columns named "id". A TypeScript interface cannot declare the same key
+twice, so no result type can be generated for it. Alias one of them to a different name.
+```
+
+Where `camelCaseColumnNames` created it, the SQL does _not_ say so — the two columns are spelled
+differently — so the source columns are named:
+
+```
+Query 'Dup' has 2 result columns that camelCaseColumnNames collapses onto the field "userName":
+"userName", "user_name". A TypeScript interface cannot declare the same key twice, so no result type
+can be generated for it. Alias one of them to a name that does not collide, or turn
+camelCaseColumnNames off.
+```
+
+**It settles the `@column` question rather than dodging it.** A hint is keyed by the Postgres result
+column name, so a single `@column id!` matches _both_ columns of the `DupHint` query and silently
+applies to each. Refusing the query is the only coherent answer available: the hint names a column
+that occurs twice and says nothing about which of the two it meant. No hint can now apply
+ambiguously, because a query with two same-named columns no longer generates at all.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` pins both message shapes verbatim — the
+camelCase one naming both source columns, the same-name one _not_ blaming camelCase — the `never`
+result, the `failOnError` escalation, and the case that must stay quiet: two columns that camelCase
+to distinct fields (`user_name`, `user_id`) still generate both.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -878,39 +1065,6 @@ accepted input is not the bug reported.
 who index array results without a null check — which is the point:
 `row.tags.map(t => t.toUpperCase())` stops being a silent `TypeError` waiting to happen.
 
-### Empty array in a spread renders `IN ()` — issues #221, #314, #273
-
-Reproduced in three shapes:
-
-```
-compile({ids:[1,2,3]}) -> {"text":"SELECT id, name FROM books WHERE id IN ($1,$2,$3)","values":[1,2,3]}
-compile({ids:[]})      -> {"text":"SELECT id, name FROM books WHERE id IN ()","values":[]}
-run(c, {ids:[]})       -> THREW: 42601 syntax error at or near ")"
-```
-
-- **#221** — `@param things -> ((column1, column2)…)` with `things: []` renders
-  `INSERT INTO jt (id, doc) VALUES ()` → `42601 syntax error at or near ")"`, the exact error in the
-  report.
-- **#314** — `SELECT * FROM jt WHERE id IN ()` → `42601`. Same root cause.
-- **#273** — `$$evtTypes is NULL or evt_type in $$evtTypes` with `evtTypes: []` renders
-  `( () is NULL or evt_type in () )` → `42601`.
-
-`render.ts` joins an empty list to `''` and wraps it in parens. **There is no correct SQL for "zero
-rows" in every position**, so this needs a decision (skip the statement, `WHERE false`, per
-transform) rather than a patch.
-
-**The mitigation that exists is `nonEmptyArrayParams`**, off by default
-(`packages/cli/src/generator.ts`). It types the param as `readonly [T, ...T[]]` and covers both
-`array_spread` and `pick_array_spread` — verified: `ids: readonly [number | null | void, ...(number
-| null | void)[]]`, so the empty literal becomes a compile error. It is a **type-level guard only**:
-an array whose length is not known statically still reaches `IN ()` at runtime.
-
-Two follow-ups worth deciding together: **default `nonEmptyArrayParams` to true** — 3.0 is the one
-release where a default can move, and it is the only mitigation that exists — and add the caveat to
-`docs-new/docs/dynamic-queries.md`, which recommends the `:param :: TEXT IS NULL` pattern without
-saying it only works for scalars and cannot be used with a spread. `docs-new/docs/cli.md` describes
-`nonEmptyArrayParams` but never mentions `IN ()` or the runtime error.
-
 ### No way to type the keys of a `VALUES :rows` pick — issues #498, #517, #630
 
 One issue with three reports.
@@ -956,47 +1110,6 @@ with `428C9 cannot insert a non-DEFAULT value into column "id"` and was correctl
 Only the privilege half is missing.
 
 See [Worth adopting](#pr-563--pre-flight-privilege-check) for the technique and its caveats.
-
-### Ambient `PG*` environment variables override an explicit `dbUrl` — found while evaluating PR #524
-
-`parseConfig` merges `envDBConfig` last. Reproduced:
-
-```
-$ PGDATABASE=nonexistent_db node packages/cli/lib/index.js -c config.json
-Could not connect to the database at localhost:55444 as user "postgres". No files were written.
-database "nonexistent_db" does not exist
-```
-
-It failed loudly here only because `verifyConnection` now exists. With a _valid_ but wrong
-`PGDATABASE` — a developer with `PGDATABASE=prod` exported in their shell — codegen would connect
-happily and generate types from the wrong schema. The precedence is inherited from upstream and
-`docs-new/docs/cli.md` documents it, but it is worth deciding deliberately whether config should beat
-ambient env. Bundle the decision with PR #524 (see [Worth adopting](#pr-524--env-var-templating-in-config)).
-
-### Duplicate keys in generated interfaces — not reported upstream
-
-Two result columns landing on the same field name emit a TypeScript interface that will not compile
-(TS2300). Both spellings reproduce:
-
-```sql
-/* @name Dup */ SELECT "userName", user_name FROM mixed;          -- with camelCaseColumnNames
-/* @name DupHint */ SELECT a.id, b."aId" AS id FROM "A" a LEFT JOIN "B" b ON a.id = b."aId";
-```
-
-```ts
-export interface DupResult {
-  userName: string;
-  userName: string;
-}
-export interface DupHintResult {
-  id: number;
-  id: number;
-}
-```
-
-**Pre-existing, not a 3.0 regression** — 2.x's `generateInterface` and `returnTypes.forEach` (checked
-at `88a428f`) had no dedup either. Note a `@column id!` hint matches by name and so applies to
-_both_ columns.
 
 ### Shared type aliases collide across generated files — issue #565
 
@@ -1110,8 +1223,11 @@ rather than being used as a literal. It also loosens `db.port` to `number | stri
 fork's deliberately strict zod schema.
 
 Rewrite as a proper `replace(/\{\{(\w+)\}\}/g, …)` over string-valued `db` fields, applied before
-validation, with a clear error on an unset variable. Bundle it with the env-precedence decision
-above.
+validation, with a clear error on an unset variable. The env-precedence question it was to be
+bundled with is
+[settled](#ambient-pg-environment-variables-overrode-an-explicit-dburl-silently--found-while-evaluating-pr-524--fixed-the-silence):
+the environment still wins, and now says when it does. A templated field is one the config set
+explicitly, so it would earn the same warning if a `PG*` variable displaced it.
 
 **Unverified:** upstream's own test file was read, not run against upstream's code.
 
@@ -1370,7 +1486,7 @@ Every triaged number, and where it is covered.
 
 **Issues (70).**
 #50 NA · #143 feature · #151 fixed · #159 fixed · #170 limitation/docs fixed · #202 feature ·
-#213 **FIXED here** · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
+#213 **FIXED here** · #221 **FIXED here** (diagnosis) · #263 limitation · #273 **FIXED here** (diagnosis) · #292 fixed · #314 **FIXED here** (diagnosis) · #316 NA ·
 #317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
 #460 open · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·

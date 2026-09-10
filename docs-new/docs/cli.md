@@ -57,6 +57,23 @@ PgTyped supports common PostgreSQL environment variables:
 
 These variables will override values provided in `config.json`.
 
+That precedence is deliberate and is not changing, but it is no longer silent. When one of them
+displaces a value the config file set **explicitly**, PgTyped says so, naming the variable and the
+field it replaced:
+
+```
+Warning: environment variable PGDATABASE overrides dbName from the config file: "prod" replaces
+"app_dev", set by dbUrl. Environment variables take precedence over the config file, so that is what
+PgTyped will connect with — unset PGDATABASE if it is not what you meant.
+```
+
+The case worth catching is a *valid but wrong* value — a shell with `PGDATABASE=prod` exported
+generates types against the wrong schema and connects perfectly happily while doing it. Only a
+genuine conflict is reported: a variable that fills in something the config left unset is the
+intended way to configure PgTyped from the environment and stays quiet, as does one that agrees with
+the config. `--uri` still beats both, and naming the connection there is the way to say that
+overriding the config is deliberate.
+
 Every CLI flag can also be set from an environment variable, named after the flag with a `PGTYPED_` prefix: `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`.
 
 :::caution
@@ -106,7 +123,7 @@ For a full list of options, see the [Configuration file format](#configuration-f
   "failOnError": false, // Whether to fail on a file processing error and abort generation (can be omitted - default is false)
   "camelCaseColumnNames": false, // convert to camelCase column names of result interface
   "hungarianNotation": false, // Whether to prefix generated interface names with "I"
-  "nonEmptyArrayParams": false, // Whether the type for an array parameter should exclude empty arrays
+  "nonEmptyArrayParams": false, // Whether the type for an array parameter should exclude empty arrays (an empty array has no SQL to render, and throws)
   "preparedStatements": true, // Whether to give each eligible query a server-side prepared statement name
   "dbUrl": "postgres://user:password@host/database", // DB URL (optional - will be merged with db if provided)
   "db": {
@@ -144,7 +161,7 @@ Unrecognised config keys are an error, at every level of the file. A key that Pg
 | `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes every codegen warning into a failure, whichever kind of file the query lives in: a `sql.prepared` name or type argument that does not match the variable holding it, a result column left with a 2.x nullability suffix, and an `@param` declared in a `.sql` file but never used by the statement. It covers a column or parameter whose Postgres type the mapping does not know (`Postgres type 'record' is not supported by mapping`), which is otherwise reported and generated as `unknown`. **Default:** `false`                                                                                      |
 | `dbUrl?`                | `string`                 | A connection string to the database. Example: `postgres://user:password@host/database`. Overrides (merged) with `db` config.                                               |
 | `camelCaseColumnNames?` | `boolean`                | Whether to convert column names to camelCase. _Note that this only coverts the types. You need to do this at runtime independently using a library like `pg-camelcase`_.   |
-| `nonEmptyArrayParams?`  | `boolean`                | Whether the types for arrays parameters exclude empty arrays. This helps prevent runtime errors when accidentally providing empty input to a query.                        |
+| `nonEmptyArrayParams?`  | `boolean`                | Whether the types for array parameters exclude empty arrays, by typing them `readonly [T, ...T[]]`. A spread renders one placeholder per element, so an empty array has no SQL to render at all: it used to reach the server as `IN ()` and come back as `42601 syntax error at or near ")"`, and now throws before anything is sent, naming the parameter. This option moves the same mistake to compile time — but only for an array literal, since it cannot see the length of one built at runtime. **Default:** `false` |
 | `hungarianNotation?`    | `boolean`                | Whether to prefix generated interface names with `I`, so `FindBookByIdResult` becomes `IFindBookByIdResult`. **Default:** `false`                                          |
 | `preparedStatements?`   | `boolean`                | Whether to give each eligible query a server-side prepared statement name. See [Prepared statements](#prepared-statements). **Default:** `true`                            |
 | `typesOverrides?`       | `Record<string, string>` | A map of type overrides, **keyed by Postgres type name** — including a domain's name, which is why `CREATE DOMAIN` is the way to give one column a type of its own. A key containing a dot (`"lobbies.status"`) is rejected: column-scoped overrides are not supported, and used to be accepted and then ignored. Similarly to `camelCaseColumnNames`, this only affects the types. _You need to do this at runtime independently using a library like `pg-types`._ |

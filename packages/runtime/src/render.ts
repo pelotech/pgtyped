@@ -1,4 +1,4 @@
-import type { QueryIR } from './ir.js';
+import type { ParamIR, QueryIR } from './ir.js';
 
 export type Scalar = string | number | null;
 
@@ -69,6 +69,39 @@ function substitute(
   return out;
 }
 
+/**
+ * A spread renders one `$n` per element, so an empty array renders nothing and
+ * the parens around it close on themselves: `IN ()`, or `VALUES ()` from a pick
+ * spread. The server rejects both with `42601 syntax error at or near ")"` — an
+ * error that points at a paren in SQL the caller never wrote and names neither
+ * the parameter nor the value that produced it.
+ *
+ * Refusing here rather than inventing a rendering is deliberate: there is no
+ * text that means "zero rows" in every position. `IN (NULL)` is right for `IN`
+ * and wrong for `VALUES`, where it would insert a row. Choosing one is a design
+ * decision; identifying the call site is not, so that is all this does.
+ *
+ * `nonEmptyArrayParams` guards the same mistake at the type level, but it is
+ * off by default and can only see an array whose length is statically known.
+ */
+function assertSpreadable(
+  value: unknown,
+  param: ParamIR,
+  queryName: string,
+): void {
+  if (!Array.isArray(value) || value.length > 0) {
+    return;
+  }
+  throw new TypeError(
+    `Query ${queryName} was passed an empty array for parameter "${param.name}" ` +
+      `(${param.transform.type}): a spread renders one placeholder per element, and there is ` +
+      `no SQL for zero of them — "IN ()" is a syntax error, and no substitute is correct in ` +
+      `every position. Check the array is non-empty before running the query. ` +
+      `The nonEmptyArrayParams codegen option makes a statically empty array a compile error, ` +
+      `but cannot see the length of one built at runtime.`,
+  );
+}
+
 /** Renders a query IR into SQL with `$n` placeholders, plus bindings or a mapping. */
 export const render = (
   queryIR: QueryIR,
@@ -84,6 +117,7 @@ export const render = (
       let sub: string;
       if (passedParams) {
         const paramValue = passedParams[usedParam.name];
+        assertSpreadable(paramValue, usedParam, queryIR.queryName);
         sub = (paramValue as Scalar[])
           .map((val) => {
             bindings.push(val);
@@ -154,6 +188,7 @@ export const render = (
       const { keys } = usedParam.transform;
       if (passedParams) {
         const passedParam = passedParams[usedParam.name] as NestedParameters[];
+        assertSpreadable(passedParam, usedParam, queryIR.queryName);
         sub = passedParam
           .map((entity) => {
             const ssub = keys
