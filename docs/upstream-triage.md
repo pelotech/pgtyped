@@ -17,7 +17,8 @@ root cause. Where something could not be run, it is marked **Unverified** and st
 
 - Codegen was driven by the built CLI (`packages/cli/lib/index.js`) after `pnpm build`, against live
   PostgreSQL 17 and 16 containers, from scratch projects outside the repo. `packages/example` was
-  not modified for any reproduction.
+  not modified for any reproduction — except #565, whose reproduction is now pinned there
+  permanently, as a barrel over every generated file.
 - Runtime behaviour was driven by the built runtime (`packages/runtime/lib`) through `pg`.
 - "Regression" and "parity" claims against 2.x were measured by installing upstream
   `@pgtyped/parser@2.4.2` and `@pgtyped/runtime@2.4.2` side by side and diffing old against new on
@@ -56,18 +57,19 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Eight entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Nine entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
 escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
 keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
 it raises is recorded there and stays open), the silence around an ambient `PG*` variable
 displacing an explicit config value (its precedence is deliberately unchanged), the pre-flight
 privilege check of PR #563, whose technique was prototyped against a live server before anything was
-built on it and which shipped as the opt-in `checkPrivileges`, and the element nullability of array
-results, which absorbs the PR #614 adoption entry. PR #563 is an adoption rather than a bug, as are
-the last three entries below — the cheapest three in **Worth adopting from upstream** (PRs #580,
-#624 and #642), which have also been taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
-each.
+built on it and which shipped as the opt-in `checkPrivileges`, the element nullability of array
+results, which absorbs the PR #614 adoption entry, and the shared type aliases of #565, the last
+entry below and the only one here that changes the shape of generated output. PR #563 is an
+adoption rather than a bug, as are the three entries before that last one — the cheapest three in
+**Worth adopting from upstream** (PRs #580, #624 and #642), which have also been taken. Everything
+here is listed first so nobody re-opens it, with the reproduction that justified each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -1174,6 +1176,69 @@ the runtime — the reason the sweep stops where it does:
   it carries release-please 17.3.0 → 17.6.0 with it, and this is the one workflow whose first real
   run happens on `master` rather than on a PR.
 
+### Shared type aliases collide across generated files — issue #565 — **FIXED**
+
+Re-checked after `197c625` gave the return and parameter scopes distinct array alias names. That
+commit did not shrink this.
+
+Reproduced on `197c625^` with two files that between them use one `lobby_status[]` in both
+directions and a `typesOverrides` entry naming only the return scope. The result file declared
+`export type lobby_statusArray = (LobbyStatus)[];`, the parameter file
+`export type lobby_statusArray = (lobby_status)[];`, and both declared
+`export type DateOrString = Date | string;`; `export *` from both gave TS2308 for
+`lobby_statusArray` and for `DateOrString`.
+
+On `197c625` that particular pair no longer disagreed: the result file declared
+`nullableLobby_statusArray = (LobbyStatus | null)[]`, the parameter file kept
+`lobby_statusArray = (lobby_status)[]`, and `export *` reported only `DateOrString`. But the two
+definitions disagreeing was a separate defect — one name standing for two types, which #30 fixed
+for its own reasons — and this issue never depended on it. Every alias that two generated files
+both needed was still declared in both. Verified on `197c625`: two files selecting the array each
+emitted `nullableLobby_statusArray = (LobbyStatus | null)[]` and `export *` still gave TS2308; two
+files passing it as a parameter collided on `lobby_status` and on `lobby_statusArray` alike.
+
+Reproduced once more inside `packages/example`, which is where it is now pinned. A new
+`src/exportAll.ts` re-exports all seven generated modules; on `ec6c24d` that is four TS2308s —
+`nullableCategoryArray`, `DateOrString`, `Json` and `notification_type` — and the package no longer
+typechecks.
+
+**What now happens.** Everything `TypeAllocator` used to emit into every file — enum unions, array
+aliases, the driver types (`PgPoint`, `PgInterval`, `Json`, `DateOrString`, `NumberOrString`) and
+the imports `typesOverrides` produces — is emitted **once**, into `<srcDir>/pgtyped-shared.ts`, and
+each generated file carries one `import type` for the names it actually spells out. The example's
+`books.queries.ts` now opens with
+`import type { Iso31661Alpha2, category, categoryArray, nullableCategoryArray, … } from '../pgtyped-shared.js';`,
+`src/exportAll.ts` typechecks, and the suite is **40 passed**. Per-query types (`FooParams`,
+`FooResult`) are untouched: they belong to their query and stay in its file.
+
+The new `sharedTypesFile` config key names the file — a path relative to `srcDir`, validated by the
+zod schema — or takes `false` to restore the previous per-file declarations byte for byte. It is on
+by default, which makes the generated output a breaking change; 3.0.0 is unpublished, so the shape
+change costs nothing now and would cost a major later.
+
+Two consequences the issue's reporter anticipated, and which are the substance of the work:
+
+- **A name can no longer stand for two definitions.** `TypeAllocator` registers first-wins
+  (`this.types[typ.name] = this.types[typ.name] ?? typ`), which within one file was the defect
+  `197c625` fixed; across files into one target it is unrepresentable. Two generated files defining
+  one name differently are now reported — the name, both declarations, and the file each came from
+  — and are fatal under `failOnError`, following the same rule as every other codegen warning. The
+  winner is chosen by file path so that regeneration stays byte-identical.
+- **The union is maintained, not derived.** `--watch` keeps one registry for the whole session
+  across every transform: an alias survives while any watched file still needs it, disappears when
+  the last one stops, and is released when a query file is deleted. The watcher had **no `unlink`
+  handler at all** before this; it now has one, which also removes the declaration file generated
+  from the deleted query — that file imports aliases that are about to be released, so it could no
+  longer stand on its own. Only a file whose header names the deleted query is removed.
+
+`--file` is the one run that leaves the shared file alone: it describes a single file and so cannot
+know what the rest of the project still shares. It says so rather than truncating the union.
+
+A project with no shared aliases at all writes no file; one left over from a run that did have them
+is removed, but only if its header marks it as generated.
+
+Regeneration was run twice to confirm the output is stable, and `check-git-diff.sh` is clean.
+
 ---
 
 ## Still open — medium
@@ -1192,30 +1257,6 @@ expression is of type text' }`, and the query is emitted with `Params = never`.
 - **#517** asks for the annotation syntax that would fix both. None exists.
 
 Not cheap: needs new annotation syntax plus IR and renderer support.
-
-### Shared type aliases collide across generated files — issue #565
-
-Still open, and re-checked after `197c625` gave the return and parameter scopes distinct array
-alias names. That commit does not shrink this.
-
-Reproduced on `197c625^` with two files that between them use one `lobby_status[]` in both
-directions and a `typesOverrides` entry naming only the return scope. The result file declared
-`export type lobby_statusArray = (LobbyStatus)[];`, the parameter file
-`export type lobby_statusArray = (lobby_status)[];`, and both declared
-`export type DateOrString = Date | string;`; `export *` from both gave TS2308 for
-`lobby_statusArray` and for `DateOrString`.
-
-On `197c625` that particular pair no longer disagrees: the result file declares
-`nullableLobby_statusArray = (LobbyStatus | null)[]`, the parameter file keeps
-`lobby_statusArray = (lobby_status)[]`, and `export *` reports only `DateOrString`. But the two
-definitions disagreeing was a separate defect — one name standing for two types, which #30 fixed
-for its own reasons — and this issue never depended on it. Every alias that two generated files
-both need is still declared in both. Verified on `197c625`: two files selecting the array each
-emit `nullableLobby_statusArray = (LobbyStatus | null)[]` and `export *` still gives TS2308; two
-files passing it as a parameter collide on `lobby_status` and on `lobby_statusArray` alike.
-
-Not cheap: needs a shared-emit target plus a watch-mode invalidation story, which the reporter
-flagged as the hard part themselves.
 
 ---
 
@@ -1554,7 +1595,7 @@ Every triaged number, and where it is covered.
 #460 **FIXED here** · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
-#556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
+#556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 **FIXED here** ·
 #566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
