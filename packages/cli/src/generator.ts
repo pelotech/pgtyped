@@ -243,9 +243,16 @@ export async function queryToTypeDeclarations(
             params[p.assignedIndex - 1],
             TypeScope.Parameter,
           );
+          // A key that was not marked `!` may be left out of the object
+          // entirely, exactly as a non-required scalar param may be left out
+          // of the params object — and for the same reason: `render` reads
+          // the key off the object and binds whatever it finds, so an absent
+          // key and an explicit `undefined` both reach the server as NULL.
+          // Without the `?` the only way to omit an optional key was to spell
+          // out `key: undefined` (#573).
           return p.required
             ? `    ${p.name}: ${paramType}`
-            : `    ${p.name}: ${paramType} | null | void`;
+            : `    ${p.name}?: ${paramType} | null | void`;
         })
         .join(',\n');
       fieldType = `{\n${fieldType}\n  }`;

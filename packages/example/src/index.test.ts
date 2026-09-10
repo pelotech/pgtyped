@@ -142,6 +142,22 @@ test('insert query with parameter spread', async () => {
   expect(insertedBook.categories).toEqual('{novel,science-fiction}');
 });
 
+/**
+ * `categories` is the one key of the pick that is not marked `!`, and until
+ * #573 was fixed it still had to be written out — as `categories: undefined`,
+ * because the generated key was not optional. Omitting it binds NULL, exactly
+ * as passing `undefined` does.
+ */
+test('an optional pick key can be left out of the object', async () => {
+  const [{ book_id: insertedBookId }] = await insertBooks.run(client, {
+    books: [{ authorId: 1, name: 'A Book With No Categories', rank: 9 }],
+  });
+  const { 0: insertedBook } = await findBookById.run(client, {
+    id: insertedBookId,
+  });
+  expect(insertedBook.categories).toBeNull();
+});
+
 test('update query with a non-null parameter override', async () => {
   await updateBooks.run(client, { id: 2, rank: 12, name: 'Another title' });
 });

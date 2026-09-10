@@ -173,9 +173,9 @@ export interface IGetNotificationsQuery {
       const expected = `/** 'InsertNotifications' parameters type */
 export interface IInsertNotificationsParams {
   notification: {
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   };
 }
 
@@ -190,6 +190,73 @@ export interface IInsertNotificationsQuery {
 
 `;
       expect(result).toEqual(expected);
+    });
+
+    /**
+     * A pick key that was not marked `!` got no `?`, so the only way to omit
+     * one was to spell out `key: undefined` — while the scalar branch three
+     * lines above had been marking non-required params optional since 3.0.
+     * `render` reads the key off the object and binds whatever it finds, so an
+     * absent key and an explicit `undefined` both reach the server as NULL.
+     * Upstream #573.
+     */
+    test(`Optional pick keys are optional, required ones are not (${mode})`, async () => {
+      const queryStringSQL = `
+    /*
+      @name Get573
+      @param address -> (line1!, line2, city!)
+    */
+    INSERT INTO postal_codes (line1, line2, city) VALUES :address RETURNING code;
+    `;
+      const queryStringTS = `const get573 = sql\`INSERT INTO postal_codes (line1, line2, city) VALUES $address(line1, line2, city) RETURNING code\`;`;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
+      const mockTypes: IQueryTypes = {
+        returnTypes: [],
+        paramMetadata: {
+          params: ['text', 'text', 'text'],
+          mapping: [
+            {
+              name: 'address',
+              type: ParameterTransform.Pick,
+              dict: {
+                line1: {
+                  name: 'line1',
+                  assignedIndex: 1,
+                  required: true,
+                  type: ParameterTransform.Scalar,
+                },
+                line2: {
+                  name: 'line2',
+                  assignedIndex: 2,
+                  required: false,
+                  type: ParameterTransform.Scalar,
+                },
+                city: {
+                  name: 'city',
+                  assignedIndex: 3,
+                  required: true,
+                  type: ParameterTransform.Scalar,
+                },
+              },
+            },
+          ],
+        },
+      };
+      const types = new TypeAllocator(TypeMapping());
+      const typeSource = async (_: any) => mockTypes;
+      const result = await queryToTypeDeclarations(
+        parsedQuery(mode, queryString),
+        'src/queries.sql',
+        typeSource,
+        types,
+        {} as ParsedConfig,
+      );
+
+      expect(result).toContain(`  address: {
+    line1: string,
+    line2?: string | null | void,
+    city: string
+  };`);
     });
 
     test(`DeleteUsers by UUID (${mode})`, async () => {
@@ -644,13 +711,13 @@ export interface IGetNotificationsQuery {
       const expected = `/** 'InsertNotifications' parameters type */
 export interface IInsertNotificationsParams {
   notification: readonly [{
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   }, ...({
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   })[]];
 }
 
