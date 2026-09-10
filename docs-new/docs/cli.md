@@ -183,9 +183,9 @@ Codegen deliberately withholds a name from two kinds of query:
 
 Queries that end up with no name are simply sent unnamed, and `TypedQuery.name` is `undefined` for them.
 
-For a stable identifier — one that is always present and does not move when the SQL is edited — use `TypedQuery.queryName`, which is the `@name` itself. That is the one to label metrics, spans and slow-query logs with; see the [runtime README](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md#queryname-which-is-not-name).
+For a stable identifier — one that is always present and does not move when the SQL is edited — use `TypedQuery.queryName`, which is the `@name` itself. That is the one to label metrics, spans and slow-query logs with; see the [runtime README](https://github.com/pelotech/pgtyped/tree/HEAD/packages/runtime/README.md#queryname-which-is-not-name).
 
-Setting `preparedStatements: false` withholds a name from every query codegen names. It does not reach a `sql.prepared` tag, which computes its name at runtime. You can also disable naming per call or per connection at runtime; see the [runtime README](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md) for `RunOptions` and `unprepared()`, which are what you want under PgBouncer in transaction-pooling mode.
+Setting `preparedStatements: false` withholds a name from every query codegen names. It does not reach a `sql.prepared` tag, which computes its name at runtime. You can also disable naming per call or per connection at runtime; see the [runtime README](https://github.com/pelotech/pgtyped/tree/HEAD/packages/runtime/README.md) for `RunOptions` and `unprepared()`, which are what you want under PgBouncer in transaction-pooling mode.
 
 ### Customizing generated file paths
 

@@ -68,5 +68,5 @@ config's `srcDir` is written relative to.
 Nullability hints moved from column aliases (`AS "total!"`) to `@column` annotations, six type mappings
 were corrected to what node-postgres actually returns, and the argument order of `run` changed. The
 full list, with the migration for each, is in the
-[Upgrading from 2.x](https://github.com/pelotech/pgtyped/blob/master/packages/runtime/README.md#upgrading-from-2x)
+[Upgrading from 2.x](https://github.com/pelotech/pgtyped/blob/HEAD/packages/runtime/README.md#upgrading-from-2x)
 section of the runtime's README.

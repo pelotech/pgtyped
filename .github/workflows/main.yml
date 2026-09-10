@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches:
-      - master
-  # No base-branch filter: stacked PRs target their parent branch, not master,
+      - main
+  # No base-branch filter: stacked PRs target their parent branch, not main,
   # and would otherwise get no checks at all.
   pull_request:
 
