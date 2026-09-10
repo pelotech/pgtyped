@@ -56,9 +56,10 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Three entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Four entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
-escalation for a type the mapping does not know, and the column-shaped `typesOverrides` key. The last three entries below are not bugs but adoptions — the
+escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, and
+duplicate keys in a generated interface. The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -757,6 +758,68 @@ wanted, and would have silently failed before
 `{ return }` form, that every bad key is reported rather than only the first, and that a plain type
 name — the thing this must not break — still parses into the same override it always did.
 
+### Duplicate keys in generated interfaces — not reported upstream — **FIXED**
+
+Two result columns landing on the same field name emitted a TypeScript interface that will not
+compile (TS2300), and codegen exited **0** — so the first signal was a type error in a file the user
+did not write. Both spellings reproduced:
+
+```sql
+/* @name Dup */ SELECT "userName", user_name FROM mixed;          -- with camelCaseColumnNames
+/* @name DupHint */ SELECT a.id, b."aId" AS id FROM "A" a LEFT JOIN "B" b ON a.id = b."aId";
+```
+
+```ts
+export interface DupResult {
+  userName: string;
+  userName: string;
+}
+export interface DupHintResult {
+  id: number;
+  id: number;
+}
+```
+
+**Pre-existing, not a 3.0 regression** — 2.x's `generateInterface` and `returnTypes.forEach` (checked
+at `88a428f`) had no dedup either.
+
+**Fixed by reporting it, because there is nothing to merge.** Two distinct columns cannot share one
+field: dropping either loses a column the query selects, and renaming one invents a name the caller
+would have to guess. So the query joins the family `queryToTypeDeclarations` already has for a query
+whose result shape cannot be expressed — the one an anonymous column lands in. It is reported on
+stderr, its `Result` and `Params` are emitted as `never` with the reason in a doc comment, and the
+rest of the file still generates. Under `failOnError` it fails the run, like the type error beside
+it.
+
+**The message has two shapes, because the collision has two causes.** Where the columns really do
+share a name, the SQL says so:
+
+```
+Query 'DupHint' has 2 result columns named "id". A TypeScript interface cannot declare the same key
+twice, so no result type can be generated for it. Alias one of them to a different name.
+```
+
+Where `camelCaseColumnNames` created it, the SQL does _not_ say so — the two columns are spelled
+differently — so the source columns are named:
+
+```
+Query 'Dup' has 2 result columns that camelCaseColumnNames collapses onto the field "userName":
+"userName", "user_name". A TypeScript interface cannot declare the same key twice, so no result type
+can be generated for it. Alias one of them to a name that does not collide, or turn
+camelCaseColumnNames off.
+```
+
+**It settles the `@column` question rather than dodging it.** A hint is keyed by the Postgres result
+column name, so a single `@column id!` matches _both_ columns of the `DupHint` query and silently
+applies to each. Refusing the query is the only coherent answer available: the hint names a column
+that occurs twice and says nothing about which of the two it meant. No hint can now apply
+ambiguously, because a query with two same-named columns no longer generates at all.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` pins both message shapes verbatim — the
+camelCase one naming both source columns, the same-name one _not_ blaming camelCase — the `never`
+result, the `failOnError` escalation, and the case that must stay quiet: two columns that camelCase
+to distinct fields (`user_name`, `user_id`) still generate both.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -972,31 +1035,6 @@ It failed loudly here only because `verifyConnection` now exists. With a _valid_
 happily and generate types from the wrong schema. The precedence is inherited from upstream and
 `docs-new/docs/cli.md` documents it, but it is worth deciding deliberately whether config should beat
 ambient env. Bundle the decision with PR #524 (see [Worth adopting](#pr-524--env-var-templating-in-config)).
-
-### Duplicate keys in generated interfaces — not reported upstream
-
-Two result columns landing on the same field name emit a TypeScript interface that will not compile
-(TS2300). Both spellings reproduce:
-
-```sql
-/* @name Dup */ SELECT "userName", user_name FROM mixed;          -- with camelCaseColumnNames
-/* @name DupHint */ SELECT a.id, b."aId" AS id FROM "A" a LEFT JOIN "B" b ON a.id = b."aId";
-```
-
-```ts
-export interface DupResult {
-  userName: string;
-  userName: string;
-}
-export interface DupHintResult {
-  id: number;
-  id: number;
-}
-```
-
-**Pre-existing, not a 3.0 regression** — 2.x's `generateInterface` and `returnTypes.forEach` (checked
-at `88a428f`) had no dedup either. Note a `@column id!` hint matches by name and so applies to
-_both_ columns.
 
 ### Shared type aliases collide across generated files — issue #565
 

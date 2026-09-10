@@ -453,6 +453,12 @@ The last two are widening, so regenerated files still compile against code writt
 - **Environment variables that set CLI flags need a `PGTYPED_` prefix.** `CONFIG`, `WATCH`, `URI` and `FILE` become `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`. Unprefixed, an ambient `FILE` — common enough in a Makefile — set `--file` and the run quietly generated nothing. The `PG*` variables that configure the database connection are unchanged.
 - **`--file` exits non-zero when it matches no transform**, rather than printing "file was not found in provided transforms" and exiting 0. It also now accepts any spelling of the path: `src/q.sql`, `./src/q.sql` and an absolute path all name the same file, where before only the one glob happened to produce did.
 
+### Failures that used to be silent
+
+Cases PgTyped handled quietly and now reports. None of them changes what a working project generates or runs.
+
+- **Two result columns landing on the same field are an error.** `SELECT a.id, b."aId" AS id` generated an interface declaring `id` twice — TS2300, from a file you did not write, after a codegen run that exited 0. The query is now reported on stderr and its `Result` and `Params` are emitted as `never`, which is what PgTyped already did for a query whose result shape it cannot express; the rest of the file still generates, and `failOnError` fails the run. There is no dedup to opt into: two distinct columns cannot share one key, so alias one of them. Watch for this if you have `camelCaseColumnNames` on — it is the setting most likely to create the collision, out of columns that are spelled differently in the SQL (`"userName"` and `user_name` are both the field `userName`), and the message names the source columns when that is the cause.
+
 ### Two smaller behaviour changes
 
 - **Mid-statement block comments are kept in the statement text** rather than blanked out. Because a query's prepared statement name is a hash of its text, editing a comment inside a query renames its statement. That is harmless — it just means a fresh `Parse` — but it is why an unrelated-looking comment edit changes generated output.
