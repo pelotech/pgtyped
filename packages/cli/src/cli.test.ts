@@ -1,5 +1,5 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { createServer } from 'node:net';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { createServer, type Server, type Socket } from 'node:net';
 import {
   existsSync,
   mkdirSync,
@@ -41,6 +41,72 @@ function runCli(args: string[], cwd: string): SpawnSyncReturns<string> {
     encoding: 'utf-8',
     env: childEnv(),
   });
+}
+
+/**
+ * A server that accepts a connection and never answers it, so pg's startup
+ * packet gets no reply and the CLI sits in `verifyConnection` for as long as a
+ * test needs. That turns "does a config edit kill a run in flight?" into a
+ * question with a deterministic answer instead of a race.
+ */
+async function hangingServer(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+}> {
+  const sockets: Socket[] = [];
+  const server: Server = createServer((socket) => {
+    sockets.push(socket);
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (typeof address === 'string' || address === null) {
+        reject(new Error('no port assigned'));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+  return {
+    port,
+    close: () =>
+      new Promise<void>((resolve) => {
+        sockets.forEach((socket) => socket.destroy());
+        server.close(() => resolve());
+      }),
+  };
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Long enough for the child to boot Node and for chokidar to have attached its
+ * watcher — without the fix, that watcher is registered before `parseConfig`
+ * even runs, so this only has to outlast process startup.
+ */
+const WATCHER_READY_MS = 2_000;
+/** Long enough for a `Config file changed` exit to arrive if it is going to. */
+const EXIT_WINDOW_MS = 5_000;
+
+function spawnCli(args: string[], cwd: string) {
+  const child = spawn(process.execPath, [cliEntry, ...args], {
+    cwd,
+    env: childEnv(),
+  });
+  let output = '';
+  child.stdout.setEncoding('utf-8').on('data', (chunk) => (output += chunk));
+  child.stderr.setEncoding('utf-8').on('data', (chunk) => (output += chunk));
+  const exited = new Promise<number | null>((resolve) =>
+    child.on('exit', (code) => resolve(code)),
+  );
+  return {
+    /** The exit code, or `'running'` if the process outlasted `ms`. */
+    settle: (ms: number) =>
+      Promise.race([exited, delay(ms).then(() => 'running' as const)]),
+    output: () => output,
+    kill: () => child.kill('SIGKILL'),
+  };
 }
 
 /** A port nothing is listening on, so connecting to it is refused at once. */
@@ -134,5 +200,88 @@ describe('cli exit codes', () => {
       'export type EnvQResult = { one: number };\n',
     );
     expect(readdirSync(src).sort()).toEqual(['q.queries.ts', 'q.sql']);
+  }, 30_000);
+});
+
+/**
+ * The config watcher used to be registered unconditionally, before the config
+ * was even parsed, and its handler exits 0. So a one-shot run that overlapped
+ * a config write — a build step templating a connection string in, say — died
+ * mid-flight having written nothing, and reported success while doing it.
+ * Upstream #609, #616.
+ */
+describe('config file watching', () => {
+  test('a non-watch run is not ended by a config edit', async () => {
+    const server = await hangingServer();
+    const dir = project(
+      sqlProject({
+        db: {
+          host: '127.0.0.1',
+          port: server.port,
+          user: 'postgres',
+          password: 'password',
+          dbName: 'postgres',
+        },
+      }),
+    );
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(
+      join(dir, 'src', 'q.sql'),
+      '/* @name OneShot */\nSELECT 1 AS one;\n',
+    );
+
+    const cli = spawnCli(['-c', 'config.json'], dir);
+    try {
+      await delay(WATCHER_READY_MS);
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify(sqlProject({ dbUrl: 'postgres://edited@127.0.0.1/x' })),
+      );
+
+      expect(await cli.settle(EXIT_WINDOW_MS)).toBe('running');
+      expect(cli.output()).not.toContain('Config file changed');
+    } finally {
+      cli.kill();
+      await server.close();
+    }
+  }, 30_000);
+
+  test('a watch run still exits 0 when the config changes', async () => {
+    const server = await hangingServer();
+    const dir = project(
+      sqlProject({
+        db: {
+          host: '127.0.0.1',
+          port: server.port,
+          user: 'postgres',
+          password: 'password',
+          dbName: 'postgres',
+        },
+      }),
+    );
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(
+      join(dir, 'src', 'q.sql'),
+      '/* @name Watched */\nSELECT 1 AS one;\n',
+    );
+
+    const cli = spawnCli(['-c', 'config.json', '-w'], dir);
+    try {
+      await delay(WATCHER_READY_MS);
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify(sqlProject({ dbUrl: 'postgres://edited@127.0.0.1/x' })),
+      );
+
+      // Deliberately exit 0: the run ended because the config it was started
+      // with is gone, which is not a broken build. This also proves the
+      // sibling test above is not passing vacuously — the same edit, made the
+      // same way, does reach a watcher when one is registered.
+      expect(await cli.settle(EXIT_WINDOW_MS)).toBe(0);
+      expect(cli.output()).toContain('Config file changed. Exiting.');
+    } finally {
+      cli.kill();
+      await server.close();
+    }
   }, 30_000);
 });

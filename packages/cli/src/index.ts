@@ -126,14 +126,21 @@ if (isWatchMode && fileOverride) {
 }
 
 try {
-  chokidar.watch(configPath, {}).on('change', () => {
-    // Not a failure: the config the run was started with is gone, so the run
-    // ends deliberately and the user (or their supervisor process) restarts
-    // it against the new one. Exiting non-zero here would report a broken
-    // build every time someone edited the config in watch mode.
-    console.log('Config file changed. Exiting.');
-    process.exit(0);
-  });
+  // Watch mode only. A one-shot run holds no long-lived state that a config
+  // edit could invalidate, and watching from one anyway meant a build step
+  // that rewrote the config while codegen ran — templating in a connection
+  // string, say — killed the run mid-flight: exit 0, nothing written, green
+  // CI, no generated types (#609, #616).
+  if (isWatchMode) {
+    chokidar.watch(configPath, {}).on('change', () => {
+      // Not a failure: the config the run was started with is gone, so the run
+      // ends deliberately and the user (or their supervisor process) restarts
+      // it against the new one. Exiting non-zero here would report a broken
+      // build every time someone edited the config in watch mode.
+      console.log('Config file changed. Exiting.');
+      process.exit(0);
+    });
+  }
   const config = parseConfig(configPath, connectionUri);
   main(config, isWatchMode || false, fileOverride).catch((e) =>
     fatal('Codegen failed:', e),
