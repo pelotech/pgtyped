@@ -234,7 +234,7 @@ The check reports `42501` and nothing else. A statement `EXPLAIN` cannot plan at
 
 ### Prepared statements
 
-With `preparedStatements` enabled (the default), codegen writes a *statement name* into each generated query, for example `FindBookById_ddfa9eb1`. The runtime passes that name to node-postgres, which issues a server-side `Parse` the first time the query runs on a connection and reuses the parsed, planned statement on every later call over that same connection.
+With `preparedStatements` enabled (the default), codegen writes a *statement name* into each generated query, for example `FindBookById_022dda1d`. The runtime passes that name to node-postgres, which issues a server-side `Parse` the first time the query runs on a connection and reuses the parsed, planned statement on every later call over that same connection.
 
 The name is the query's `@name` plus a hash of its SQL text, so editing a query renames it. That matters during a rolling deploy: a long-lived connection that already prepared the old text will not have the new text bound to a stale name.
 

@@ -56,7 +56,7 @@ export interface GetNotificationsQuery {
   result: GetNotificationsResult;
 }
 
-const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!","params":[{"name":"userId","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":54}]},{"name":"date","transform":{"type":"scalar"},"required":true,"locs":[{"a":73,"b":79}]}],"columns":[],"name":"GetNotifications_32a391fa"};
+const getNotificationsIR: any = {"queryName":"GetNotifications","statement":"SELECT *\n  FROM notifications\n WHERE user_id = :userId\n AND created_at > :date!","params":[{"name":"userId","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":54}]},{"name":"date","transform":{"type":"scalar"},"required":true,"locs":[{"a":73,"b":79}]}],"columns":[],"name":"GetNotifications_abf87950"};
 
 /**
  * Query generated from SQL:
@@ -88,7 +88,7 @@ export interface ThresholdFrogsQuery {
   result: ThresholdFrogsResult;
 }
 
-const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!","params":[{"name":"numFrogs","transform":{"type":"scalar"},"required":true,"locs":[{"a":143,"b":153}]}],"columns":[],"name":"ThresholdFrogs_6137d9bc"};
+const thresholdFrogsIR: any = {"queryName":"ThresholdFrogs","statement":"SELECT u.user_name, n.payload, n.type\nFROM notifications n\nINNER JOIN users u on n.user_id = u.id\nWHERE CAST (n.payload->'num_frogs' AS int) > :numFrogs!","params":[{"name":"numFrogs","transform":{"type":"scalar"},"required":true,"locs":[{"a":143,"b":153}]}],"columns":[],"name":"ThresholdFrogs_b61bd59c"};
 
 /**
  * Query generated from SQL:

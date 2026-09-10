@@ -35,11 +35,11 @@ export function sql<T extends TypePair>(strings: TemplateStringsArray) {
  * statement name, so Postgres can reuse its parse and plan across calls.
  *
  * With a name, that name is only ever the prefix: the statement is sent as
- * `<name>_<8 hex of sha256(statement)>`. Editing the SQL therefore renames the
- * query, which is what keeps a long-lived pooled connection from executing the
- * statement it already prepared under the old name.
+ * `<name>_<8 hex of sha256 of the rendered SQL>`. Editing the SQL therefore
+ * renames the query, which is what keeps a long-lived pooled connection from
+ * executing the statement it already prepared under the old name.
  *
- * With no name, the statement is sent as `pgtyped_<16 hex of sha256(statement)>`
+ * With no name, the statement is sent as `pgtyped_<16 hex of the same hash>`
  * — the same guarantee for free, at the cost of an identifier that says nothing
  * about the query when you meet it in `pg_stat_statements`. The hash is twice
  * as long here because it is now the whole identifier and has to separate every

@@ -1,6 +1,8 @@
 import type { DatabaseConnection, QueryConfig } from './connection.js';
 import { unprepared } from './connection.js';
 import { parseSqlFile } from './parse-sql-file.js';
+import { parseTagged } from './parse-tagged.js';
+import { render } from './render.js';
 import { sql } from './sql.js';
 import {
   derivedStatementName,
@@ -24,8 +26,8 @@ import { TypedQuery } from './typed-query.js';
  * `sql.prepared`, for a tag that opts in. Both go through the same
  * `rendersFixedSQL` gate, so both withhold a name from a variable-arity query,
  * and neither uses a name bare — codegen and `sql.prepared('X')` append 8 hex
- * of the statement hash, and `sql.prepared()` derives the whole name from 16
- * hex of it. A plain `sql` tag is never named at all.
+ * of the hash of the rendered SQL, and `sql.prepared()` derives the whole name
+ * from 16 hex of it. A plain `sql` tag is never named at all.
  *
  * These tests are the specification for that rule. If one of them starts
  * failing, the question to ask is not "how do I make it pass" but "can a
@@ -105,6 +107,91 @@ describe('why a variable-arity query must never be named', () => {
     );
     expect(q.compile({ books: [{ name: 'a' }, { name: 'b' }] }).text).toBe(
       'INSERT INTO books VALUES ($1),($2)',
+    );
+  });
+});
+
+describe('what the hash is taken over: the SQL, not the statement text', () => {
+  // `ir.statement` is the body alone, `:u` references and all. The header that
+  // decides what those references expand to is not in it, so hashing it puts
+  // two queries that send different SQL under one name — and node-postgres
+  // rejects the second with "Prepared statements must be unique". Hashing the
+  // rendered SQL is what separates them.
+  const insertWith = (keys: string) =>
+    irFor(`/* @name InsertT @param u -> (${keys}) */ INSERT INTO t VALUES :u;`);
+
+  test('two headers over one statement text get two names', () => {
+    const two = insertWith('id, val');
+    const one = insertWith('id');
+    expect(two.statement).toBe(one.statement);
+    expect(two.statement).toBe('INSERT INTO t VALUES :u');
+    expect(render(two).query).toBe('INSERT INTO t VALUES ($1,$2)');
+    expect(render(one).query).toBe('INSERT INTO t VALUES ($1)');
+    expect(preparedStatementName(two)).not.toBe(preparedStatementName(one));
+    expect(derivedStatementName(two)).not.toBe(derivedStatementName(one));
+  });
+
+  // The converse, and the reason this is a hash of the SQL rather than of the
+  // IR: two queries that send the server the same text are the same statement,
+  // whichever front-end wrote them, so they may share a name.
+  test('two front-ends that render the same SQL agree on the name', () => {
+    const fromFile = irFor(
+      '/* @name GetUsers */ SELECT * FROM books WHERE id = :id;',
+    );
+    const fromTag = parseTagged(
+      'SELECT * FROM books WHERE id = $id',
+      'GetUsers',
+    );
+    expect(fromFile.statement).not.toBe(fromTag.statement);
+    expect(render(fromFile).query).toBe(render(fromTag).query);
+    expect(preparedStatementName(fromFile)).toBe(
+      preparedStatementName(fromTag),
+    );
+    expect(derivedStatementName(fromFile)).toBe(derivedStatementName(fromTag));
+  });
+
+  // The invariant the whole scheme rests on. Hashing the codegen render — the
+  // text sent to Describe — is only sound because for every query that may be
+  // named, that is also the text sent on every call. `rendersFixedSQL` is what
+  // guarantees it, by admitting only `scalar` and `pick_tuple`.
+  test('a nameable query renders the same SQL at codegen time and at run time', () => {
+    const scalar = FIXED();
+    expect(render(scalar).query).toBe(render(scalar, { id: 1 }).query);
+    const tuple = insertWith('id, val');
+    expect(render(tuple).query).toBe(
+      render(tuple, { u: { id: 1, val: 'x' } }).query,
+    );
+  });
+
+  test('and a variable-arity one does not, which is why it may not be named', () => {
+    const spread = irFor(
+      '/* @name FindBooksByIds @param ids -> (...) */ SELECT * FROM books WHERE id IN :ids;',
+    );
+    expect(render(spread, { ids: [1, 2] }).query).not.toBe(
+      render(spread).query,
+    );
+    expect(preparedStatementName(spread)).toBeUndefined();
+    expect(derivedStatementName(spread)).toBeUndefined();
+
+    const pickSpread = irFor(
+      '/* @name InsertBooks @param books -> ((name)...) */ INSERT INTO books VALUES :books;',
+    );
+    expect(
+      render(pickSpread, { books: [{ name: 'a' }, { name: 'b' }] }).query,
+    ).not.toBe(render(pickSpread).query);
+    expect(preparedStatementName(pickSpread)).toBeUndefined();
+    expect(derivedStatementName(pickSpread)).toBeUndefined();
+  });
+
+  // Truncation gives on the prefix, never on the hash — including here, where
+  // the hash is over text the query name cannot be read off.
+  test('the 63-byte cap still holds, and still keeps the whole hash', () => {
+    const long = { ...insertWith('id, val'), queryName: 'B'.repeat(80) };
+    const name = preparedStatementName(long)!;
+    expect(Buffer.byteLength(name, 'utf8')).toBe(63);
+    expect(name).toMatch(/^B{54}_[0-9a-f]{8}$/);
+    expect(name.slice(-8)).toBe(
+      preparedStatementName(insertWith('id, val'))!.slice(-8),
     );
   });
 });
@@ -248,10 +335,10 @@ describe('the residual hole, pinned so a change to it is deliberate', () => {
 
 describe('a sql.prepared tag with an explicit name', () => {
   // Pinned rather than merely self-consistent: the scheme is
-  // `<name>_<first 8 hex of sha256(statement)>`, and a change to it renames
-  // every statement in every deployed application at once.
+  // `<name>_<first 8 hex of sha256 of the rendered SQL>`, and a change to it
+  // renames every statement in every deployed application at once.
   const TEXT = 'SELECT * FROM books WHERE id = $id';
-  const HASH = 'a9cd4405';
+  const HASH = '022dda1d';
 
   const named = <P>(name: string) =>
     sql.prepared<{ params: P; result: unknown }>(name);
@@ -262,14 +349,9 @@ describe('a sql.prepared tag with an explicit name', () => {
     )`SELECT * FROM books WHERE id = $id`;
     expect(q.name).toMatch(/^GetUsers_[0-9a-f]{8}$/);
     expect(q.name).toBe(`GetUsers_${HASH}`);
-    expect(
-      preparedStatementName({
-        queryName: 'GetUsers',
-        statement: TEXT,
-        params: [],
-        columns: [],
-      }),
-    ).toBe(`GetUsers_${HASH}`);
+    expect(preparedStatementName(parseTagged(TEXT, 'GetUsers'))).toBe(
+      `GetUsers_${HASH}`,
+    );
   });
 
   test('it sends that name, and the name is what reaches the connection', async () => {
@@ -307,7 +389,7 @@ describe('a sql.prepared tag with an explicit name', () => {
       'GetUsers',
     )`SELECT name FROM books WHERE id = $id`;
     expect(second.name).toBe(first.name);
-    expect(edited.name).toBe('GetUsers_9d3c819e');
+    expect(edited.name).toBe('GetUsers_2fef6c9d');
     expect(edited.name).not.toBe(first.name);
   });
 
@@ -407,10 +489,10 @@ describe('a sql.prepared tag with an explicit name', () => {
 // identifier that tells you nothing when you meet it in pg_stat_statements.
 describe('a sql.prepared tag with no name, which derives one', () => {
   // Pinned, like the named form: the scheme is
-  // `pgtyped_<first 16 hex of sha256(statement)>`, and changing it renames
-  // every derived statement in every deployed application at once.
+  // `pgtyped_<first 16 hex of sha256 of the rendered SQL>`, and changing it
+  // renames every derived statement in every deployed application at once.
   const TEXT = 'SELECT * FROM books WHERE id = $id';
-  const HASH16 = 'a9cd44055b1c736f';
+  const HASH16 = '022dda1d125f8341';
 
   const derived = <P>() => sql.prepared<{ params: P; result: unknown }>();
 
@@ -418,14 +500,9 @@ describe('a sql.prepared tag with no name, which derives one', () => {
     const q = derived<{ id: number }>()`SELECT * FROM books WHERE id = $id`;
     expect(q.name).toMatch(/^pgtyped_[0-9a-f]{16}$/);
     expect(q.name).toBe(`pgtyped_${HASH16}`);
-    expect(
-      derivedStatementName({
-        queryName: 'anything at all',
-        statement: TEXT,
-        params: [],
-        columns: [],
-      }),
-    ).toBe(`pgtyped_${HASH16}`);
+    expect(derivedStatementName(parseTagged(TEXT, 'anything at all'))).toBe(
+      `pgtyped_${HASH16}`,
+    );
   });
 
   // Sixteen and not eight, because here the hash is the *whole* identifier and
@@ -437,25 +514,13 @@ describe('a sql.prepared tag with no name, which derives one', () => {
     const named = sql.prepared<{ params: { id: number }; result: unknown }>(
       'GetUsers',
     )`SELECT * FROM books WHERE id = $id`;
-    expect(named.name).toBe('GetUsers_a9cd4405');
-    expect(`pgtyped_${HASH16}`.startsWith('pgtyped_a9cd4405')).toBe(true);
+    expect(named.name).toBe('GetUsers_022dda1d');
+    expect(`pgtyped_${HASH16}`.startsWith('pgtyped_022dda1d')).toBe(true);
   });
 
   test('the derived name ignores the variable and the query name entirely', () => {
-    expect(
-      derivedStatementName({
-        queryName: 'GetUsers',
-        statement: TEXT,
-        params: [],
-        columns: [],
-      }),
-    ).toBe(
-      derivedStatementName({
-        queryName: 'somethingCompletelyDifferent',
-        statement: TEXT,
-        params: [],
-        columns: [],
-      }),
+    expect(derivedStatementName(parseTagged(TEXT, 'GetUsers'))).toBe(
+      derivedStatementName(parseTagged(TEXT, 'somethingCompletelyDifferent')),
     );
   });
 
@@ -489,7 +554,7 @@ describe('a sql.prepared tag with no name, which derives one', () => {
       id: number;
     }>()`SELECT name FROM books WHERE id = $id`;
     expect(second.name).toBe(first.name);
-    expect(edited.name).toBe('pgtyped_9d3c819e0aada145');
+    expect(edited.name).toBe('pgtyped_2fef6c9def9bed2f');
     expect(edited.name).not.toBe(first.name);
   });
 

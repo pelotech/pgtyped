@@ -217,9 +217,9 @@ function readBlock(
  * end of input.
  *
  * Only comments *before* a block are ignored. A comment between the block and
- * the end of the statement is part of `statement`, verbatim — `statement` is
- * what codegen hashes into the prepared statement name, so it is reported
- * exactly as it will be sent.
+ * the end of the statement is part of `statement`, verbatim — it is sent to
+ * the server as written, and so feeds the hash in the prepared statement name,
+ * which is why it is reported exactly as it will be sent.
  *
  * A statement with no block and a block with no statement are errors. So is a
  * statement ended by the next `@name` block rather than by `;`, since dropping
