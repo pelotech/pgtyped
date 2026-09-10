@@ -2,10 +2,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { TransformConfig } from './config.js';
+import type { TypeDb } from './db/type-db.js';
+import { ParsedConfig } from './config.js';
 import {
   findQueryFiles,
   isUnderNodeModules,
   matchFileOverride,
+  TypescriptAndSqlTransformer,
 } from './typescriptAndSqlTransformer.js';
 
 const sqlTransform = {
@@ -117,5 +120,43 @@ describe('--file matching', () => {
 
   test('a file the transform does not cover still matches nothing', () => {
     expect(matchFileOverride(fileList, 'multi/c/three.sql')).toBeUndefined();
+  });
+});
+
+/**
+ * `srcDir` is resolved against the working directory, not against the config
+ * file, so running the CLI from elsewhere with an absolute `-c` path matched
+ * nothing — and said nothing, and exited 0. Upstream #572.
+ */
+describe('a transform that matches no files says so', () => {
+  /** Never reached: with no files there is nothing to describe. */
+  const unusedDb = {} as TypeDb;
+
+  const start = async (srcDir: string) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await new TypescriptAndSqlTransformer(
+        unusedDb,
+        { srcDir } as ParsedConfig,
+        sqlTransform,
+      ).start(false);
+      return warn.mock.calls.map((call) => String(call[0]));
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  test('an empty match is warned about, and names the working directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pgtyped-empty-'));
+
+    const warnings = await start(dir);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`No files matched "${dir}/**/**/*.sql"`);
+    expect(warnings[0]).toContain(process.cwd());
+  });
+
+  test('a match is not warned about', async () => {
+    expect(await start(srcTree())).toStrictEqual([]);
   });
 });

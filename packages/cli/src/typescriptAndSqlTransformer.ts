@@ -202,6 +202,17 @@ export class TypescriptAndSqlTransformer {
      * If he did, we're using glob file list to detect if his provided file should be used with this transform.
      */
     let fileList = findQueryFiles(this.config.srcDir, this.transform);
+    if (fileList.length === 0) {
+      // Running the CLI from another directory with an absolute `-c` path
+      // produced no output whatsoever and exited 0, because `srcDir` is
+      // resolved against the working directory rather than against the config
+      // file and the glob simply matched nothing (#572). Say so, rather than
+      // leaving a silent success to be discovered downstream.
+      console.warn(
+        `No files matched "${this.config.srcDir}/**/${this.transform.include}". ` +
+          `srcDir is resolved against the working directory (${process.cwd()}), not against the config file.`,
+      );
+    }
     if (fileOverride) {
       const match = matchFileOverride(fileList, fileOverride);
       fileList = match ? [match] : [];
