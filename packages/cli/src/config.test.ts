@@ -110,4 +110,69 @@ describe('parseConfig', () => {
       });
     });
   });
+
+  /**
+   * `typesOverrides` is keyed by type name. A column-shaped key passed
+   * validation, because the schema is a plain record, and then did nothing at
+   * all — no warning, no error (#567). It cannot be implemented for parameters,
+   * which have no column to be scoped to, so it is rejected instead.
+   */
+  describe('a column-shaped typesOverrides key', () => {
+    test('is rejected, naming the key and what to do instead', () => {
+      expect(() =>
+        parseConfig(
+          configFile({
+            typesOverrides: { 'lobbies.status': './x.js#MyStatus' },
+          }),
+        ),
+      ).toThrow(/"lobbies\.status" looks like a column/);
+      expect(() =>
+        parseConfig(
+          configFile({
+            typesOverrides: { 'lobbies.status': './x.js#MyStatus' },
+          }),
+        ),
+      ).toThrow(/CREATE DOMAIN/);
+    });
+
+    test('is rejected in the two-directional form too', () => {
+      expect(() =>
+        parseConfig(
+          configFile({
+            typesOverrides: { 'lobbies.status': { return: './x.js#MyStatus' } },
+          }),
+        ),
+      ).toThrow(/looks like a column/);
+    });
+
+    test('every bad key is reported, not just the first', () => {
+      try {
+        parseConfig(
+          configFile({
+            typesOverrides: { 'a.b': 'string', 'c.d': 'string' },
+          }),
+        );
+        expect.unreachable('parseConfig should have thrown');
+      } catch (err) {
+        expect((err as Error).message).toContain('"a.b"');
+        expect((err as Error).message).toContain('"c.d"');
+      }
+    });
+
+    test('a type name is still accepted, dots being the only thing rejected', () => {
+      const c = parseConfig(
+        configFile({
+          typesOverrides: { lobby_status: './x.js#MyStatus', int8: 'BigInt' },
+        }),
+      );
+      expect(c.typesOverrides.lobby_status.return).toStrictEqual({
+        name: 'MyStatus',
+        from: './x.js',
+        aliasOf: undefined,
+      });
+      expect(c.typesOverrides.int8.parameter).toStrictEqual({
+        name: 'BigInt',
+      });
+    });
+  });
 });

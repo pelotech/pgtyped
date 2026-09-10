@@ -356,6 +356,17 @@ resolves the queries — and generates their types — against `tenant1`. It wor
 
   If you set `failOnError` and a query selects a type PgTyped has no mapping for — a composite type, `record`, a user-defined range, a multirange — the run now fails where it used to pass. Give each one a [`typesOverrides`](https://pgtyped.dev/docs/cli#configuration-file-format) entry naming the Postgres type.
 
+- **A `typesOverrides` key containing a dot is rejected.** `typesOverrides` is keyed by Postgres type name; a column-shaped key such as `"lobbies.status"` passed validation and then did nothing at all, with no warning. It is now a parse error naming the key. Column-scoped overrides are not supported and are not planned: a _parameter_ cannot be traced back to a column — the protocol says only what type `$1` is, never that it has anything to do with `lobbies.status` — so the feature could only ever have covered half of a query. To type one column differently, give it a domain and override the domain's name, which works in both directions:
+
+  ```sql
+  CREATE DOMAIN lobby_status AS text;
+  ALTER TABLE lobbies ALTER COLUMN status TYPE lobby_status;
+  ```
+
+  ```json
+  "typesOverrides": { "lobby_status": "./x.js#MyStatus" }
+  ```
+
 - **`maxWorkerThreads` is removed.** Delete it.
 - **`ts-implicit` transform mode is removed.** Use `"mode": "ts"` and `import { sql } from '@pelotech/pgtyped-runtime'` in the files that hold your tags.
 - **`preparedStatements` now defaults to `true`.** Queries from `.sql` files are sent as named server-side prepared statements. If you connect through PgBouncer in transaction-pooling mode, set it to `false`, or wrap your connections in `unprepared()`.

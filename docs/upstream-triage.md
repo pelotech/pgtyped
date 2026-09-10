@@ -56,9 +56,9 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Two entries from **Still open — medium** have since been taken as
-well: domain types — the one adoption in this list that needed real code — and the `failOnError`
-escalation for a type the mapping does not know. The last three entries below are not bugs but adoptions — the
+well. That bucket is now empty. Three entries from **Still open — medium** have since been taken as
+well: domain types — the one adoption in this list that needed real code — the `failOnError`
+escalation for a type the mapping does not know, and the column-shaped `typesOverrides` key. The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -706,6 +706,57 @@ against a scratch project whose only query is `SELECT ROW(1,2) AS r`, and assert
 matters end to end: exit 0 with `r: unknown` written by default, and a non-zero exit with **nothing
 written** under `failOnError`.
 
+### A column-shaped `typesOverrides` key was silently accepted and silently ignored — issue #567 — **FIXED**
+
+`typesOverrides` is keyed by type name only. Because the schema was `z.record(…)`, a column-shaped key
+passed validation and did nothing — no warning, no error:
+
+```json
+"typesOverrides": { "lobbies.status": "./x.js#MyStatus" }
+```
+
+```ts
+export interface ColMapResult {
+  status: lobby_status;
+} // override had no effect
+```
+
+That is a bad failure mode next to 3.0's new strictness elsewhere.
+
+**Fixed by rejecting the key, not by implementing the feature — and the reason is the parameter
+direction.** A result column can be traced back to its table: `getTypes` already knows the table OID
+and the attribute number, and one join on `pg_class` would give it the name. A _parameter_ cannot.
+ParameterDescription carries type OIDs and nothing else, and nothing in the protocol connects the
+`$1` in `WHERE status = $1` to `lobbies.status` — answering that needs a real SQL analyser, which is
+the same thing #551 needs and does not have. A column-scoped override that quietly covered results
+and not parameters would be the same defect one layer further in: a config entry that appears to
+apply and does not.
+
+So a key containing a dot is now a parse error naming the key, alongside the other config errors:
+
+```
+$ node packages/cli/lib/cli.js -c config.json
+Failed to parse config file:
+typesOverrides.lobbies.status: "lobbies.status" looks like a column, and typesOverrides is keyed by
+Postgres type name — a column-scoped override has never had any effect (#567). Override the column's
+type name instead, or give the column a domain type (CREATE DOMAIN) and override the domain's name.
+exit=1
+```
+
+**Nothing that worked stops working.** No type name Postgres reports contains a dot —
+`pg_type.typname` is not schema-qualified — so a dotted key never matched anything. If schema
+qualification is ever supported in this map, this rule is the thing to revisit.
+
+**The supported answer is a domain, and it is only supported as of the entry above.** `CREATE DOMAIN
+lobby_status AS text` plus `ALTER TABLE lobbies ALTER COLUMN status TYPE lobby_status` gives that one
+column a name the mapping can be keyed on, in both directions — which is exactly what the reporter
+wanted, and would have silently failed before
+[domains were fixed](#domain-types-were-flattened-to-their-base-type--issues-503-594-pr-637--fixed).
+
+**Regression cover.** `packages/cli/src/config.test.ts` pins the rejection in both the string and the
+`{ return }` form, that every bad key is reported rather than only the first, and that a plain type
+name — the thing this must not break — still parses into the same override it always did.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -956,25 +1007,6 @@ reported TS2308.
 
 Not cheap: needs a shared-emit target plus a watch-mode invalidation story, which the reporter
 flagged as the hard part themselves.
-
-### A column-shaped `typesOverrides` key is silently accepted and silently ignored — issue #567
-
-`typesOverrides` is keyed by type name only. Because the schema is `z.record(…)`, a column-shaped key
-passes validation and does nothing — no warning, no error:
-
-```json
-"typesOverrides": { "lobbies.status": "./x.js#MyStatus" }
-```
-
-```ts
-export interface ColMapResult {
-  status: lobby_status;
-} // override had no effect
-```
-
-That is a bad failure mode next to 3.0's new strictness elsewhere. Implementing the feature properly
-is medium cost, and the data is already in hand: `getTypes` computes `columnName` per result column
-in `db/types.ts` and then never uses it. At minimum, warn on a key containing a dot.
 
 ---
 
@@ -1345,7 +1377,7 @@ Every triaged number, and where it is covered.
 #513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
-#566 NA · #567 open · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
+#566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
 #613 open · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
