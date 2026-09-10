@@ -42,7 +42,7 @@ import {
   thresholdFrogs,
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
-import { Category } from './customTypes.js';
+import { Category, type EmailAddress } from './customTypes.js';
 import { sql, unprepared } from '@pelotech/pgtyped-runtime';
 import type {
   CountBookCommentsTagQuery,
@@ -333,6 +333,14 @@ describe('generated types describe what the driver really returns', () => {
     expect(amount).toBe('2.5');
     const recordedAt: Date = row.recorded_at;
     expect(recordedAt).toEqual(new Date('2020-01-01T00:00:00Z'));
+
+    // A domain column. Postgres reports a domain-typed result column as its
+    // base type, so the `email_address` entry in config.json's typesOverrides
+    // never fired and this was a bare `string` (#503, #594). `EmailAddress` is
+    // narrower than `string`, so this annotation stops compiling if the domain
+    // is ever flattened again.
+    const contact: EmailAddress = row.contact;
+    expect(contact).toBe('alex.doe@example.com');
   });
 
   const insertParams: InsertDriverTypesParams = {
@@ -346,9 +354,18 @@ describe('generated types describe what the driver really returns', () => {
     location: '(3,4)',
     period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
     recordedAt: new Date('2021-02-03T04:05:06Z'),
+    contact: 'jane.holmes@example.com',
   };
 
   test('the parameter direction round-trips', async () => {
+    // The same domain in the parameter direction. Postgres does report the
+    // domain itself for an INSERT parameter, so this half was already right;
+    // pinning it keeps the two directions from drifting apart, and catches the
+    // parameter becoming `unknown` — which no argument would ever reject,
+    // since everything is assignable to it.
+    const contact: EmailAddress = insertParams.contact;
+    expect(contact).toBe('jane.holmes@example.com');
+
     const [{ id }] = await insertDriverTypes.run(client, insertParams);
 
     const inserted = (await getDriverTypes.run(client)).find(
@@ -363,6 +380,7 @@ describe('generated types describe what the driver really returns', () => {
       amount: '5.5',
       location: { x: 3, y: 4 },
       period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
+      contact: 'jane.holmes@example.com',
     });
   });
 

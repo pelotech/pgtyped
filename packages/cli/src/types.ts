@@ -2,6 +2,7 @@
 import {
   ImportedType,
   isAlias,
+  isDomain,
   isEnum,
   isEnumArray,
   isImport,
@@ -401,7 +402,23 @@ export class TypeAllocator {
         typ = this.mapping[typeNameOrType][scope];
       }
     } else {
-      if (isEnumArray(typeNameOrType)) {
+      if (isDomain(typeNameOrType)) {
+        // The domain's own name is offered to the mapping first: that is the
+        // whole point of recovering it, and a `typesOverrides` entry naming a
+        // domain never fired before (#503, #594).
+        //
+        // When nothing claims the name, the type resolves to its base — which
+        // is what a domain column generated before this existed, and is what
+        // keeps every project that has domain columns and no override for them
+        // compiling. Upstream PR #637 stops one step short of this, leaving
+        // the bare domain name to reach the mapping and fail: `contact:
+        // string` becomes `contact: unknown` plus a codegen error.
+        const mapped = this.mapping[typeNameOrType.name]?.[scope];
+        if (!mapped) {
+          return this.use(typeNameOrType.baseType, scope);
+        }
+        typ = mapped;
+      } else if (isEnumArray(typeNameOrType)) {
         if (this.mapping[typeNameOrType.elementType.name]?.[scope]) {
           typ = getArray({
             name: typeNameOrType.elementType.name,

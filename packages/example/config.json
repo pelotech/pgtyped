@@ -16,7 +16,8 @@
       "return": "string"
     },
     "int8": "BigInt",
-    "category": { "return": "./src/customTypes.js#Category" }
+    "category": { "return": "./src/customTypes.js#Category" },
+    "email_address": "./src/customTypes.js#EmailAddress"
   },
   "srcDir": "./src/",
   "dbUrl": "postgres://postgres:password@localhost/postgres"

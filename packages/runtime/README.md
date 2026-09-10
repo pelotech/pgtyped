@@ -424,10 +424,11 @@ If any of those call sites passed the non-string form, it was failing against th
 
 `numeric[]` parameters are unchanged — the server takes numbers or strings either way.
 
-### Two more changes to generated output
+### Three more changes to generated output
 
-Both are widening, so regenerated files still compile against code written for 2.x — but the output does change, and a diff of your generated files will show them.
+The last two are widening, so regenerated files still compile against code written for 2.x. The first only moves a type where you had already asked it to and been ignored. All three change the output, and a diff of your generated files will show them.
 
+- **A domain is typed by its own name, not by its base type.** Postgres reports a domain-typed result column as the type the domain is built over, so `"typesOverrides": { "email": "./types#Email" }` silently did nothing for `SELECT contact FROM accounts` — you got `contact: string`, no import, and no warning. The domain is now recovered from the catalog, so that entry fires, in both the result and the parameter direction. **A domain you have not overridden generates exactly what it generated before**: `contact` stays `string`, and a domain over an enum stays that enum's union. One case gets better on its own: an `INSERT` into a domain column used to log `Postgres type 'email' is not supported by mapping` and generate `unknown` for the parameter, and is now the base type. Two cases are unchanged and cannot be fixed from the protocol — a domain-typed _expression_ (`upper(contact)`, or an explicit cast) and a parameter the server resolves for you (`WHERE contact = :contact!`) are reported as the base type with no column attached, so neither can find the domain.
 - **The six built-in range types are mapped.** `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange` and `daterange` used to generate `unknown` and log `Postgres type 'tstzrange' is not supported by mapping`; they are now `string` in both directions, which is what node-postgres sends and receives for them. If you worked around this with a `typesOverrides` entry, that entry still wins and nothing changes for you.
 - **A pick expansion's optional keys are optional.** For `@param address -> (line1!, line2)`, the generated `line2` used to be a required member typed `string | null | void`, so omitting it meant writing `line2: undefined` by hand. It is now `line2?: string | null | void`. An absent key and an explicit `undefined` reach the server as the same NULL, so this only removes the ceremony.
 

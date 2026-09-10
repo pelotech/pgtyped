@@ -102,6 +102,91 @@ describe('TypeAllocator', () => {
       JsonArray: expect.objectContaining({ name: 'JsonArray' }),
     });
   });
+
+  /**
+   * A domain reaches the allocator as its own name plus whatever its base type
+   * resolved to, so that an override naming the domain can win (#503, #594)
+   * without an un-overridden domain losing the type it has always generated.
+   */
+  describe('domain types (issues #503, #594)', () => {
+    const email = { name: 'email', baseType: 'text' };
+    const mood = { name: 'mood', enumValues: ['sad', 'ok', 'happy'] };
+    const moodDomain = { name: 'mood_d', baseType: mood };
+
+    test('an override naming the domain wins', () => {
+      const types = new TypeAllocator(
+        TypeMapping({
+          email: {
+            return: { name: 'Email', from: './types' },
+            parameter: { name: 'Email', from: './types' },
+          },
+        }),
+      );
+      expect(types.use(email, TypeScope.Return)).toEqual('Email');
+      expect(types.use(email, TypeScope.Parameter)).toEqual('Email');
+      expect(types.declaration('out.ts')).toContain(
+        "import type { Email } from './types';",
+      );
+      expect(types.errors).toStrictEqual([]);
+    });
+
+    /**
+     * The half upstream PR #637 leaves out. Without the fallback the bare
+     * domain name reaches the mapping and fails it, so every project with a
+     * domain column and no override for it gets `unknown` plus a codegen error
+     * where it used to get a working type.
+     */
+    test('an un-overridden domain resolves to its base type, with no error', () => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use(email, TypeScope.Return)).toEqual('string');
+      expect(types.use(email, TypeScope.Parameter)).toEqual('string');
+      expect(types.errors).toStrictEqual([]);
+    });
+
+    test('a domain over an enum keeps the enum union', () => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use(moodDomain, TypeScope.Return)).toEqual('mood');
+      expect(types.declaration('out.ts')).toContain(
+        "export type mood = 'happy' | 'ok' | 'sad';",
+      );
+      expect(types.errors).toStrictEqual([]);
+    });
+
+    test('an override on a domain over an enum replaces the union', () => {
+      const types = new TypeAllocator(
+        TypeMapping({ mood_d: { return: { name: 'Mood' } } }),
+      );
+      expect(types.use(moodDomain, TypeScope.Return)).toEqual('Mood');
+      // The enum it is built over is not emitted: nothing refers to it.
+      expect(types.declaration('out.ts')).not.toContain('export type mood =');
+    });
+
+    test('a domain over a domain falls through to the nearest override', () => {
+      const types = new TypeAllocator(
+        TypeMapping({ email: { return: { name: 'Email' } } }),
+      );
+      expect(
+        types.use({ name: 'email2', baseType: email }, TypeScope.Return),
+      ).toEqual('Email');
+      expect(
+        types.use(
+          { name: 'email2', baseType: { name: 'x', baseType: 'int4' } },
+          TypeScope.Return,
+        ),
+      ).toEqual('number');
+    });
+
+    test('a scope with no override falls back on its own', () => {
+      const types = new TypeAllocator(
+        TypeMapping({ email: { return: { name: 'Email' } } }),
+      );
+      expect(types.use(email, TypeScope.Return)).toEqual('Email');
+      // `parameter` was left unset, so that direction is still the base type
+      // rather than an error.
+      expect(types.use(email, TypeScope.Parameter)).toEqual('string');
+      expect(types.errors).toStrictEqual([]);
+    });
+  });
 });
 
 /**

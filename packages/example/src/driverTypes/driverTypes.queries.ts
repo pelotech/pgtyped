@@ -1,6 +1,8 @@
 /** Types generated for queries found in "src/driverTypes/driverTypes.sql" */
 import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
+import type { EmailAddress } from '../customTypes.js';
+
 export type DateOrString = Date | string;
 
 export type NumberOrString = number | string;
@@ -31,6 +33,7 @@ export type GetDriverTypesParams = void;
 export interface GetDriverTypesResult {
   amount: string;
   amounts: numberArray;
+  contact: EmailAddress;
   duration: PgInterval;
   flags: string;
   id: number;
@@ -47,12 +50,12 @@ export interface GetDriverTypesQuery {
   result: GetDriverTypesResult;
 }
 
-const getDriverTypesIR: any = {"queryName":"GetDriverTypes","statement":"SELECT id, duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at\nFROM driver_types","params":[],"columns":[],"name":"GetDriverTypes_90218c02"};
+const getDriverTypesIR: any = {"queryName":"GetDriverTypes","statement":"SELECT id, duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at, contact\nFROM driver_types","params":[],"columns":[],"name":"GetDriverTypes_294fb4b2"};
 
 /**
  * Query generated from SQL:
  * ```
- * SELECT id, duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at
+ * SELECT id, duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at, contact
  * FROM driver_types
  * ```
  */
@@ -63,6 +66,7 @@ export const getDriverTypes = new TypedQuery<GetDriverTypesParams,GetDriverTypes
 export interface InsertDriverTypesParams {
   amount: NumberOrString;
   amounts: NumberOrStringArray;
+  contact: EmailAddress;
   duration: string;
   flags: string;
   location: string;
@@ -83,15 +87,15 @@ export interface InsertDriverTypesQuery {
   result: InsertDriverTypesResult;
 }
 
-const insertDriverTypesIR: any = {"queryName":"InsertDriverTypes","statement":"INSERT INTO driver_types\n  (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at)\nVALUES\n  (:duration!, :startTime!, :startTimeTz!, :flags!, :amounts!, :amount!, :location!, :period!, :recordedAt!)\nRETURNING id","params":[{"name":"duration","transform":{"type":"scalar"},"required":true,"locs":[{"a":130,"b":140}]},{"name":"startTime","transform":{"type":"scalar"},"required":true,"locs":[{"a":142,"b":153}]},{"name":"startTimeTz","transform":{"type":"scalar"},"required":true,"locs":[{"a":155,"b":168}]},{"name":"flags","transform":{"type":"scalar"},"required":true,"locs":[{"a":170,"b":177}]},{"name":"amounts","transform":{"type":"scalar"},"required":true,"locs":[{"a":179,"b":188}]},{"name":"amount","transform":{"type":"scalar"},"required":true,"locs":[{"a":190,"b":198}]},{"name":"location","transform":{"type":"scalar"},"required":true,"locs":[{"a":200,"b":210}]},{"name":"period","transform":{"type":"scalar"},"required":true,"locs":[{"a":212,"b":220}]},{"name":"recordedAt","transform":{"type":"scalar"},"required":true,"locs":[{"a":222,"b":234}]}],"columns":[],"name":"InsertDriverTypes_3bea59b1"};
+const insertDriverTypesIR: any = {"queryName":"InsertDriverTypes","statement":"INSERT INTO driver_types\n  (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at, contact)\nVALUES\n  (:duration!, :startTime!, :startTimeTz!, :flags!, :amounts!, :amount!, :location!, :period!, :recordedAt!, :contact!)\nRETURNING id","params":[{"name":"duration","transform":{"type":"scalar"},"required":true,"locs":[{"a":139,"b":149}]},{"name":"startTime","transform":{"type":"scalar"},"required":true,"locs":[{"a":151,"b":162}]},{"name":"startTimeTz","transform":{"type":"scalar"},"required":true,"locs":[{"a":164,"b":177}]},{"name":"flags","transform":{"type":"scalar"},"required":true,"locs":[{"a":179,"b":186}]},{"name":"amounts","transform":{"type":"scalar"},"required":true,"locs":[{"a":188,"b":197}]},{"name":"amount","transform":{"type":"scalar"},"required":true,"locs":[{"a":199,"b":207}]},{"name":"location","transform":{"type":"scalar"},"required":true,"locs":[{"a":209,"b":219}]},{"name":"period","transform":{"type":"scalar"},"required":true,"locs":[{"a":221,"b":229}]},{"name":"recordedAt","transform":{"type":"scalar"},"required":true,"locs":[{"a":231,"b":243}]},{"name":"contact","transform":{"type":"scalar"},"required":true,"locs":[{"a":245,"b":254}]}],"columns":[],"name":"InsertDriverTypes_099e016d"};
 
 /**
  * Query generated from SQL:
  * ```
  * INSERT INTO driver_types
- *   (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at)
+ *   (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at, contact)
  * VALUES
- *   (:duration!, :startTime!, :startTimeTz!, :flags!, :amounts!, :amount!, :location!, :period!, :recordedAt!)
+ *   (:duration!, :startTime!, :startTimeTz!, :flags!, :amounts!, :amount!, :location!, :period!, :recordedAt!, :contact!)
  * RETURNING id
  * ```
  */

@@ -102,11 +102,17 @@ CREATE TABLE book_country (
 INSERT INTO book_country (country)
 VALUES ('CZ'), ('DE');
 
+-- A domain. Postgres reports a domain-typed result column as its *base* type
+-- in RowDescription, so `"email_address"` in config.json's typesOverrides
+-- never fired and `contact` below generated a bare `string` (#503, #594).
+CREATE DOMAIN email_address AS TEXT CHECK (VALUE LIKE '%@%');
+
 -- Every column here has a type whose driver-returned value used to disagree
 -- with the type PgTyped generated for it, plus the controls that must not move
 -- with them: a scalar `numeric`, which really is a string, and a `timestamptz`,
--- which really is a `Date`. See the "Upgrading from 2.x" section of
--- packages/runtime/README.md.
+-- which really is a `Date`. `contact` is the domain column, which is checked
+-- the same way: against the live server, in both directions. See the
+-- "Upgrading from 2.x" section of packages/runtime/README.md.
 CREATE TABLE driver_types (
   id SERIAL PRIMARY KEY,
   duration       INTERVAL    NOT NULL,
@@ -117,12 +123,14 @@ CREATE TABLE driver_types (
   amount         NUMERIC     NOT NULL,
   location       POINT       NOT NULL,
   period         TSTZRANGE   NOT NULL,
-  recorded_at    TIMESTAMPTZ NOT NULL
+  recorded_at    TIMESTAMPTZ NOT NULL,
+  contact        EMAIL_ADDRESS NOT NULL
 );
 
 INSERT INTO driver_types
-  (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at)
+  (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at, contact)
 VALUES
   ('1 year 2 mons 3 days 04:05:06.789', '01:02:03', '01:02:03+00', B'101',
    ARRAY[1.5, 2.5]::NUMERIC[], 2.5, '(1,2)',
-   '["2020-01-01 00:00:00+00","2020-02-01 00:00:00+00")', '2020-01-01T00:00:00Z');
+   '["2020-01-01 00:00:00+00","2020-02-01 00:00:00+00")', '2020-01-01T00:00:00Z',
+   'alex.doe@example.com');
