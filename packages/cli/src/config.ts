@@ -87,6 +87,7 @@ const Config = z
     hungarianNotation: z.boolean().default(false),
     nonEmptyArrayParams: z.boolean().default(false),
     preparedStatements: z.boolean().default(true),
+    checkPrivileges: z.boolean().default(false),
     dbUrl: z.string().optional(),
     db: z
       .object({
@@ -143,6 +144,7 @@ export interface ParsedConfig {
   hungarianNotation: boolean;
   nonEmptyArrayParams: boolean;
   preparedStatements: boolean;
+  checkPrivileges: boolean;
   transforms: TransformConfig[];
   srcDir: string;
   typesOverrides: Record<string, Partial<TypeDefinition>>;
@@ -342,6 +344,7 @@ export function parseConfig(
     hungarianNotation,
     nonEmptyArrayParams,
     preparedStatements,
+    checkPrivileges,
     typesOverrides,
   } = result.data;
 
@@ -432,6 +435,7 @@ export function parseConfig(
     hungarianNotation,
     nonEmptyArrayParams,
     preparedStatements,
+    checkPrivileges,
     typesOverrides: parsedTypesOverrides,
   };
 }

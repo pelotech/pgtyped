@@ -218,7 +218,28 @@ export async function queryToTypeDeclarations(
     return `${resultErrorComment}${returnInterface}${paramErrorComment}${paramInterface}`;
   }
 
-  const { returnTypes, paramMetadata } = typeData;
+  const { returnTypes, paramMetadata, privilegeError } = typeData;
+
+  // Advisory by default, like the lint below, and for the same reason: the
+  // types are an accurate description of the statement, so emitting `never`
+  // for a query whose only problem is a missing GRANT would break every call
+  // site over something no call site can fix. What is wrong is the database
+  // role, and saying so is the whole of the check's job until failOnError asks
+  // for the strict reading.
+  if (privilegeError) {
+    const message =
+      `Query '${queryName}' in ${fileName} was described successfully, but the role codegen ` +
+      `connected as may not execute it: ${privilegeError.message}. ` +
+      `Types were still generated — Postgres checks table and column privileges at execute ` +
+      `time, so this query will fail at runtime with ${privilegeError.errorCode} unless the ` +
+      `role is granted what it needs. If codegen deliberately connects as a different role ` +
+      `than the application, turn checkPrivileges off.`;
+    // tslint:disable-next-line:no-console
+    console.warn(message);
+    if (config.failOnError) {
+      throw new Error(message);
+    }
+  }
 
   const returnFieldTypes: IField[] = [];
   const paramFieldTypes: IField[] = [];
@@ -445,7 +466,8 @@ export async function generateTypedecsFromFile(
 ): Promise<TypeDeclarationSet> {
   const typedQueries: GeneratedQueryDec[] = [];
   const interfacePrefix = config.hungarianNotation ? 'I' : '';
-  const typeSource: TypeSource = (query) => getTypes(query, db);
+  const typeSource: TypeSource = (query) =>
+    getTypes(query, db, config.checkPrivileges);
 
   const done = () => ({
     typedQueries,

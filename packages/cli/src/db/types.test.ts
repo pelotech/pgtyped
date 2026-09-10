@@ -225,6 +225,7 @@ test('getTypes reads pg-parsed catalog rows: boolean attnotnull, numeric oids', 
         return [{ attid: '100:1', attname: 'id', attnotnull: true }];
       throw new Error(`unexpected catalog query: ${sql}`);
     },
+    explain: async () => undefined,
   };
   const result = await getTypes(
     { query: 'SELECT id FROM t', mapping: [], bindings: [] },
@@ -327,6 +328,7 @@ describe('domain types', () => {
         if (sql.includes('FROM pg_attribute')) return opts.attributes ?? [];
         throw new Error(`unexpected catalog query: ${sql}`);
       },
+      explain: async () => undefined,
     };
     return { db, typeQueries };
   };
@@ -511,5 +513,133 @@ describe('reduceTypeRows resolves domains', () => {
         },
       ]),
     ).toStrictEqual({ 16385: 'email' });
+  });
+});
+
+/**
+ * Postgres checks table and column privileges at execute time, so Describe
+ * reports a perfectly good result type for a query the connecting role is not
+ * allowed to run. The opt-in check plans the statement as well, and reports
+ * what the planner says.
+ */
+describe('the pre-flight privilege check', () => {
+  const denied = () =>
+    Object.assign(new Error('permission denied for table secrets'), {
+      code: '42501',
+    });
+
+  /** Describes one int4 column belonging to no table, and records explains. */
+  const fakeDb = (explainFails?: () => Error) => {
+    const explained: [string, number][] = [];
+    const db: TypeDb = {
+      describe: async () => ({
+        params: [{ oid: 23 }, { oid: 23 }],
+        fields: [
+          {
+            name: 'id',
+            tableOID: 0,
+            columnAttrNumber: 0,
+            typeOID: 23,
+            typeSize: 4,
+            typeModifier: -1,
+            formatCode: 0,
+          },
+        ],
+      }),
+      rows: async (sql) =>
+        sql.includes('FROM pg_type')
+          ? [
+              {
+                oid: 23,
+                typname: 'int4',
+                typtype: 'b',
+                enumlabel: null,
+                typelem: 0,
+                typcategory: 'N',
+                typbasetype: 0,
+              },
+            ]
+          : [],
+      explain: async (text, paramCount) => {
+        explained.push([text, paramCount]);
+        if (explainFails) throw explainFails();
+      },
+    };
+    return { db, explained };
+  };
+
+  const run = (db: TypeDb, checkPrivileges?: boolean) =>
+    getTypes(
+      {
+        query: 'SELECT id FROM secrets WHERE a = $1 AND b = $2',
+        mapping: [],
+        bindings: [],
+      },
+      db,
+      checkPrivileges,
+    );
+
+  test('does not run at all unless it is asked for', async () => {
+    const { db, explained } = fakeDb(denied);
+
+    const result = await run(db);
+
+    expect(explained).toStrictEqual([]);
+    expect(result).not.toHaveProperty('privilegeError');
+  });
+
+  test('plans the described query, telling explain how many parameters it has', async () => {
+    const { db, explained } = fakeDb();
+
+    await run(db, true);
+
+    expect(explained).toStrictEqual([
+      ['SELECT id FROM secrets WHERE a = $1 AND b = $2', 2],
+    ]);
+  });
+
+  test('reports 42501, and still returns the types', async () => {
+    const { db } = fakeDb(denied);
+
+    const result = await run(db, true);
+
+    expect('errorCode' in result).toBe(false);
+    if ('errorCode' in result) return;
+    // Not a parse error: the types are right, the role is wrong. Emitting
+    // `never` here would break every call site over a missing GRANT.
+    expect(result.privilegeError).toStrictEqual({
+      errorCode: '42501',
+      message: 'permission denied for table secrets',
+      hint: undefined,
+      position: undefined,
+    });
+    expect(result.returnTypes).toStrictEqual([
+      { returnName: 'id', type: 'int4' },
+    ]);
+  });
+
+  /**
+   * The statement was already parsed and described successfully, so anything
+   * EXPLAIN says other than 42501 is about EXPLAIN. The one that occurs in
+   * practice is 42601 from a statement EXPLAIN cannot plan at all — TRUNCATE,
+   * CALL, SET, DDL — which is a fine thing to keep in a .sql file.
+   */
+  test('ignores a statement EXPLAIN refuses to plan', async () => {
+    const { db } = fakeDb(() =>
+      Object.assign(new Error('syntax error at or near "TRUNCATE"'), {
+        code: '42601',
+      }),
+    );
+
+    const result = await run(db, true);
+
+    expect(result).not.toHaveProperty('privilegeError');
+    expect(result).not.toHaveProperty('errorCode');
+  });
+
+  test('rethrows a failure that did not come from the driver', async () => {
+    const { db } = fakeDb(() => 'not an error' as unknown as Error);
+
+    await expect(run(db, true)).rejects.toBe('not an error');
   });
 });

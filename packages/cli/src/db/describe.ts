@@ -143,3 +143,64 @@ export async function describe(
     client.release();
   }
 }
+
+/**
+ * The `server_version_num` above which `EXPLAIN (GENERIC_PLAN)` exists, added
+ * in PostgreSQL 16.
+ */
+const GENERIC_PLAN_MIN_VERSION = 160000;
+
+/** `SHOW server_version_num` as an integer, e.g. 180006 for 18.6. */
+export async function serverVersionNum(
+  pool: Pick<Pool, 'query'>,
+): Promise<number> {
+  const { rows } = await pool.query('SHOW server_version_num');
+  return Number((rows[0] as { server_version_num: string }).server_version_num);
+}
+
+export function supportsGenericPlan(version: number): boolean {
+  return version >= GENERIC_PLAN_MIN_VERSION;
+}
+
+/**
+ * Plans `text` without running it, so the server applies the table and column
+ * privileges it otherwise only checks at execute time. Resolves if the role
+ * may run the query, rejects with the server's error if it may not.
+ *
+ * `EXPLAIN` without `ANALYZE` never executes: an `INSERT`, `UPDATE`, `DELETE`
+ * or `… RETURNING` is planned and discarded, no row is written and no sequence
+ * advances. That was verified against a live server, not assumed, so no
+ * transaction is wrapped around this — there is nothing to roll back.
+ *
+ * On PostgreSQL 16 and up the statement is planned with `GENERIC_PLAN`, which
+ * plans `$1` as a parameter rather than as a value. That matters: with values
+ * bound, `WHERE id = $1` against a NULL folds to a constant false, the planner
+ * drops the whole join tree, and a table reachable only through it — an
+ * `EXISTS (SELECT 1 FROM secrets)`, say — never gets its privileges checked at
+ * all. `GENERIC_PLAN` binds nothing, so it cannot mis-plan on a value, and no
+ * parameter can be blamed for what it reports.
+ *
+ * Before 16 there is no such option and the only way to plan a parameterised
+ * statement is to give it values, so `NULL` is bound for each one and the
+ * check under-reports on exactly the shape above.
+ */
+export async function explain(
+  pool: Pick<Pool, 'connect'>,
+  text: string,
+  paramCount: number,
+  genericPlan: boolean,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    if (genericPlan) {
+      await client.query(`EXPLAIN (GENERIC_PLAN) ${text}`);
+    } else {
+      await client.query(
+        `EXPLAIN ${text}`,
+        new Array<null>(paramCount).fill(null),
+      );
+    }
+  } finally {
+    client.release();
+  }
+}

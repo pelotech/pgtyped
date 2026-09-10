@@ -23,6 +23,7 @@ const partialConfig = { hungarianNotation: true } as ParsedConfig;
 const emptyDb: TypeDb = {
   describe: async () => ({ params: [], fields: [] }),
   rows: async () => [],
+  explain: async () => undefined,
 };
 
 type Mode = 'sql' | 'ts';
@@ -1450,6 +1451,7 @@ describe('the nullability-suffix alias lint', () => {
             },
           ]
         : [],
+    explain: async () => undefined,
   });
 
   const sqlFile = (alias: string) => `
@@ -1883,5 +1885,114 @@ describe('duplicate keys in a generated interface', () => {
     expect(errors).toEqual([]);
     expect(result).toContain('userName: number;');
     expect(result).toContain('userId: number;');
+  });
+});
+
+/**
+ * Postgres checks table and column privileges at execute time, so a query the
+ * connecting role may not run is described perfectly well and generated
+ * cleanly. `checkPrivileges` plans it too; this is what the generator does
+ * with the answer.
+ */
+describe('the pre-flight privilege check', () => {
+  const denied = 'permission denied for table secrets';
+
+  /**
+   * A database that describes one nullable int4 column and refuses to plan the
+   * statement, which is what a missing GRANT looks like from here.
+   */
+  const deniedDb: TypeDb = {
+    describe: async () => ({
+      params: [],
+      fields: [
+        {
+          name: 'id',
+          tableOID: 0,
+          columnAttrNumber: 0,
+          typeOID: 23,
+          typeSize: 4,
+          typeModifier: -1,
+          formatCode: 0,
+        },
+      ],
+    }),
+    rows: async (sql) =>
+      sql.includes('FROM pg_type')
+        ? [
+            {
+              oid: 23,
+              typname: 'int4',
+              typtype: 'b',
+              enumlabel: null,
+              typelem: 0,
+              typcategory: 'N',
+              typbasetype: 0,
+            },
+          ]
+        : [],
+    explain: async () => {
+      throw Object.assign(new Error(denied), { code: '42501' });
+    },
+  };
+
+  const generate = (config: Partial<ParsedConfig>) =>
+    generateTypedecsFromFile(
+      '/* @name GetSecrets */\nSELECT id FROM secrets;\n',
+      'secrets.sql',
+      deniedDb,
+      { mode: 'sql', include: '*.sql' },
+      new TypeAllocator(TypeMapping()),
+      {
+        hungarianNotation: false,
+        failOnError: false,
+        ...config,
+      } as ParsedConfig,
+    );
+
+  test('says nothing unless the config asks for it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate({ checkPrivileges: false });
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(result.typedQueries[0].typeDeclaration).toContain('id: number');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Advisory, and the declarations are the real ones: the query is valid SQL
+   * and its types are an accurate description of it, so emitting `never` — as
+   * an unparseable query does — would break every call site over something
+   * only a GRANT can fix.
+   */
+  test('warns, names the query and the file, and still generates', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate({ checkPrivileges: true });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message] = warn.mock.calls[0];
+      expect(message).toContain('GetSecrets');
+      expect(message).toContain('secrets.sql');
+      expect(message).toContain(denied);
+      expect(message).toContain('42501');
+      expect(result.typedQueries[0].typeDeclaration).toContain('id: number');
+      expect(result.typedQueries[0].typeDeclaration).not.toContain('never');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        generate({ checkPrivileges: true, failOnError: true }),
+      ).rejects.toThrow(denied);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
