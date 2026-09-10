@@ -1,9 +1,18 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { TransformConfig } from './config.js';
 import type { TypeDb } from './db/type-db.js';
 import { ParsedConfig } from './config.js';
+import { SharedTypeRegistry } from './sharedTypes.js';
 import {
   findQueryFiles,
   isUnderNodeModules,
@@ -158,5 +167,182 @@ describe('a transform that matches no files says so', () => {
 
   test('a match is not warned about', async () => {
     expect(await start(srcTree())).toStrictEqual([]);
+  });
+});
+
+/**
+ * The shared types file is the union over every generated file, so a watch
+ * session has to maintain it across edits rather than derive it from the file
+ * in front of it: an alias survives while any other file still needs it, and
+ * has to be released when the last one stops — including when that file is
+ * deleted, which the watcher did not react to at all before (#565).
+ */
+describe('shared types across a watch session', () => {
+  /** The catalog OID a query's text asks for, by naming its table. */
+  const oidFor = (text: string): number | undefined =>
+    text.includes('texts') ? 1 : text.includes('numbers') ? 2 : undefined;
+
+  const arrayTypeRow = (oid: number, typname: string) => ({
+    oid,
+    typname,
+    typtype: 'b',
+    enumlabel: null,
+    typelem: 0,
+    typcategory: 'A',
+    typbasetype: 0,
+  });
+
+  /** A database that types the one column of a query from its text. */
+  const db: TypeDb = {
+    describe: async (text: string) => {
+      const typeOID = oidFor(text);
+      return {
+        params: [],
+        fields: typeOID
+          ? [
+              {
+                name: 'col',
+                tableOID: 0,
+                columnAttrNumber: 0,
+                typeOID,
+                typeSize: -1,
+                typeModifier: -1,
+                formatCode: 0,
+              },
+            ]
+          : [],
+      };
+    },
+    rows: async (sql: string) =>
+      sql.includes('pg_type')
+        ? ([
+            arrayTypeRow(1, '_text'),
+            arrayTypeRow(2, '_int4'),
+          ] as unknown as Record<string, unknown>[])
+        : [],
+    explain: async () => undefined,
+  };
+
+  const query = (name: string, table: string) =>
+    `/* @name ${name} */\nSELECT c FROM ${table};\n`;
+
+  const watchConfig = (srcDir: string) =>
+    ({
+      srcDir,
+      sharedTypesFile: 'pgtyped-shared.ts',
+      failOnError: false,
+      camelCaseColumnNames: false,
+      hungarianNotation: false,
+      nonEmptyArrayParams: false,
+      preparedStatements: true,
+      checkPrivileges: false,
+      typesOverrides: {},
+    }) as ParsedConfig;
+
+  async function waitFor(
+    what: string,
+    predicate: () => boolean,
+  ): Promise<void> {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (predicate()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for ${what}`);
+  }
+
+  let transformer: TypescriptAndSqlTransformer | undefined;
+  let logs: ReturnType<typeof vi.spyOn> | undefined;
+
+  afterEach(async () => {
+    await transformer?.close();
+    transformer = undefined;
+    logs?.mockRestore();
+    logs = undefined;
+  });
+
+  test('an alias appears, survives, and is released again', async () => {
+    logs = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pgtyped-watch-')));
+    const shared = join(dir, 'pgtyped-shared.ts');
+    const read = () =>
+      existsSync(shared) ? readFileSync(shared, 'utf-8') : '';
+    writeFileSync(join(dir, 'a.sql'), query('A', 'texts'));
+
+    const registry = new SharedTypeRegistry(watchConfig(dir));
+    transformer = new TypescriptAndSqlTransformer(
+      db,
+      watchConfig(dir),
+      sqlTransform,
+      registry,
+    );
+    await transformer.start(true);
+
+    // add: the first file to need it is what creates the shared file.
+    await waitFor('the shared file to declare nullableStringArray', () =>
+      read().includes('export type nullableStringArray'),
+    );
+    expect(readFileSync(join(dir, 'a.queries.ts'), 'utf-8')).toContain(
+      "import type { nullableStringArray } from './pgtyped-shared.js';",
+    );
+
+    // add: a second file needing the same alias declares it no second time.
+    writeFileSync(join(dir, 'b.sql'), query('B', 'texts'));
+    await waitFor('b.queries.ts to be generated', () =>
+      existsSync(join(dir, 'b.queries.ts')),
+    );
+    expect(read().match(/export type nullableStringArray/g)).toHaveLength(1);
+
+    // change: a.sql stops using it, but b.sql still does.
+    writeFileSync(join(dir, 'a.sql'), query('A', 'numbers'));
+    await waitFor('the shared file to gain nullableNumberArray', () =>
+      read().includes('export type nullableNumberArray'),
+    );
+    expect(read()).toContain('export type nullableStringArray');
+
+    // unlink: the last file needing it is gone, so it goes too — and so does
+    // the declaration file that was generated from it.
+    rmSync(join(dir, 'b.sql'));
+    await waitFor(
+      'the shared file to drop nullableStringArray',
+      () =>
+        read().includes('export type nullableNumberArray') &&
+        !read().includes('export type nullableStringArray'),
+    );
+    expect(existsSync(join(dir, 'b.queries.ts'))).toBe(false);
+    expect(existsSync(join(dir, 'a.queries.ts'))).toBe(true);
+  }, 30_000);
+
+  test('the last alias going leaves no empty file behind', async () => {
+    logs = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pgtyped-watch-')));
+    const shared = join(dir, 'pgtyped-shared.ts');
+    writeFileSync(join(dir, 'a.sql'), query('A', 'texts'));
+
+    const registry = new SharedTypeRegistry(watchConfig(dir));
+    transformer = new TypescriptAndSqlTransformer(
+      db,
+      watchConfig(dir),
+      sqlTransform,
+      registry,
+    );
+    await transformer.start(true);
+    await waitFor('the shared file to be written', () => existsSync(shared));
+
+    rmSync(join(dir, 'a.sql'));
+
+    await waitFor('the shared file to be removed', () => !existsSync(shared));
+  }, 30_000);
+
+  test('the shared file is never itself a query file', () => {
+    const registry = new SharedTypeRegistry(watchConfig('src'));
+
+    expect(registry.isSharedFile('src/pgtyped-shared.ts')).toBe(true);
+    expect(registry.isSharedFile('./src/nested/../pgtyped-shared.ts')).toBe(
+      true,
+    );
+    expect(registry.isSharedFile('src/a.queries.ts')).toBe(false);
   });
 });

@@ -11,7 +11,14 @@ import { camelCase, pascalCase } from 'change-case';
 import path from 'path';
 import { ParsedConfig, TransformConfig } from './config.js';
 import { attachPreparedStatementName } from './preparedStatementName.js';
-import { TypeAllocator, TypeDefinitions, TypeScope } from './types.js';
+import { RUNTIME_MODULE } from './runtimeModule.js';
+import { sharedImportDeclaration, sharedTypesOf } from './sharedTypes.js';
+import {
+  declareImport,
+  TypeAllocator,
+  TypeDefinitions,
+  TypeScope,
+} from './types.js';
 
 export interface IField {
   optional?: boolean;
@@ -437,6 +444,13 @@ export type GeneratedQueryDec = TSTypedQuery | SQLTypedQuery;
 export type TypeDeclarationSet = {
   typedQueries: GeneratedQueryDec[];
   typeDefinitions: TypeDefinitions;
+  /**
+   * The type names the declarations below actually spell out, which is a
+   * subset of what `typeDefinitions` declares: an enum reached only through
+   * an array alias is named by the alias's definition and by nothing else.
+   * See `TypeAllocator.use`.
+   */
+  directUses: Set<string>;
   fileName: string;
 };
 /**
@@ -472,6 +486,7 @@ export async function generateTypedecsFromFile(
   const done = () => ({
     typedQueries,
     typeDefinitions: types.toTypeDefinitions(),
+    directUses: types.directUses,
     fileName,
   });
 
@@ -589,20 +604,60 @@ export function generateDeclarations(typeDecs: GeneratedQueryDec[]): string {
   return typeDeclarations;
 }
 
-export function generateDeclarationFile(typeDecSet: TypeDeclarationSet) {
+/**
+ * The first line of the file generated for `fileName`.
+ *
+ * Also what identifies a generated file as this file's: watch mode reads it
+ * back to decide whether a leftover declaration file belongs to a query file
+ * that has just been deleted.
+ */
+export function declarationFileHeader(fileName: string): string {
   // file paths in generated files must be stable across platforms
   // https://github.com/adelsz/pgtyped/issues/230
   const isWindowsPath = path.sep === '\\';
   // always emit POSIX paths
   const stableFilePath = isWindowsPath
-    ? typeDecSet.fileName.replace(/\\/g, '/')
-    : typeDecSet.fileName;
+    ? fileName.replace(/\\/g, '/')
+    : fileName;
+  return `/** Types generated for queries found in "${stableFilePath}" */\n`;
+}
 
-  let content = `/** Types generated for queries found in "${stableFilePath}" */\n`;
-  content += TypeAllocator.typeDefinitionDeclarations(
-    typeDecSet.fileName,
-    typeDecSet.typeDefinitions,
-  );
+/**
+ * The declarations a generated file makes for itself.
+ *
+ * With a shared types file that is only the runtime import — `TypedQuery` is a
+ * value this file constructs — plus an `import type` for the shared names it
+ * names. Without one, every alias is declared here, which is what every
+ * generated file did before #565 and what `sharedTypesFile: false` restores.
+ */
+function fileLevelDeclarations(
+  typeDecSet: TypeDeclarationSet,
+  sharedSpecifier: string | undefined,
+): string {
+  if (sharedSpecifier === undefined) {
+    return TypeAllocator.typeDefinitionDeclarations(
+      typeDecSet.fileName,
+      typeDecSet.typeDefinitions,
+    );
+  }
+  const runtimeImports = typeDecSet.typeDefinitions.imports[RUNTIME_MODULE];
+  const runtimeDec = runtimeImports
+    ? declareImport(runtimeImports, typeDecSet.fileName)
+    : '';
+  const shared = sharedTypesOf(typeDecSet.typeDefinitions)
+    .map((typ) => typ.name)
+    .filter((name) => typeDecSet.directUses.has(name));
+  return [runtimeDec, sharedImportDeclaration(shared, sharedSpecifier)]
+    .filter((s) => s)
+    .join('\n');
+}
+
+export function generateDeclarationFile(
+  typeDecSet: TypeDeclarationSet,
+  sharedSpecifier?: string,
+) {
+  let content = declarationFileHeader(typeDecSet.fileName);
+  content += fileLevelDeclarations(typeDecSet, sharedSpecifier);
   content += '\n';
   content += generateDeclarations(typeDecSet.typedQueries);
   return content;

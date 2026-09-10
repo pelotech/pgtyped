@@ -30,9 +30,10 @@ import {
   getDriverTypes,
   insertDriverTypes,
   type InsertDriverTypesParams,
-  type PgInterval,
-  type PgPoint,
 } from './driverTypes/driverTypes.queries.js';
+// The driver types are shared, so they are declared once rather than in every
+// generated file that needs them (#565).
+import type { PgInterval, PgPoint } from './pgtyped-shared.js';
 import {
   countNotifications,
   getAllNotifications,

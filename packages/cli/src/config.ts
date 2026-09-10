@@ -6,6 +6,7 @@ import type tls from 'node:tls';
 import { DatabaseConfig, default as dbUrlModule } from 'ts-parse-database-url';
 import { z } from 'zod';
 import { Type } from './db/type.js';
+import { DEFAULT_SHARED_TYPES_FILE } from './sharedTypes.js';
 import { TypeDefinition } from './types.js';
 
 /**
@@ -71,6 +72,32 @@ const TypeOverrideKey = z.string().refine(
 );
 
 /**
+ * Where the type aliases every generated file shares are emitted.
+ *
+ * A path relative to `srcDir`, or `false` to go back to each generated file
+ * declaring its own copy of every alias — which is what made `export *` from
+ * two of them `TS2308: Module ... has already exported a member` (#565).
+ *
+ * The extension is what the file is *written* as; the specifier generated
+ * files import through carries the one the emitted JavaScript will have, since
+ * this package is ESM-only.
+ */
+const SharedTypesFile = z
+  .union([
+    z.literal(false),
+    z.string().refine(
+      (file) => /\.[mc]?ts$/.test(file) && !isAbsolute(file),
+      (file) => ({
+        message:
+          `"${file}" is not a usable shared types file: it must be a TypeScript file name ` +
+          `relative to srcDir, ending in .ts, .mts or .cts. Set it to false to turn shared ` +
+          `types off instead.`,
+      }),
+    ),
+  ])
+  .default(DEFAULT_SHARED_TYPES_FILE);
+
+/**
  * Every object in the config is strict, not just the top level. A key the
  * schema does not know is silently dropped otherwise, and a dropped key is
  * indistinguishable from one that was never set: `db: { dbname: 'x' }` fell
@@ -88,6 +115,7 @@ const Config = z
     nonEmptyArrayParams: z.boolean().default(false),
     preparedStatements: z.boolean().default(true),
     checkPrivileges: z.boolean().default(false),
+    sharedTypesFile: SharedTypesFile,
     dbUrl: z.string().optional(),
     db: z
       .object({
@@ -145,6 +173,7 @@ export interface ParsedConfig {
   nonEmptyArrayParams: boolean;
   preparedStatements: boolean;
   checkPrivileges: boolean;
+  sharedTypesFile: string | false;
   transforms: TransformConfig[];
   srcDir: string;
   typesOverrides: Record<string, Partial<TypeDefinition>>;
@@ -345,6 +374,7 @@ export function parseConfig(
     nonEmptyArrayParams,
     preparedStatements,
     checkPrivileges,
+    sharedTypesFile,
     typesOverrides,
   } = result.data;
 
@@ -436,6 +466,7 @@ export function parseConfig(
     nonEmptyArrayParams,
     preparedStatements,
     checkPrivileges,
+    sharedTypesFile,
     typesOverrides: parsedTypesOverrides,
   };
 }

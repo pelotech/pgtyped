@@ -1,11 +1,7 @@
 /** Types generated for queries found in "src/notifications/notifications.sql" */
 import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
-export type notification_type = 'deadline' | 'notification' | 'reminder';
-
-export type DateOrString = Date | string;
-
-export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+import type { DateOrString, Json, notification_type } from '../pgtyped-shared.js';
 
 /** 'SendNotifications' parameters type */
 export interface SendNotificationsParams {
