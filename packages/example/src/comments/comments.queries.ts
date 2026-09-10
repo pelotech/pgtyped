@@ -20,7 +20,7 @@ export interface GetAllCommentsQuery {
   result: GetAllCommentsResult;
 }
 
-const getAllCommentsIR: any = {"queryName":"GetAllComments","statement":"SELECT * FROM book_comments WHERE id = :id! OR user_id = :id","params":[{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":39,"b":43},{"a":57,"b":60}]}],"columns":[],"name":"GetAllComments_37fd5e0f"};
+const getAllCommentsIR: any = {"queryName":"GetAllComments","statement":"SELECT * FROM book_comments WHERE id = :id! OR user_id = :id","params":[{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":39,"b":43},{"a":57,"b":60}]}],"columns":[],"name":"GetAllComments_e22729a0"};
 
 /**
  * Query generated from SQL:

@@ -5,6 +5,7 @@
 // the dependency list empty by hand-rolling a hash.
 import { createHash } from 'node:crypto';
 import type { QueryIR } from './ir.js';
+import { render } from './render.js';
 
 /** Postgres truncates identifiers at NAMEDATALEN - 1 = 63 bytes. */
 const MAX_STATEMENT_NAME_BYTES = 63;
@@ -46,6 +47,11 @@ const DERIVED_PREFIX = 'pgtyped';
  *
  * Only referenced params are in the IR, so a declared-but-unused spread param
  * cannot vary the rendered text and does not appear here at all.
+ *
+ * What is left — `scalar` and `pick_tuple` — renders one `$n` per param and one
+ * `$n` per declared key respectively, both decided by the IR alone. So for
+ * every query this admits, the codegen render and the runtime render are the
+ * same text, which is what makes it safe for `statementHash` to use the former.
  */
 function rendersFixedSQL(ir: QueryIR): boolean {
   return ir.params.every(
@@ -56,12 +62,24 @@ function rendersFixedSQL(ir: QueryIR): boolean {
 }
 
 /**
- * Hash the exact statement text, never a normalized form: two queries whose
- * texts differ must never converge on one name.
+ * Hash the SQL the server will actually see, never `ir.statement` and never a
+ * normalized form.
+ *
+ * `ir.statement` still carries `:name` references and, being only the body,
+ * says nothing about the header that decides what those references expand to.
+ * Two queries can therefore share a statement text down to the byte and still
+ * render different SQL — `@param u -> (id, val)` against `@param u -> (id)`
+ * over the same `INSERT INTO t VALUES :u`. Hashing the body would give both
+ * the same name, and node-postgres rejects the second with "Prepared
+ * statements must be unique".
+ *
+ * Rendering with no params is the codegen form, which is the text sent to
+ * Describe. Only a query that renders a fixed SQL text gets here, so that text
+ * is also what every run of it sends — see `rendersFixedSQL`.
  */
 function statementHash(ir: QueryIR, length: number): string {
   return createHash('sha256')
-    .update(ir.statement)
+    .update(render(ir).query)
     .digest('hex')
     .slice(0, length);
 }

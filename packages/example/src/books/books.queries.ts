@@ -23,7 +23,7 @@ export interface FindBookByIdQuery {
   result: FindBookByIdResult;
 }
 
-const findBookByIdIR: any = {"queryName":"FindBookById","statement":"SELECT * FROM books WHERE id = :id","params":[{"name":"id","transform":{"type":"scalar"},"required":false,"locs":[{"a":31,"b":34}]}],"columns":[],"name":"FindBookById_ddfa9eb1"};
+const findBookByIdIR: any = {"queryName":"FindBookById","statement":"SELECT * FROM books WHERE id = :id","params":[{"name":"id","transform":{"type":"scalar"},"required":false,"locs":[{"a":31,"b":34}]}],"columns":[],"name":"FindBookById_022dda1d"};
 
 /**
  * Query generated from SQL:
@@ -54,7 +54,7 @@ export interface FindBookByCategoryQuery {
   result: FindBookByCategoryResult;
 }
 
-const findBookByCategoryIR: any = {"queryName":"FindBookByCategory","statement":"SELECT * FROM books WHERE :category = ANY(categories)","params":[{"name":"category","transform":{"type":"scalar"},"required":false,"locs":[{"a":26,"b":35}]}],"columns":[],"name":"FindBookByCategory_3c5a2356"};
+const findBookByCategoryIR: any = {"queryName":"FindBookByCategory","statement":"SELECT * FROM books WHERE :category = ANY(categories)","params":[{"name":"category","transform":{"type":"scalar"},"required":false,"locs":[{"a":26,"b":35}]}],"columns":[],"name":"FindBookByCategory_f96678fb"};
 
 /**
  * Query generated from SQL:
@@ -83,7 +83,7 @@ export interface FindBookNameOrRankQuery {
   result: FindBookNameOrRankResult;
 }
 
-const findBookNameOrRankIR: any = {"queryName":"FindBookNameOrRank","statement":"SELECT id, name\nFROM books\nWHERE (name = :name OR rank = :rank)","params":[{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":41,"b":46}]},{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":57,"b":62}]}],"columns":[],"name":"FindBookNameOrRank_e90a7d76"};
+const findBookNameOrRankIR: any = {"queryName":"FindBookNameOrRank","statement":"SELECT id, name\nFROM books\nWHERE (name = :name OR rank = :rank)","params":[{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":41,"b":46}]},{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":57,"b":62}]}],"columns":[],"name":"FindBookNameOrRank_4c0acb83"};
 
 /**
  * Query generated from SQL:
@@ -173,7 +173,7 @@ export interface UpdateBooksCustomQuery {
   result: UpdateBooksCustomResult;
 }
 
-const updateBooksCustomIR: any = {"queryName":"UpdateBooksCustom","statement":"UPDATE books\nSET\n    rank = (\n        CASE WHEN (:rank::int IS NOT NULL)\n                 THEN :rank\n             ELSE rank\n            END\n        )\nWHERE id = :id!","params":[{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":49,"b":54},{"a":95,"b":100}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":161,"b":165}]}],"columns":[],"name":"UpdateBooksCustom_909552dd"};
+const updateBooksCustomIR: any = {"queryName":"UpdateBooksCustom","statement":"UPDATE books\nSET\n    rank = (\n        CASE WHEN (:rank::int IS NOT NULL)\n                 THEN :rank\n             ELSE rank\n            END\n        )\nWHERE id = :id!","params":[{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":49,"b":54},{"a":95,"b":100}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":161,"b":165}]}],"columns":[],"name":"UpdateBooksCustom_2665a068"};
 
 /**
  * Query generated from SQL:
@@ -208,7 +208,7 @@ export interface UpdateBooksQuery {
   result: UpdateBooksResult;
 }
 
-const updateBooksIR: any = {"queryName":"UpdateBooks","statement":"UPDATE books\n/* ignored comment */\nSET\n    name = :name,\n    rank = :rank\nWHERE id = :id!","params":[{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":50,"b":55}]},{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":68,"b":73}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":85,"b":89}]}],"columns":[],"name":"UpdateBooks_1ac11860"};
+const updateBooksIR: any = {"queryName":"UpdateBooks","statement":"UPDATE books\n/* ignored comment */\nSET\n    name = :name,\n    rank = :rank\nWHERE id = :id!","params":[{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":50,"b":55}]},{"name":"rank","transform":{"type":"scalar"},"required":false,"locs":[{"a":68,"b":73}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":85,"b":89}]}],"columns":[],"name":"UpdateBooks_7e26a3f7"};
 
 /**
  * Query generated from SQL:
@@ -240,7 +240,7 @@ export interface UpdateBooksRankNotNullQuery {
   result: UpdateBooksRankNotNullResult;
 }
 
-const updateBooksRankNotNullIR: any = {"queryName":"UpdateBooksRankNotNull","statement":"UPDATE books\nSET\n    rank = :rank!,\n    name = :name\nWHERE id = :id!","params":[{"name":"rank","transform":{"type":"scalar"},"required":true,"locs":[{"a":28,"b":34}]},{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":52}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":64,"b":68}]}],"columns":[],"name":"UpdateBooksRankNotNull_90468f52"};
+const updateBooksRankNotNullIR: any = {"queryName":"UpdateBooksRankNotNull","statement":"UPDATE books\nSET\n    rank = :rank!,\n    name = :name\nWHERE id = :id!","params":[{"name":"rank","transform":{"type":"scalar"},"required":true,"locs":[{"a":28,"b":34}]},{"name":"name","transform":{"type":"scalar"},"required":false,"locs":[{"a":47,"b":52}]},{"name":"id","transform":{"type":"scalar"},"required":true,"locs":[{"a":64,"b":68}]}],"columns":[],"name":"UpdateBooksRankNotNull_1ad5fab6"};
 
 /**
  * Query generated from SQL:
@@ -275,7 +275,7 @@ export interface GetBooksByAuthorNameQuery {
   result: GetBooksByAuthorNameResult;
 }
 
-const getBooksByAuthorNameIR: any = {"queryName":"GetBooksByAuthorName","statement":"SELECT b.* FROM books b\nINNER JOIN authors a ON a.id = b.author_id\nWHERE a.first_name || ' ' || a.last_name = :authorName!","params":[{"name":"authorName","transform":{"type":"scalar"},"required":true,"locs":[{"a":110,"b":122}]}],"columns":[],"name":"GetBooksByAuthorName_7bd4d355"};
+const getBooksByAuthorNameIR: any = {"queryName":"GetBooksByAuthorName","statement":"SELECT b.* FROM books b\nINNER JOIN authors a ON a.id = b.author_id\nWHERE a.first_name || ' ' || a.last_name = :authorName!","params":[{"name":"authorName","transform":{"type":"scalar"},"required":true,"locs":[{"a":110,"b":122}]}],"columns":[],"name":"GetBooksByAuthorName_3e1d7b25"};
 
 /**
  * Query generated from SQL:
@@ -305,7 +305,7 @@ export interface AggregateEmailsAndTestQuery {
   result: AggregateEmailsAndTestResult;
 }
 
-const aggregateEmailsAndTestIR: any = {"queryName":"AggregateEmailsAndTest","statement":"SELECT array_agg(email) as emails, array_agg(age) = :testAges as ageTest FROM users","params":[{"name":"testAges","transform":{"type":"scalar"},"required":false,"locs":[{"a":52,"b":61}]}],"columns":[{"name":"emails","nullable":false}],"name":"AggregateEmailsAndTest_93e89f71"};
+const aggregateEmailsAndTestIR: any = {"queryName":"AggregateEmailsAndTest","statement":"SELECT array_agg(email) as emails, array_agg(age) = :testAges as ageTest FROM users","params":[{"name":"testAges","transform":{"type":"scalar"},"required":false,"locs":[{"a":52,"b":61}]}],"columns":[{"name":"emails","nullable":false}],"name":"AggregateEmailsAndTest_aaac17ea"};
 
 /**
  * Query generated from SQL:

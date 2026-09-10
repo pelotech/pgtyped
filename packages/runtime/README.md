@@ -134,7 +134,7 @@ node-postgres' `Client` and `Pool` satisfy this as they are, so the usual thing 
 
 ### Prepared statements
 
-With `preparedStatements` enabled in the CLI config (the default since 3.0), codegen writes a statement name into each eligible query, such as `FindBookById_ddfa9eb1`. The runtime sends that name, and Postgres parses and plans the statement once per connection and reuses it thereafter. `TypedQuery.name` exposes the name, or `undefined` if the query has none.
+With `preparedStatements` enabled in the CLI config (the default since 3.0), codegen writes a statement name into each eligible query, such as `FindBookById_022dda1d`. The runtime sends that name, and Postgres parses and plans the statement once per connection and reuses it thereafter. `TypedQuery.name` exposes the name, or `undefined` if the query has none.
 
 Two kinds of query carry no name, for two different reasons.
 
@@ -150,7 +150,7 @@ A query object carries two identifiers, and they answer different questions:
 
 ```ts
 findBookById.queryName; // 'FindBookById'
-findBookById.name; // 'FindBookById_ddfa9eb1', or undefined
+findBookById.name; // 'FindBookById_022dda1d', or undefined
 ```
 
 `queryName` is the query's own name — a `.sql` file's `@name`, or the name passed to `sql.prepared`. It is a `string`, never `undefined`, and it does not move: editing the SQL leaves it alone. That makes it the thing to key a metrics label, an OpenTelemetry span name or a slow-query log on:
@@ -163,7 +163,7 @@ metrics.histogram('db.query.duration', performance.now() - started, {
 });
 ```
 
-`name` is the prepared statement name, which is the identifier the _server_ knows — what you see in `pg_prepared_statements` and in a `Prepared statements must be unique` error. It is `undefined` for the three cases above (`preparedStatements: false`, a plain `sql` tag, a query with a spread parameter), and where it is set its `_ddfa9eb1` suffix is a hash of the SQL text, so it changes every time the query is edited. Both properties make it unusable as a stable identifier for anything you aggregate over time.
+`name` is the prepared statement name, which is the identifier the _server_ knows — what you see in `pg_prepared_statements` and in a `Prepared statements must be unique` error. It is `undefined` for the three cases above (`preparedStatements: false`, a plain `sql` tag, a query with a spread parameter), and where it is set its `_022dda1d` suffix is a hash of the SQL text, so it changes every time the query is edited. Both properties make it unusable as a stable identifier for anything you aggregate over time.
 
 One case to know about: a tag has no name of its own at runtime unless you give it one. Codegen derives a tag's name from the variable it is assigned to, but that happens while generating types and never reaches the query object, so a plain `sql` tag and a `sql.prepared()` called with no name both report `queryName` as the placeholder `'query'`. Pass a name to `sql.prepared` for any tag you intend to measure.
 
