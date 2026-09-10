@@ -612,3 +612,78 @@ test('renders tag-style $ references identically', () => {
     bindings: [1, 2, 3],
   });
 });
+
+/**
+ * An empty array used to render `IN ()` — or `VALUES ()` from a pick spread —
+ * and the first thing the caller heard about it was `42601 syntax error at or
+ * near ")"` from the server, pointing at a paren in SQL they never wrote
+ * (upstream #221, #314, #273). What is thrown here names the call site
+ * instead. It deliberately does *not* invent a rendering: there is no text
+ * that means "zero rows" in every position.
+ */
+describe('an empty array in a spread', () => {
+  const spread = `
+  /*
+    @name selectSomeUsers
+    @param ids -> (...)
+  */
+  SELECT id, name FROM books WHERE id IN :ids;`;
+
+  const pickSpread = `
+  /*
+    @name insertUsers
+    @param users -> ((name, age)...)
+  */
+  INSERT INTO users (name, age) VALUES :users RETURNING id;`;
+
+  test('(array_spread) throws before the SQL is built', () => {
+    const queryIR = parseSqlFile(spread).queries[0];
+    expect(() => render(queryIR, { ids: [] })).toThrow(
+      `Query selectSomeUsers was passed an empty array for parameter "ids" (array_spread): ` +
+        `a spread renders one placeholder per element, and there is no SQL for zero of them — ` +
+        `"IN ()" is a syntax error, and no substitute is correct in every position. Check the ` +
+        `array is non-empty before running the query. The nonEmptyArrayParams codegen option ` +
+        `makes a statically empty array a compile error, but cannot see the length of one built ` +
+        `at runtime.`,
+    );
+  });
+
+  // The two render through different branches, and this is the shape #221
+  // reported: `INSERT INTO jt (id, doc) VALUES ()`.
+  test('(pick_array_spread) throws before the SQL is built', () => {
+    const queryIR = parseSqlFile(pickSpread).queries[0];
+    expect(() => render(queryIR, { users: [] })).toThrow(
+      /empty array for parameter "users" \(pick_array_spread\)/,
+    );
+  });
+
+  test('(tag) a $$ spread throws the same way', () => {
+    const queryIR = parseTagged(
+      'SELECT id, name FROM books WHERE id IN $$ids',
+      'selectSomeUsers',
+    );
+    expect(() => render(queryIR, { ids: [] })).toThrow(
+      /empty array for parameter "ids" \(array_spread\)/,
+    );
+  });
+
+  test('one element still renders, and so does the mapping form', () => {
+    const spreadIR = parseSqlFile(spread).queries[0];
+    expect(render(spreadIR, { ids: [1] }).query).toBe(
+      'SELECT id, name FROM books WHERE id IN ($1)',
+    );
+    // The no-params form describes the shape of the query rather than one
+    // call, so it has no array to be empty.
+    expect(render(spreadIR).query).toBe(
+      'SELECT id, name FROM books WHERE id IN ($1)',
+    );
+
+    const pickIR = parseSqlFile(pickSpread).queries[0];
+    expect(render(pickIR, { users: [{ name: 'Bob', age: 12 }] }).query).toBe(
+      'INSERT INTO users (name, age) VALUES ($1,$2) RETURNING id',
+    );
+    expect(render(pickIR).query).toBe(
+      'INSERT INTO users (name, age) VALUES ($1,$2) RETURNING id',
+    );
+  });
+});

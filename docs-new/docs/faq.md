@@ -39,11 +39,23 @@ pulled in, so generated code runs anywhere the runtime does.
 
 ### Why does an empty array parameter fail at runtime?
 
-A spread parameter renders its elements into a parenthesised list, so an empty array renders `IN ()`,
-which is a syntax error. There is no SQL that means "zero rows" in every position, so PgTyped cannot
-rewrite it for you. Set `nonEmptyArrayParams: true` to type such parameters as
-`readonly [T, ...T[]]`, which makes an empty *literal* a compile error — but an array whose length is
-not known statically still reaches the server. Branch on `length` before running the query.
+A spread parameter renders one placeholder per element, so an empty array renders nothing between the
+parens — `IN ()`, or `VALUES ()` for a spread-and-pick — which is a syntax error. There is no SQL
+that means "zero rows" in every position (`IN (NULL)` is right for `IN` and wrong for `VALUES`, where
+it would insert a row), so PgTyped cannot rewrite it for you.
+
+It does refuse it early. `run`, `execute` and `compile` throw before anything is sent, naming the
+query, the parameter and its transform:
+
+```
+Query selectSomeUsers was passed an empty array for parameter "ids" (array_spread): a spread renders
+one placeholder per element, and there is no SQL for zero of them …
+```
+
+That replaces the server's `42601 syntax error at or near ")"`, which pointed at a paren in SQL you
+never wrote. Branch on `length` before running the query. Set `nonEmptyArrayParams: true` to type
+such parameters as `readonly [T, ...T[]]` and catch the empty *literal* at compile time — an array
+whose length is only known at runtime is still caught by the throw.
 
 ### How do I generate types against a non-default schema?
 

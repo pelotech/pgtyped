@@ -56,10 +56,11 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Four entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Five entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
-escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, and
-duplicate keys in a generated interface. The last three entries below are not bugs but adoptions — the
+escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
+keys in a generated interface, and the diagnosis for an empty array in a spread (the rendering
+question it raises is recorded there and stays open). The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -758,6 +759,67 @@ wanted, and would have silently failed before
 `{ return }` form, that every bad key is reported rather than only the first, and that a plain type
 name — the thing this must not break — still parses into the same override it always did.
 
+### Empty array in a spread rendered `IN ()` — issues #221, #314, #273 — **FIXED (the diagnosis)**
+
+Reproduced in three shapes:
+
+```
+compile({ids:[1,2,3]}) -> {"text":"SELECT id, name FROM books WHERE id IN ($1,$2,$3)","values":[1,2,3]}
+compile({ids:[]})      -> {"text":"SELECT id, name FROM books WHERE id IN ()","values":[]}
+run(c, {ids:[]})       -> THREW: 42601 syntax error at or near ")"
+```
+
+- **#221** — `@param things -> ((column1, column2)…)` with `things: []` renders
+  `INSERT INTO jt (id, doc) VALUES ()` → `42601 syntax error at or near ")"`, the exact error in the
+  report.
+- **#314** — `SELECT * FROM jt WHERE id IN ()` → `42601`. Same root cause.
+- **#273** — `$$evtTypes is NULL or evt_type in $$evtTypes` with `evtTypes: []` renders
+  `( () is NULL or evt_type in () )` → `42601`.
+
+**What is fixed is the report, not the rendering, and the split is deliberate.** There is still **no
+correct SQL for "zero rows" in every position**: `IN (NULL)` is right for `IN` and wrong for
+`VALUES`, where it would insert a row, and skipping the statement or substituting `WHERE false`
+changes what the query means. That needs a design decision, and this is not it. What needed no
+decision at all is _who_ the error is reported to. The user used to be handed the server's
+`42601 syntax error at or near ")"`, which points at a paren in SQL they never wrote, in a statement
+PgTyped generated, and names neither the parameter nor the call.
+
+`render` now refuses an empty array before anything is sent, from both spread branches:
+
+```
+Query selectSomeUsers was passed an empty array for parameter "ids" (array_spread): a spread renders
+one placeholder per element, and there is no SQL for zero of them — "IN ()" is a syntax error, and no
+substitute is correct in every position. Check the array is non-empty before running the query. The
+nonEmptyArrayParams codegen option makes a statically empty array a compile error, but cannot see the
+length of one built at runtime.
+```
+
+It names the query, the parameter and its transform, so it identifies the offending call rather than
+the SQL — which is the half of these three reports that was always answerable. `compile`, `execute`
+and `run` all go through `render`, so all three refuse it, and nothing reaches the server.
+
+**`nonEmptyArrayParams` keeps its default, and that is a decision rather than an omission.** It types
+the param as `readonly [T, ...T[]]` and covers both `array_spread` and `pick_array_spread` —
+verified: `ids: readonly [number | null | void, ...(number | null | void)[]]`, so the empty literal
+becomes a compile error. But it is a **type-level guard only**: an array whose length is not known
+statically was never covered by it, which is why the runtime check is the one that closes these
+issues. Turning it on by default would be a breaking change to every project that passes an array
+variable, and 3.0.0 has shipped; that belongs to the next major. The two guards are complements —
+one catches the literal at compile time, the other catches the variable at call time.
+
+**The documentation gap the earlier note asked for is closed.** `docs-new/docs/cli.md` described
+`nonEmptyArrayParams` without ever mentioning `IN ()` or the runtime error it exists to prevent, and
+`docs-new/docs/dynamic-queries.md` recommended the `:param::TEXT IS NULL` optional-filter pattern
+without saying that it works for **scalars only** — a spread has no value that means "no filter",
+since `null` is not an array and `[]` renders nothing between the parens. Both now say so, and the
+FAQ entry describes the throw rather than the syntax error.
+
+**Regression cover.** `packages/runtime/src/render.test.ts` pins the message verbatim for
+`array_spread` and, since the two render through different branches, separately for
+`pick_array_spread` — plus the `$$ids` tag form, and the cases that must keep working: a
+one-element array, and the no-params mapping form, which describes the shape of the query rather
+than one call and so has no array to be empty.
+
 ### Duplicate keys in generated interfaces — not reported upstream — **FIXED**
 
 Two result columns landing on the same field name emitted a TypeScript interface that will not
@@ -940,39 +1002,6 @@ accepted input is not the bug reported.
 `packages/cli/src/types.ts`, plus tests, plus regenerating `packages/example`. Breaking for consumers
 who index array results without a null check — which is the point:
 `row.tags.map(t => t.toUpperCase())` stops being a silent `TypeError` waiting to happen.
-
-### Empty array in a spread renders `IN ()` — issues #221, #314, #273
-
-Reproduced in three shapes:
-
-```
-compile({ids:[1,2,3]}) -> {"text":"SELECT id, name FROM books WHERE id IN ($1,$2,$3)","values":[1,2,3]}
-compile({ids:[]})      -> {"text":"SELECT id, name FROM books WHERE id IN ()","values":[]}
-run(c, {ids:[]})       -> THREW: 42601 syntax error at or near ")"
-```
-
-- **#221** — `@param things -> ((column1, column2)…)` with `things: []` renders
-  `INSERT INTO jt (id, doc) VALUES ()` → `42601 syntax error at or near ")"`, the exact error in the
-  report.
-- **#314** — `SELECT * FROM jt WHERE id IN ()` → `42601`. Same root cause.
-- **#273** — `$$evtTypes is NULL or evt_type in $$evtTypes` with `evtTypes: []` renders
-  `( () is NULL or evt_type in () )` → `42601`.
-
-`render.ts` joins an empty list to `''` and wraps it in parens. **There is no correct SQL for "zero
-rows" in every position**, so this needs a decision (skip the statement, `WHERE false`, per
-transform) rather than a patch.
-
-**The mitigation that exists is `nonEmptyArrayParams`**, off by default
-(`packages/cli/src/generator.ts`). It types the param as `readonly [T, ...T[]]` and covers both
-`array_spread` and `pick_array_spread` — verified: `ids: readonly [number | null | void, ...(number
-| null | void)[]]`, so the empty literal becomes a compile error. It is a **type-level guard only**:
-an array whose length is not known statically still reaches `IN ()` at runtime.
-
-Two follow-ups worth deciding together: **default `nonEmptyArrayParams` to true** — 3.0 is the one
-release where a default can move, and it is the only mitigation that exists — and add the caveat to
-`docs-new/docs/dynamic-queries.md`, which recommends the `:param :: TEXT IS NULL` pattern without
-saying it only works for scalars and cannot be used with a spread. `docs-new/docs/cli.md` describes
-`nonEmptyArrayParams` but never mentions `IN ()` or the runtime error.
 
 ### No way to type the keys of a `VALUES :rows` pick — issues #498, #517, #630
 
@@ -1408,7 +1437,7 @@ Every triaged number, and where it is covered.
 
 **Issues (70).**
 #50 NA · #143 feature · #151 fixed · #159 fixed · #170 limitation/docs fixed · #202 feature ·
-#213 **FIXED here** · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
+#213 **FIXED here** · #221 **FIXED here** (diagnosis) · #263 limitation · #273 **FIXED here** (diagnosis) · #292 fixed · #314 **FIXED here** (diagnosis) · #316 NA ·
 #317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
 #460 open · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·

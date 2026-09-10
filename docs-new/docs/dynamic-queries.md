@@ -41,6 +41,16 @@ fails with `could not determine data type of parameter $1`. Casting the first me
 This works because the filter is written over a *value*. Everything the query reads — the table, the columns — is still
 written out in the SQL.
 
+:::caution
+**This pattern is for scalar parameters only.** A spread — `@param ids -> (...)`, or `$$ids` in a tag — renders one
+placeholder per element, so there is no value of it that means "no filter": `null` is not an array, and `[]` renders
+nothing between the parens. `(:ids::INT[] IS NULL OR id IN :ids)` therefore cannot be made to work; PgTyped throws on
+the empty array before the query is sent, naming the parameter, rather than letting the server reject `IN ()` with
+`42601 syntax error at or near ")"`. Branch in TypeScript instead — skip the call when the list is empty, or pick
+between two queries, one with the `IN` and one without. See
+[Why does an empty array parameter fail at runtime?](faq#why-does-an-empty-array-parameter-fail-at-runtime).
+:::
+
 ### Sorting by a dynamic column
 
 Sorting by a column chosen at runtime is the case where the value/identifier distinction bites, because the broken
