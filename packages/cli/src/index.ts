@@ -1,11 +1,6 @@
-#!/usr/bin/env node
-
-import chokidar from 'chokidar';
 import nun from 'nunjucks';
 import pg from 'pg';
-import yargs from 'yargs';
-import { hideBin } from 'yargs/helpers';
-import { parseConfig, ParsedConfig, TransformConfig } from './config.js';
+import { ParsedConfig, TransformConfig } from './config.js';
 import { typeDb, verifyConnection } from './db/type-db.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
 import { debug, fatal, MAX_CONCURRENCY } from './util.js';
@@ -14,13 +9,22 @@ import { debug, fatal, MAX_CONCURRENCY } from './util.js';
 
 nun.configure({ autoescape: false });
 
-async function main(
+/**
+ * Runs codegen once, or starts it watching.
+ *
+ * Returns the exit code the run earned, or `undefined` in watch mode, where
+ * the run has no end: the pool and the file watchers stay open and the caller
+ * is expected to keep the process alive. `cli.ts` owns the exit; nothing here
+ * ends the process except an unrecoverable failure, so importing this module
+ * cannot take a host process down with it (see the note in `cli.ts`).
+ */
+export async function main(
   cfg: ParsedConfig | Promise<ParsedConfig>,
   // tslint:disable-next-line:no-shadowed-variable
   isWatchMode: boolean,
   // tslint:disable-next-line:no-shadowed-variable
   fileOverride?: string,
-) {
+): Promise<number | undefined> {
   const config = await cfg;
   debug('starting codegenerator');
 
@@ -61,7 +65,7 @@ async function main(
 
   // In watch mode the pool stays open for the lifetime of the process.
   if (isWatchMode) {
-    return;
+    return undefined;
   }
 
   let transforms;
@@ -70,74 +74,18 @@ async function main(
   } catch {
     // The failing file has already been reported; failOnError got us here.
     await pool.end();
-    process.exit(1);
+    return 1;
   }
+  let exitCode = 0;
   if (fileOverride && !transforms.some((x) => x)) {
-    console.log(
+    // A `--file` that matched nothing generated nothing, and said so on
+    // stdout while exiting 0 — so a targeted regeneration step could silently
+    // do nothing and still report success (#579).
+    console.error(
       'File override specified, but file was not found in provided transforms',
     );
+    exitCode = 1;
   }
   await pool.end();
-  process.exit(0);
-}
-
-const args = yargs(hideBin(process.argv))
-  .version()
-  .env()
-  .options({
-    config: {
-      alias: 'c',
-      type: 'string',
-      description: 'Config file path',
-      demandOption: true,
-    },
-    watch: {
-      alias: 'w',
-      description: 'Watch mode',
-      type: 'boolean',
-    },
-    uri: {
-      type: 'string',
-      description: 'DB connection URI (overrides config)',
-    },
-    file: {
-      alias: 'f',
-      type: 'string',
-      conflicts: 'watch',
-      description: 'File path (process single file, incompatible with --watch)',
-    },
-  })
-  .epilogue('For more information, find our manual at https://pgtyped.dev/')
-  .parseSync();
-
-const {
-  watch: isWatchMode,
-  file: fileOverride,
-  config: configPath,
-  uri: connectionUri,
-} = args;
-
-if (typeof configPath !== 'string') {
-  fatal('Config file required. See help -h for details.\nExiting.');
-}
-
-if (isWatchMode && fileOverride) {
-  fatal('File override is not compatible with watch mode.\nExiting.');
-}
-
-try {
-  chokidar.watch(configPath, {}).on('change', () => {
-    // Not a failure: the config the run was started with is gone, so the run
-    // ends deliberately and the user (or their supervisor process) restarts
-    // it against the new one. Exiting non-zero here would report a broken
-    // build every time someone edited the config in watch mode.
-    console.log('Config file changed. Exiting.');
-    process.exit(0);
-  });
-  const config = parseConfig(configPath, connectionUri);
-  main(config, isWatchMode || false, fileOverride).catch((e) =>
-    fatal('Codegen failed:', e),
-  );
-} catch (e) {
-  fatal('Failed to parse config file:', e);
+  return exitCode;
 }

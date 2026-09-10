@@ -80,4 +80,4 @@ For example, when parsing source/query file `/home/user/dir/file.sql`, these par
 ---
 
 This package is part of the PgTyped project.  
-Refer to root [README](https://github.com/adelsz/pgtyped) for details.
+Refer to root [README](https://github.com/pelotech/pgtyped) for details.

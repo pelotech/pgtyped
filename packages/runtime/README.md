@@ -144,6 +144,29 @@ A query written with a plain `sql` tag **is not** named, which is a default rath
 
 Queries with no name are simply sent unnamed, and `TypedQuery.name` is `undefined` for them.
 
+#### `queryName`, which is not `name`
+
+A query object carries two identifiers, and they answer different questions:
+
+```ts
+findBookById.queryName; // 'FindBookById'
+findBookById.name; // 'FindBookById_ddfa9eb1', or undefined
+```
+
+`queryName` is the query's own name — a `.sql` file's `@name`, or the name passed to `sql.prepared`. It is a `string`, never `undefined`, and it does not move: editing the SQL leaves it alone. That makes it the thing to key a metrics label, an OpenTelemetry span name or a slow-query log on:
+
+```ts
+const started = performance.now();
+const rows = await findBookById.run(client, { bookId: 5 });
+metrics.histogram('db.query.duration', performance.now() - started, {
+  query: findBookById.queryName,
+});
+```
+
+`name` is the prepared statement name, which is the identifier the _server_ knows — what you see in `pg_prepared_statements` and in a `Prepared statements must be unique` error. It is `undefined` for the three cases above (`preparedStatements: false`, a plain `sql` tag, a query with a spread parameter), and where it is set its `_ddfa9eb1` suffix is a hash of the SQL text, so it changes every time the query is edited. Both properties make it unusable as a stable identifier for anything you aggregate over time.
+
+One case to know about: a tag has no name of its own at runtime unless you give it one. Codegen derives a tag's name from the variable it is assigned to, but that happens while generating types and never reaches the query object, so a plain `sql` tag and a `sql.prepared()` called with no name both report `queryName` as the placeholder `'query'`. Pass a name to `sql.prepared` for any tag you intend to measure.
+
 #### `RunOptions`
 
 Every call takes an optional last argument:
@@ -339,6 +362,80 @@ resolves the queries — and generates their types — against `tenant1`. It wor
 `@pelotech/pgtyped-parser`, `@pelotech/pgtyped-query` and `@pelotech/pgtyped-wire` are gone. Nothing they exported was public API, so remove them from your `package.json` and delete any imports; everything you need is in `@pelotech/pgtyped-runtime`.
 
 `typescript` is now an **optional** peer dependency of the CLI, supported at `>=5 <7` and loaded lazily. If all your transforms are `sql` mode, you no longer need it installed for PgTyped's sake.
+
+### Regenerate: six types were declared as something the driver never returns
+
+Six entries in the built-in type mapping disagreed with what node-postgres actually hands back, for as long as PgTyped has existed. They are corrected in 3.0, which changes generated output — **regenerate, then compile.** The compiler will find the affected code, because every one of these is a type change rather than a rename.
+
+| Postgres type | was          | is now       | what you actually get |
+| ------------- | ------------ | ------------ | --------------------- |
+| `interval`    | `string`     | `PgInterval` | `{ hours: 1 }`        |
+| `time`        | `Date`       | `string`     | `'01:02:03'`          |
+| `timetz`      | `Date`       | `string`     | `'01:02:03+00'`       |
+| `bit`         | `boolean`    | `string`     | `'101'`               |
+| `numeric[]`   | `(string)[]` | `(number)[]` | `[1.5]`               |
+| `point`       | `(number)[]` | `PgPoint`    | `{ x: 1, y: 2 }`      |
+
+A lone `numeric` is unchanged: it really is a `string`, and stays one. Only the array form differs, because pg-types keeps the full precision of a scalar `numeric` but parses the elements of a `numeric[]` with `parseFloat`. `date`, `timestamp` and `timestamptz` are unchanged too, and really are `Date`s.
+
+`PgInterval` and `PgPoint` are emitted into the generated file itself, like `Json` and `DateOrString`, so nothing new is added to your dependencies:
+
+```ts
+export type PgPoint = { x: number; y: number };
+
+export type PgInterval = {
+  years?: number;
+  months?: number;
+  days?: number;
+  hours?: number;
+  minutes?: number;
+  seconds?: number;
+  milliseconds?: number;
+  toPostgres(): string;
+  toISO(): string;
+  toISOString(): string;
+};
+```
+
+`PgInterval` is the shape of the `PostgresInterval` that node-postgres returns. **Every field is optional**, because the parser sets only the ones the interval uses — `'1 hour'` parses to `{ hours: 1 }`, and `'0 seconds'` to `{}`. So test the field, do not assume it is `0`:
+
+```ts
+// wrong: `hours` is absent, not zero, for an interval of '3 days'
+const h = row.duration.hours + 1; // TS error, and NaN if you cast past it
+
+// right
+const h = (row.duration.hours ?? 0) + 1;
+```
+
+Code that treated an `interval` as a string needs rewriting rather than adjusting — the old declaration was never true, so `row.duration.trim()` was already a runtime error, and `` `${row.duration}` `` still produces `'[object Object]'`. Use `toISO()` for a machine-readable form, or `toPostgres()` for something the server will take back.
+
+**Parameters changed too, and this is the half most likely to be hiding a live bug.** `time`, `timetz` and `interval` used to accept `Date | string`, `bit` a `boolean`, and `point` a `number[]`. None of those non-string forms ever worked: node-postgres serialises a `Date` to a full ISO timestamp, which none of the three time types can parse, and the other two fare no better. All five now take a `string`:
+
+```ts
+await insertShift.run(client, {
+  startTime: '07:08:09', // was `Date | string`; a Date is `invalid input syntax for type time`
+  duration: '2 hours', // ditto
+  flags: '011', // was boolean; a boolean arrives as 't', not a binary digit
+  location: '(3,4)', // was number[]; neither [3, 4] nor { x: 3, y: 4 } is valid input
+});
+```
+
+If any of those call sites passed the non-string form, it was failing against the server already and the generated type was hiding it; the narrowed parameter turns it into a compile error. To pass an interval you have read back from another query, call `toPostgres()` on it.
+
+`numeric[]` parameters are unchanged — the server takes numbers or strings either way.
+
+### Two more changes to generated output
+
+Both are widening, so regenerated files still compile against code written for 2.x — but the output does change, and a diff of your generated files will show them.
+
+- **The six built-in range types are mapped.** `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange` and `daterange` used to generate `unknown` and log `Postgres type 'tstzrange' is not supported by mapping`; they are now `string` in both directions, which is what node-postgres sends and receives for them. If you worked around this with a `typesOverrides` entry, that entry still wins and nothing changes for you.
+- **A pick expansion's optional keys are optional.** For `@param address -> (line1!, line2)`, the generated `line2` used to be a required member typed `string | null | void`, so omitting it meant writing `line2: undefined` by hand. It is now `line2?: string | null | void`. An absent key and an explicit `undefined` reach the server as the same NULL, so this only removes the ceremony.
+
+### Three CLI changes to check in your build scripts
+
+- **The bin moved from `lib/index.js` to `lib/cli.js`.** `npx pgtyped` and the `pgtyped` bin name are unaffected, but anything that invokes the CLI by path — a Dockerfile, a CI step, a `node ./node_modules/@pelotech/pgtyped-cli/lib/index.js` invocation — needs updating. The old path was both the bin _and_ the package's only export, so importing anything from the package ran the CLI's argument parsing in the importing process; `lib/index.js` is now the library entry point and exports `main`.
+- **Environment variables that set CLI flags need a `PGTYPED_` prefix.** `CONFIG`, `WATCH`, `URI` and `FILE` become `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`. Unprefixed, an ambient `FILE` — common enough in a Makefile — set `--file` and the run quietly generated nothing. The `PG*` variables that configure the database connection are unchanged.
+- **`--file` exits non-zero when it matches no transform**, rather than printing "file was not found in provided transforms" and exiting 0. It also now accepts any spelling of the path: `src/q.sql`, `./src/q.sql` and an absolute path all name the same file, where before only the one glob happened to produce did.
 
 ### Two smaller behaviour changes
 

@@ -89,6 +89,7 @@ function nullabilitySuffixWarning(
 
 export async function queryToTypeDeclarations(
   ir: QueryIR,
+  fileName: string,
   typeSource: TypeSource,
   types: TypeAllocator,
   config: ParsedConfig,
@@ -110,7 +111,15 @@ export async function queryToTypeDeclarations(
   if (typeError || hasAnonymousColumns) {
     // tslint:disable:no-console
     if (typeError) {
-      console.error('Error in query. Details: %o', typeData);
+      // Named, because on the default failOnError: false path this is the only
+      // thing the user sees, and files are processed concurrently — the
+      // interleaved `Processing …` lines cannot attribute it (#526, #584).
+      console.error(
+        'Error in query "%s" in %s. Details: %o',
+        queryName,
+        fileName,
+        typeData,
+      );
       if (config.failOnError) {
         throw new Error(
           `Query "${queryName}" is invalid. Can't generate types.`,
@@ -234,9 +243,16 @@ export async function queryToTypeDeclarations(
             params[p.assignedIndex - 1],
             TypeScope.Parameter,
           );
+          // A key that was not marked `!` may be left out of the object
+          // entirely, exactly as a non-required scalar param may be left out
+          // of the params object — and for the same reason: `render` reads
+          // the key off the object and binds whatever it finds, so an absent
+          // key and an explicit `undefined` both reach the server as NULL.
+          // Without the `?` the only way to omit an optional key was to spell
+          // out `key: undefined` (#573).
           return p.required
             ? `    ${p.name}: ${paramType}`
-            : `    ${p.name}: ${paramType} | null | void`;
+            : `    ${p.name}?: ${paramType} | null | void`;
         })
         .join(',\n');
       fieldType = `{\n${fieldType}\n  }`;
@@ -401,6 +417,7 @@ export async function generateTypedecsFromFile(
   for (const ir of queries) {
     const typeDeclaration = await queryToTypeDeclarations(
       ir,
+      fileName,
       typeSource,
       types,
       config,

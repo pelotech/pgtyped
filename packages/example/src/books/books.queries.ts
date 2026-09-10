@@ -141,7 +141,7 @@ export interface InsertBooksParams {
     rank: number,
     name: string,
     authorId: number,
-    categories: categoryArray | null | void
+    categories?: categoryArray | null | void
   })[];
 }
 

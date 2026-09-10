@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     restart: always
     environment:
       POSTGRES_USER: postgres
@@ -42,13 +42,13 @@ services:
         condition: none
     depends_on:
       - db
-    command: sh -c "node /app/packages/cli/lib/index.js --config config.json && ./check-git-diff.sh"
+    command: sh -c "node /app/packages/cli/lib/cli.js --config config.json && ./check-git-diff.sh"
 
   watch:
     <<: *build
     # Invoked through node, like the build service: the CLI's lib/ is built on
     # the host and bind-mounted in, so the image has no .bin/pgtyped to run.
-    command: node /app/packages/cli/lib/index.js --watch --config config.json
+    command: node /app/packages/cli/lib/cli.js --watch --config config.json
 
   test:
     <<: *build

@@ -19,7 +19,8 @@
     "typegen": "pgtyped -c config.json",
     "build": "echo 'No build step required. Use pnpm test instead'",
     "watch": "echo 'No build step required. Use pnpm test instead'",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "check:test": "pnpm run check"
   },
   "dependencies": {
     "@pelotech/pgtyped-cli": "workspace:^",

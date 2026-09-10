@@ -1,5 +1,6 @@
 import type { DatabaseConnection, QueryConfig } from './connection.js';
 import { parseSqlFile } from './parse-sql-file.js';
+import { preparedStatementName } from './statement-name.js';
 import { TypedQuery } from './typed-query.js';
 
 const irFor = (sql: string) => {
@@ -128,6 +129,60 @@ describe('TypedQuery', () => {
       text: 'SELECT * FROM books WHERE id IN ($1,$2,$3)',
       values: [1, 2, 3],
     });
+  });
+});
+
+// `queryName` is the identifier a caller can actually key metrics, span names
+// and slow-query logs on. Each of these is a case where `name` cannot serve:
+// it is either absent, or it moves when the SQL does.
+describe('queryName', () => {
+  test('is the @name, alongside the statement name, when the query has both', () => {
+    const query = new TypedQuery({
+      ...irFor(SQL),
+      name: 'FindBookById_abc12345',
+    });
+    expect(query.queryName).toBe('FindBookById');
+    expect(query.name).toBe('FindBookById_abc12345');
+  });
+
+  test('is present with preparedStatements off, where name is undefined', () => {
+    // What codegen emits with `preparedStatements: false`: an IR with no
+    // `name` field at all. Before `queryName`, such a query carried no public
+    // identifier whatsoever.
+    const query = new TypedQuery(irFor(SQL));
+    expect(query.name).toBeUndefined();
+    expect(query.queryName).toBe('FindBookById');
+  });
+
+  test('is present for an array spread, which is never granted a name', () => {
+    const spread = `
+      /*
+        @name FindBooksByIds
+        @param ids -> (...)
+      */
+      SELECT * FROM books WHERE id IN :ids;
+    `;
+    const ir = irFor(spread);
+    // Not merely omitted from this IR: the rule that withholds it is the
+    // runtime's, so prepared statements being on changes nothing.
+    expect(preparedStatementName(ir)).toBeUndefined();
+    const query = new TypedQuery<{ ids: number[] }, unknown>(ir);
+    expect(query.name).toBeUndefined();
+    expect(query.queryName).toBe('FindBooksByIds');
+  });
+
+  test('survives an edit to the SQL that renames the statement', () => {
+    // The reason a metrics dimension cannot be `name`: its hash suffix is
+    // taken over the statement text, so any edit moves it.
+    const before = irFor('/* @name GetAccounts */ SELECT id FROM accounts;');
+    const after = irFor(
+      '/* @name GetAccounts */ SELECT id, contact FROM accounts;',
+    );
+    const named = (ir: typeof before) =>
+      new TypedQuery({ ...ir, name: preparedStatementName(ir) });
+    expect(named(before).name).not.toBe(named(after).name);
+    expect(named(before).queryName).toBe('GetAccounts');
+    expect(named(after).queryName).toBe('GetAccounts');
   });
 });
 

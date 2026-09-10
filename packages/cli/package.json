@@ -4,10 +4,12 @@
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    "./*": {
-      "import": "./lib/index.js",
-      "types": "./lib/index.d.ts"
-    }
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./*": "./lib/*",
+    "./package.json": "./package.json"
   },
   "license": "MIT",
   "repository": {
@@ -32,7 +34,7 @@
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "bin": {
-    "pgtyped": "lib/index.js"
+    "pgtyped": "lib/cli.js"
   },
   "dependencies": {
     "@pelotech/pgtyped-runtime": "workspace:^",

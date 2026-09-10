@@ -1,3 +1,4 @@
+import { format } from 'node:util';
 import { IQueryTypes } from './db/types.js';
 import {
   ParameterTransform,
@@ -86,6 +87,7 @@ describe('query-to-interface translation', () => {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -163,6 +165,7 @@ export interface IGetNotificationsQuery {
       const typeSource = async (_: any) => mockTypes;
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -170,9 +173,9 @@ export interface IGetNotificationsQuery {
       const expected = `/** 'InsertNotifications' parameters type */
 export interface IInsertNotificationsParams {
   notification: {
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   };
 }
 
@@ -187,6 +190,73 @@ export interface IInsertNotificationsQuery {
 
 `;
       expect(result).toEqual(expected);
+    });
+
+    /**
+     * A pick key that was not marked `!` got no `?`, so the only way to omit
+     * one was to spell out `key: undefined` — while the scalar branch three
+     * lines above had been marking non-required params optional since 3.0.
+     * `render` reads the key off the object and binds whatever it finds, so an
+     * absent key and an explicit `undefined` both reach the server as NULL.
+     * Upstream #573.
+     */
+    test(`Optional pick keys are optional, required ones are not (${mode})`, async () => {
+      const queryStringSQL = `
+    /*
+      @name Get573
+      @param address -> (line1!, line2, city!)
+    */
+    INSERT INTO postal_codes (line1, line2, city) VALUES :address RETURNING code;
+    `;
+      const queryStringTS = `const get573 = sql\`INSERT INTO postal_codes (line1, line2, city) VALUES $address(line1, line2, city) RETURNING code\`;`;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
+      const mockTypes: IQueryTypes = {
+        returnTypes: [],
+        paramMetadata: {
+          params: ['text', 'text', 'text'],
+          mapping: [
+            {
+              name: 'address',
+              type: ParameterTransform.Pick,
+              dict: {
+                line1: {
+                  name: 'line1',
+                  assignedIndex: 1,
+                  required: true,
+                  type: ParameterTransform.Scalar,
+                },
+                line2: {
+                  name: 'line2',
+                  assignedIndex: 2,
+                  required: false,
+                  type: ParameterTransform.Scalar,
+                },
+                city: {
+                  name: 'city',
+                  assignedIndex: 3,
+                  required: true,
+                  type: ParameterTransform.Scalar,
+                },
+              },
+            },
+          ],
+        },
+      };
+      const types = new TypeAllocator(TypeMapping());
+      const typeSource = async (_: any) => mockTypes;
+      const result = await queryToTypeDeclarations(
+        parsedQuery(mode, queryString),
+        'src/queries.sql',
+        typeSource,
+        types,
+        {} as ParsedConfig,
+      );
+
+      expect(result).toContain(`  address: {
+    line1: string,
+    line2?: string | null | void,
+    city: string
+  };`);
     });
 
     test(`DeleteUsers by UUID (${mode})`, async () => {
@@ -245,6 +315,7 @@ export interface IInsertNotificationsQuery {
       const typeSource = async (_: any) => mockTypes;
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -318,6 +389,7 @@ export interface IDeleteUsersQuery {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
@@ -396,6 +468,7 @@ export interface IGetNotificationsQuery {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
@@ -474,6 +547,7 @@ export interface IGetNotificationsQuery {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
@@ -552,6 +626,7 @@ export interface IGetNotificationsQuery {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
@@ -628,6 +703,7 @@ export interface IGetNotificationsQuery {
       const typeSource = async (_: any) => mockTypes;
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
@@ -635,13 +711,13 @@ export interface IGetNotificationsQuery {
       const expected = `/** 'InsertNotifications' parameters type */
 export interface IInsertNotificationsParams {
   notification: readonly [{
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   }, ...({
-    payload: Json | null | void,
-    user_id: string | null | void,
-    type: string | null | void
+    payload?: Json | null | void,
+    user_id?: string | null | void,
+    type?: string | null | void
   })[]];
 }
 
@@ -702,6 +778,7 @@ export interface IInsertNotificationsQuery {
       );
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -780,6 +857,7 @@ export interface IGetNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -833,6 +911,7 @@ export interface ICountNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         partialConfig,
@@ -870,6 +949,7 @@ export interface ICountNotificationsQuery {
       const types = new TypeAllocator(TypeMapping());
       const result = await queryToTypeDeclarations(
         parsedQuery(mode, queryString),
+        'src/queries.sql',
         typeSource,
         types,
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
@@ -953,6 +1033,7 @@ test(`Fail on anonymous column return type`, async () => {
   );
   const result = await queryToTypeDeclarations(
     parsedQuery('sql', queryString),
+    'src/queries.sql',
     typeSource,
     types,
     partialConfig,
@@ -967,6 +1048,50 @@ export type IGetNotificationsParams = never;
 
 `;
   expect(result).toEqual(expected);
+});
+
+/**
+ * With the default failOnError: false, this console.error is the only signal a
+ * broken query produces — the file is still written, with `never` types. Files
+ * are processed at MAX_CONCURRENCY, so the interleaved `Processing …` lines
+ * cannot attribute it either. Upstream #526, #584.
+ */
+test('a query the server rejects is reported with its file and query name', async () => {
+  const queryString = `
+    /* @name BadQueryTwo */
+    SELECT * FROM no_such_table;
+    `;
+  const typeSource = async (_: any) => ({
+    errorCode: '42P01',
+    message: 'relation "no_such_table" does not exist',
+    position: '15',
+  });
+  const types = new TypeAllocator(TypeMapping());
+  // Rendered through util.format, so the assertions are against what a user
+  // actually reads rather than against the format string.
+  const errors: string[] = [];
+  const spy = vi
+    .spyOn(console, 'error')
+    .mockImplementation((...args: [unknown]) => {
+      errors.push(format(...args));
+    });
+
+  try {
+    await queryToTypeDeclarations(
+      parsedQuery('sql', queryString),
+      'src/deep/nested/a.sql',
+      typeSource as any,
+      types,
+      partialConfig,
+    );
+  } finally {
+    spy.mockRestore();
+  }
+
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toContain('BadQueryTwo');
+  expect(errors[0]).toContain('src/deep/nested/a.sql');
+  expect(errors[0]).toContain('no_such_table');
 });
 
 describe('generateDeclarations', () => {
@@ -1085,6 +1210,7 @@ describe('a sql.prepared tag with an explicit name', () => {
 
     const result = await queryToTypeDeclarations(
       parsedQuery('ts', namedTag),
+      'src/queries.sql',
       async () => mockTypes,
       new TypeAllocator(TypeMapping()),
       { hungarianNotation: false } as ParsedConfig,
@@ -1194,6 +1320,7 @@ describe('a sql.prepared tag with no name', () => {
         'ts',
         `const getUsers = sql.prepared<GetUsersQuery>()\`SELECT id FROM users\`;`,
       ),
+      'src/queries.sql',
       async () => mockTypes,
       new TypeAllocator(TypeMapping()),
       { hungarianNotation: false } as ParsedConfig,
@@ -1425,6 +1552,7 @@ describe('the nullability-suffix alias lint', () => {
 
       const camelCased = await queryToTypeDeclarations(
         ir,
+        'src/queries.sql',
         typeSource,
         new TypeAllocator(TypeMapping()),
         { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
@@ -1435,6 +1563,7 @@ describe('the nullability-suffix alias lint', () => {
 
       const asIs = await queryToTypeDeclarations(
         ir,
+        'src/queries.sql',
         typeSource,
         new TypeAllocator(TypeMapping()),
         {

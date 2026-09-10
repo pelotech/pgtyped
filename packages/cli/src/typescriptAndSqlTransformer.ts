@@ -24,6 +24,58 @@ interface ExtendedParsedPath extends path.ParsedPath {
   dir_base: string;
 }
 
+/**
+ * Anything under a `node_modules` directory, whatever the depth and whichever
+ * separator the platform uses.
+ *
+ * A dependency that ships its own `.sql` files — or a `.bin` shim that happens
+ * to match a recursive `.ts` include — is not this project's query source, and
+ * parsing it is at best wasted describes and at worst a codegen error against
+ * a schema it was never written for. `srcDir` pointing at a directory that
+ * contains an installed tree is ordinary, so this is excluded unconditionally
+ * rather than left to each project's include pattern (#534).
+ */
+export const NODE_MODULES_GLOB = '**/node_modules/**';
+
+/** Whether `fileName` is inside a `node_modules` directory. */
+export function isUnderNodeModules(fileName: string): boolean {
+  return fileName.split(/[\\/]/).includes('node_modules');
+}
+
+/** The query files a transform applies to. */
+export function findQueryFiles(
+  srcDir: string,
+  transform: TransformConfig,
+): string[] {
+  return globSync(`${srcDir}/**/${transform.include}`, {
+    ignore: [
+      NODE_MODULES_GLOB,
+      ...(transform.emitFileName ? [`${srcDir}${transform.emitFileName}`] : []),
+    ],
+  });
+}
+
+/**
+ * The entry of `fileList` naming the same file as `--file`, if any.
+ *
+ * This used to be `fileList.includes(fileOverride)` — raw string equality
+ * against glob output — so exactly one spelling of the path worked. `./x.sql`,
+ * an absolute path, and the Windows reporter's `multi\a\one.sql` all missed
+ * and the run did nothing (#579). Resolving both sides against the working
+ * directory compares files rather than strings, and lets the platform decide
+ * what a separator is.
+ *
+ * The glob's own spelling is what is returned, so the paths that end up in the
+ * log do not depend on how the flag was typed.
+ */
+export function matchFileOverride(
+  fileList: string[],
+  fileOverride: string,
+): string | undefined {
+  const target = path.resolve(fileOverride);
+  return fileList.find((fileName) => path.resolve(fileName) === target);
+}
+
 export type ProcessFileResult =
   | {
       skipped: boolean;
@@ -113,16 +165,13 @@ export async function processFile(
 }
 
 export class TypescriptAndSqlTransformer {
-  private readonly includePattern: string;
   private fileOverrideUsed = false;
 
   constructor(
     private readonly db: TypeDb,
     private readonly config: ParsedConfig,
     private readonly transform: TransformConfig,
-  ) {
-    this.includePattern = `${this.config.srcDir}/**/${transform.include}`;
-  }
+  ) {}
 
   private async watch() {
     const cb = async (fileName: string) => {
@@ -132,8 +181,12 @@ export class TypescriptAndSqlTransformer {
     chokidar
       .watch(this.config.srcDir, {
         persistent: true,
+        // Returning true for the directory itself stops chokidar descending
+        // into it at all, so an installed tree under srcDir costs neither
+        // watch descriptors nor describes (#534).
         ignored: (fileName, stats) =>
-          !!stats?.isFile() && !minimatch(fileName, this.transform.include),
+          isUnderNodeModules(fileName) ||
+          (!!stats?.isFile() && !minimatch(fileName, this.transform.include)),
       })
       .on('add', cb)
       .on('change', cb);
@@ -148,13 +201,21 @@ export class TypescriptAndSqlTransformer {
      * If the user didn't provide the -f paramter, we're using the list of files we got from glob.
      * If he did, we're using glob file list to detect if his provided file should be used with this transform.
      */
-    let fileList = globSync(this.includePattern, {
-      ...(this.transform.emitFileName && {
-        ignore: [`${this.config.srcDir}${this.transform.emitFileName}`],
-      }),
-    });
+    let fileList = findQueryFiles(this.config.srcDir, this.transform);
+    if (fileList.length === 0) {
+      // Running the CLI from another directory with an absolute `-c` path
+      // produced no output whatsoever and exited 0, because `srcDir` is
+      // resolved against the working directory rather than against the config
+      // file and the glob simply matched nothing (#572). Say so, rather than
+      // leaving a silent success to be discovered downstream.
+      console.warn(
+        `No files matched "${this.config.srcDir}/**/${this.transform.include}". ` +
+          `srcDir is resolved against the working directory (${process.cwd()}), not against the config file.`,
+      );
+    }
     if (fileOverride) {
-      fileList = fileList.includes(fileOverride) ? [fileOverride] : [];
+      const match = matchFileOverride(fileList, fileOverride);
+      fileList = match ? [match] : [];
       if (fileList.length > 0) {
         this.fileOverrideUsed = true;
       }
