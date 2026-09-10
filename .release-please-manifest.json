@@ -1,4 +1,4 @@
 {
-  "packages/cli": "3.0.0",
-  "packages/runtime": "3.0.0"
+  "packages/cli": "2.4.3",
+  "packages/runtime": "2.4.3"
 }
