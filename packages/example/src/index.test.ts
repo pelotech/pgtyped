@@ -304,6 +304,13 @@ describe('generated types describe what the driver really returns', () => {
     const location: PgPoint = row.location;
     expect(location).toEqual({ x: 1, y: 2 });
 
+    // No range type was in the mapping at all, so this column generated
+    // `unknown` and logged `Postgres type 'tstzrange' is not supported by
+    // mapping` (issue #213). node-postgres registers no parser for a range, so
+    // the value is the server's own literal.
+    const period: string = row.period;
+    expect(period).toBe('["2020-01-01 00:00:00+00","2020-02-01 00:00:00+00")');
+
     // Controls. These two were right all along and must not move with the six
     // above: a lone `numeric` really is a string, and `timestamptz` a `Date`.
     const amount: string = row.amount;
@@ -321,6 +328,7 @@ describe('generated types describe what the driver really returns', () => {
     amounts: [3.5, '4.5'],
     amount: 5.5,
     location: '(3,4)',
+    period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
     recordedAt: new Date('2021-02-03T04:05:06Z'),
   };
 
@@ -338,6 +346,7 @@ describe('generated types describe what the driver really returns', () => {
       amounts: [3.5, 4.5],
       amount: '5.5',
       location: { x: 3, y: 4 },
+      period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
     });
   });
 

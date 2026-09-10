@@ -139,6 +139,25 @@ export const DefaultTypeMapping = Object.freeze({
   macaddr: { parameter: String, return: String },
   macaddr8: { parameter: String, return: String },
 
+  // Range types
+  //
+  // node-postgres registers no parser for any of them, so a range column
+  // arrives as the server's own literal — `["2020-01-01 00:00:00+00",
+  // "2020-02-01 00:00:00+00")` — and the same literal is what the server
+  // accepts back. Without these entries a range column generated `unknown`
+  // and logged `Postgres type 'tstzrange' is not supported by mapping` (#213).
+  //
+  // Only the six built-in range types are listed. A user-defined range (or a
+  // multirange, PG14+) still needs a `typesOverrides` entry, and an *array* of
+  // ranges is the `_bit` case: pg-types cannot parse it either, so `_tstzrange`
+  // arrives as one string rather than the `stringArray` derived here.
+  int4range: { parameter: String, return: String },
+  int8range: { parameter: String, return: String },
+  numrange: { parameter: String, return: String },
+  tsrange: { parameter: String, return: String },
+  tstzrange: { parameter: String, return: String },
+  daterange: { parameter: String, return: String },
+
   // Extra types
   money: { parameter: String, return: String },
   tsvector: { parameter: String, return: String },

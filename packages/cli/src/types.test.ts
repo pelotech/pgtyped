@@ -60,6 +60,36 @@ describe('TypeAllocator', () => {
     expect(types.use('_varchar', TypeScope.Return)).toEqual('stringArray');
   });
 
+  /**
+   * A range column used to generate `unknown` and log
+   * `Postgres type 'tstzrange' is not supported by mapping`, because no range
+   * type was in `DefaultTypeMapping` at all (issue #213). node-postgres
+   * registers no parser for them, so the value is the server's own literal in
+   * both directions.
+   */
+  describe('range types (issue #213)', () => {
+    test.each([
+      'int4range',
+      'int8range',
+      'numrange',
+      'tsrange',
+      'tstzrange',
+      'daterange',
+    ])('%s is a string in both directions, and is not an error', (pgType) => {
+      const types = new TypeAllocator(TypeMapping());
+      expect(types.use(pgType, TypeScope.Return)).toEqual('string');
+      expect(types.use(pgType, TypeScope.Parameter)).toEqual('string');
+      expect(types.errors).toStrictEqual([]);
+    });
+
+    test('a range is still overridable', () => {
+      const types = new TypeAllocator(
+        TypeMapping({ tstzrange: { return: { name: 'Period' } } }),
+      );
+      expect(types.use('tstzrange', TypeScope.Return)).toEqual('Period');
+    });
+  });
+
   // Covers issue #323
   test('Uses `Json` when using `JsonArray`', () => {
     const types = new TypeAllocator(TypeMapping());

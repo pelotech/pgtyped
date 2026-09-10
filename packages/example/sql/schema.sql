@@ -116,11 +116,13 @@ CREATE TABLE driver_types (
   amounts        NUMERIC[]   NOT NULL,
   amount         NUMERIC     NOT NULL,
   location       POINT       NOT NULL,
+  period         TSTZRANGE   NOT NULL,
   recorded_at    TIMESTAMPTZ NOT NULL
 );
 
 INSERT INTO driver_types
-  (duration, start_time, start_time_tz, flags, amounts, amount, location, recorded_at)
+  (duration, start_time, start_time_tz, flags, amounts, amount, location, period, recorded_at)
 VALUES
   ('1 year 2 mons 3 days 04:05:06.789', '01:02:03', '01:02:03+00', B'101',
-   ARRAY[1.5, 2.5]::NUMERIC[], 2.5, '(1,2)', '2020-01-01T00:00:00Z');
+   ARRAY[1.5, 2.5]::NUMERIC[], 2.5, '(1,2)',
+   '["2020-01-01 00:00:00+00","2020-02-01 00:00:00+00")', '2020-01-01T00:00:00Z');
