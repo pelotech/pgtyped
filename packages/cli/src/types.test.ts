@@ -12,6 +12,39 @@ describe('TypeAllocator', () => {
     expect(types.use('foo', TypeScope.Parameter)).toEqual('baz');
   });
 
+  /**
+   * `Buffer` is the only mapped type whose TypeScript name is not an ES global,
+   * so a generated file with a `bytea` column used to depend on @types/node
+   * being on the ambient global list. Where it is not — Deno, workerd, Bun, or
+   * anything compiling with `"types": []` — that is
+   * `error TS2591: Cannot find name 'Buffer'`. Covers PR #612 / issue #262.
+   */
+  test('bytea imports Buffer instead of assuming the ambient global', () => {
+    const types = new TypeAllocator(TypeMapping());
+    expect(types.use('bytea', TypeScope.Return)).toEqual('Buffer');
+    expect(types.declaration('out.ts')).toContain(
+      "import type { Buffer } from 'node:buffer';",
+    );
+  });
+
+  test('a bytea array imports Buffer too', () => {
+    const types = new TypeAllocator(TypeMapping());
+    // `_bytea` is the PG type name for an array of bytea values; the element
+    // type has to be used for its import to reach the declaration.
+    expect(types.use('_bytea', TypeScope.Return)).toEqual('BufferArray');
+    expect(types.declaration('out.ts')).toContain(
+      "import type { Buffer } from 'node:buffer';",
+    );
+  });
+
+  test('a bytea parameter imports Buffer too', () => {
+    const types = new TypeAllocator(TypeMapping());
+    expect(types.use('bytea', TypeScope.Parameter)).toEqual('Buffer');
+    expect(types.declaration('out.ts')).toContain(
+      "import type { Buffer } from 'node:buffer';",
+    );
+  });
+
   // Covers issue #323
   test('Uses `Json` when using `JsonArray`', () => {
     const types = new TypeAllocator(TypeMapping());

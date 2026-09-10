@@ -25,7 +25,11 @@ const DateOrString: Type = {
   name: 'DateOrString',
   definition: 'Date | string',
 };
-const Bytes: Type = { name: 'Buffer' };
+// `bytea` is the one mapped type whose TypeScript name is not an ES global.
+// Naming the module it comes from makes the generated file import it, rather
+// than assume @types/node is on the ambient global list — which it is not
+// under Deno, workerd or a project that sets `"types": []` (#612, #262).
+const Bytes: Type = { name: 'Buffer', from: 'node:buffer' };
 const Void: Type = { name: 'undefined' };
 const Json: Type = {
   name: 'Json',
