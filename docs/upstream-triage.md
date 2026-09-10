@@ -56,8 +56,9 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Domain types — the first entry in **Still open — medium**, and the
-one adoption in this list that needed real code — have been taken too. The last three entries below are not bugs but adoptions — the
+well. That bucket is now empty. Two entries from **Still open — medium** have since been taken as
+well: domain types — the one adoption in this list that needed real code — and the `failOnError`
+escalation for a type the mapping does not know. The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -658,6 +659,53 @@ that a plain `string` does not satisfy, so the example's typecheck — which CI 
 domain is ever flattened again. Reverting the fix and regenerating produces exactly that:
 `src/index.test.ts(342,11): error TS2322: Type 'string' is not assignable to type '`${string}@${string}`'.`
 
+### `record` was unmapped, and `failOnError` did not catch it — issue #317 — **FIXED**
+
+Reproduced with the reporter's exact message: `Error: Postgres type 'record' is not supported by
+mapping`. Unchanged from 2.x (`git show 90e567b:packages/cli/src/generator.ts` has the same
+`types.errors.forEach((err) => console.log(err))`).
+
+Two sharp edges: the column was emitted as `row: unknown | null`, and **`failOnError: true` did not
+catch it** — verified `exit=0` with `failOnError: true`. The code comment in `generator.ts` claimed "a
+`never` type is emitted which can be caught later when compiling"; it emitted `unknown`, which nothing
+would catch.
+
+**Fixed, in the escalation rather than in the mapping.** Supporting composite types is a separate and
+much larger question (#629) and is deliberately not attempted here. A `TypeAllocator` error is now
+advisory by default, exactly as it was, and fails the run under `failOnError` — the same rule the
+parser warnings and the nullability-suffix warning already follow. The message names the query and
+the file, like the #526 fix, and lists the types that failed.
+
+**`unknown` was kept deliberately, and the old comment was wrong twice.** It claimed `never` was
+emitted, and it emitted `unknown`; and `never` would have been the _weaker_ of the two, not the
+stronger. `never` is assignable to every type, so a `never` result column makes
+`const total: number = row.row` compile silently — precisely the "caught later when compiling" the
+comment promised, and precisely what it would not do. `unknown` is assignable to nothing, so the
+caller has to narrow it before using it, which is the compile error the comment always wanted. So the
+generated output does not change; only the exit code does.
+
+```
+$ node packages/cli/lib/cli.js -c config.json   # failOnError: true, SELECT ROW(1,2) AS r
+Error processing src/record.sql: Query "GetRecord" in src/record.sql uses types the mapping does not
+support:
+Postgres type 'record' is not supported by mapping
+Add a "typesOverrides" entry for each, or remove the column from the query.
+exit=1, and src/record.ts was not written
+```
+
+**A second defect was found doing it, and fixed with it.** The allocator is shared by every query in
+a file and accumulates errors, and the reporting loop printed the whole array — so each error was
+printed again for every query that followed it in the file. Only the errors a query raised itself are
+reported now, which is also what makes the thrown message attributable to one query.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` pins all four behaviours: `unknown` plus
+one logged error by default, the throw under `failOnError` naming query and file, one report per
+error rather than one per following query, and a clean query later in the same file still generating
+even though the allocator still carries the earlier error. `packages/example` runs the built CLI
+against a scratch project whose only query is `SELECT ROW(1,2) AS r`, and asserts the pair that
+matters end to end: exit 0 with `r: unknown` written by default, and a non-zero exit with **nothing
+written** under `failOnError`.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -898,18 +946,6 @@ export interface DupHintResult {
 **Pre-existing, not a 3.0 regression** — 2.x's `generateInterface` and `returnTypes.forEach` (checked
 at `88a428f`) had no dedup either. Note a `@column id!` hint matches by name and so applies to
 _both_ columns.
-
-### `record` is unmapped, and `failOnError` does not catch it — issue #317
-
-Reproduced with the reporter's exact message: `Error: Postgres type 'record' is not supported by
-mapping`. Unchanged from 2.x (`git show 90e567b:packages/cli/src/generator.ts` has the same
-`types.errors.forEach((err) => console.log(err))`).
-
-Two sharp edges: the column is emitted as `row: unknown | null`, and **`failOnError: true` does not
-catch it** — verified `exit=0` with `failOnError: true`. The code comment in `generator.ts` claims "a
-`never` type is emitted which can be caught later when compiling"; it emits `unknown`, which nothing
-will catch. Fixing the `failOnError` escalation for `TypeAllocator` errors is cheap and worth doing
-independently of composite-type support (#629).
 
 ### Shared type aliases collide across generated files — issue #565
 
@@ -1303,7 +1339,7 @@ Every triaged number, and where it is covered.
 **Issues (70).**
 #50 NA · #143 feature · #151 fixed · #159 fixed · #170 limitation/docs fixed · #202 feature ·
 #213 **FIXED here** · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
-#317 open · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
+#317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
 #460 open · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·

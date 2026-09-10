@@ -97,6 +97,12 @@ export async function queryToTypeDeclarations(
   const queryName = pascalCase(ir.queryName);
   const queryData = render(ir);
 
+  // The allocator is shared by every query in the file and accumulates errors,
+  // so this is where the ones belonging to *this* query start. Reporting the
+  // whole array, as this used to, printed each error again for every query
+  // that followed it in the file.
+  const errorsBefore = types.errors.length;
+
   const typeData = await typeSource(queryData);
   const interfaceName = pascalCase(queryName);
   const interfacePrefix = config.hungarianNotation ? 'I' : '';
@@ -266,11 +272,27 @@ export async function queryToTypeDeclarations(
     }
   }
 
-  // TypeAllocator errors are currently considered non-fatal since a `never`
-  // type is emitted which can be caught later when compiling the generated
-  // code
+  // A type the mapping does not know is emitted as `unknown`, which is a real
+  // signal: the caller has to narrow it before doing anything with it. The
+  // comment that stood here claimed a `never` was emitted "which can be caught
+  // later when compiling", and both halves were wrong — it emits `unknown`,
+  // and `never` would be *weaker*, not stronger, because `never` is assignable
+  // to every type, so `const total: number = row.row` would compile silently.
+  // `unknown` stays; what was missing is that nothing escalated (#317).
+  const newErrors = types.errors.slice(errorsBefore);
   // tslint:disable-next-line:no-console
-  types.errors.forEach((err) => console.log(err));
+  newErrors.forEach((err) => console.log(err));
+  // Advisory by default, fatal under failOnError — the same rule the parser
+  // warnings and the nullability-suffix warning above follow. `failOnError:
+  // true` used to exit 0 on an unmapped type, which is the whole of #317's
+  // second half: the run reported success and wrote `unknown` to disk.
+  if (config.failOnError && newErrors.length > 0) {
+    throw new Error(
+      `Query "${queryName}" in ${fileName} uses types the mapping does not support:\n` +
+        newErrors.map((err) => err.message).join('\n') +
+        `\nAdd a "typesOverrides" entry for each, or remove the column from the query.`,
+    );
+  }
 
   const resultInterfaceName = `${interfacePrefix}${interfaceName}Result`;
   const returnTypesInterface =

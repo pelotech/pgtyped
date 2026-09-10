@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import {
@@ -528,6 +531,73 @@ describe('codegen exit code', () => {
       // It used to exit 0, so a targeted regeneration step could do nothing
       // at all and still report success.
       expect(status).not.toBe(0);
+    }, 120_000);
+  });
+
+  /**
+   * Issue #317. A type the mapping does not know is reported and emitted as
+   * `unknown`; with `failOnError: true` the run used to say so and exit **0**
+   * anyway, writing the file. This one needs its own project, because the
+   * example's own queries all map cleanly.
+   */
+  describe('a type the mapping does not support', () => {
+    const scratch = (failOnError: boolean) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pgtyped-317-'));
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(
+        path.join(dir, 'src', 'record.sql'),
+        '/* @name GetRecord */\nSELECT ROW(1,2) AS r;\n',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'config.json'),
+        JSON.stringify({
+          transforms: [{ mode: 'sql', include: '**/*.sql' }],
+          srcDir: './src/',
+          failOnError,
+          // The PG* environment variables win over this, which is how it
+          // reaches the database both in the compose network and on a laptop.
+          dbUrl: 'postgres://postgres:password@localhost/postgres',
+        }),
+      );
+      return dir;
+    };
+
+    const run = (dir: string) =>
+      spawnSync(process.execPath, [cliEntry, '-c', 'config.json'], {
+        cwd: dir,
+        encoding: 'utf-8',
+        timeout: 120_000,
+      });
+
+    test('is reported, generated as unknown, and exits 0 by default', () => {
+      const dir = scratch(false);
+      try {
+        const { status, stdout } = run(dir);
+
+        expect(stdout).toContain(
+          "Postgres type 'record' is not supported by mapping",
+        );
+        expect(
+          fs.readFileSync(path.join(dir, 'src', 'record.ts'), 'utf-8'),
+        ).toContain('r: unknown');
+        expect(status).toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }, 120_000);
+
+    test('fails the run under failOnError, and writes nothing', () => {
+      const dir = scratch(true);
+      try {
+        const { status, stderr } = run(dir);
+
+        expect(stderr).toContain('uses types the mapping does not support');
+        expect(fs.existsSync(path.join(dir, 'src', 'record.ts'))).toBe(false);
+        // It used to exit 0: the error was logged and then ignored.
+        expect(status).not.toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     }, 120_000);
   });
 });

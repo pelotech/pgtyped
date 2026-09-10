@@ -352,6 +352,10 @@ resolves the queries — and generates their types — against `tenant1`. It wor
 
   The warning this reaches in practice is `Parameter "x" is defined but never used` — an `@param` declaration for a parameter the statement never mentions. If you set `failOnError` and have one, the run now fails. Either delete the stale `@param`, or — if leaving the parameter out of the statement was the mistake — put it in.
 
+- **`failOnError` now catches a type the mapping does not know.** `Postgres type 'record' is not supported by mapping` was logged and then ignored: the column was generated as `unknown` and the run exited **0**, even with `failOnError: true`. It now fails the run, naming the query and the file. Nothing changes on the default path — the error is still advisory, and the column is still `unknown`, which is what forces a caller to narrow it before use.
+
+  If you set `failOnError` and a query selects a type PgTyped has no mapping for — a composite type, `record`, a user-defined range, a multirange — the run now fails where it used to pass. Give each one a [`typesOverrides`](https://pgtyped.dev/docs/cli#configuration-file-format) entry naming the Postgres type.
+
 - **`maxWorkerThreads` is removed.** Delete it.
 - **`ts-implicit` transform mode is removed.** Use `"mode": "ts"` and `import { sql } from '@pelotech/pgtyped-runtime'` in the files that hold your tags.
 - **`preparedStatements` now defaults to `true`.** Queries from `.sql` files are sent as named server-side prepared statements. If you connect through PgBouncer in transaction-pooling mode, set it to `false`, or wrap your connections in `unprepared()`.
