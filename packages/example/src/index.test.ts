@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import {
@@ -42,7 +45,7 @@ import {
   thresholdFrogs,
 } from './notifications/notifications.queries.js';
 import { getUsersWithComment } from './users/sample.js';
-import { Category } from './customTypes.js';
+import { Category, type EmailAddress } from './customTypes.js';
 import { sql, unprepared } from '@pelotech/pgtyped-runtime';
 import type {
   CountBookCommentsTagQuery,
@@ -333,6 +336,14 @@ describe('generated types describe what the driver really returns', () => {
     expect(amount).toBe('2.5');
     const recordedAt: Date = row.recorded_at;
     expect(recordedAt).toEqual(new Date('2020-01-01T00:00:00Z'));
+
+    // A domain column. Postgres reports a domain-typed result column as its
+    // base type, so the `email_address` entry in config.json's typesOverrides
+    // never fired and this was a bare `string` (#503, #594). `EmailAddress` is
+    // narrower than `string`, so this annotation stops compiling if the domain
+    // is ever flattened again.
+    const contact: EmailAddress = row.contact;
+    expect(contact).toBe('alex.doe@example.com');
   });
 
   const insertParams: InsertDriverTypesParams = {
@@ -346,9 +357,18 @@ describe('generated types describe what the driver really returns', () => {
     location: '(3,4)',
     period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
     recordedAt: new Date('2021-02-03T04:05:06Z'),
+    contact: 'jane.holmes@example.com',
   };
 
   test('the parameter direction round-trips', async () => {
+    // The same domain in the parameter direction. Postgres does report the
+    // domain itself for an INSERT parameter, so this half was already right;
+    // pinning it keeps the two directions from drifting apart, and catches the
+    // parameter becoming `unknown` — which no argument would ever reject,
+    // since everything is assignable to it.
+    const contact: EmailAddress = insertParams.contact;
+    expect(contact).toBe('jane.holmes@example.com');
+
     const [{ id }] = await insertDriverTypes.run(client, insertParams);
 
     const inserted = (await getDriverTypes.run(client)).find(
@@ -363,6 +383,7 @@ describe('generated types describe what the driver really returns', () => {
       amount: '5.5',
       location: { x: 3, y: 4 },
       period: '["2021-01-01 00:00:00+00","2021-02-01 00:00:00+00")',
+      contact: 'jane.holmes@example.com',
     });
   });
 
@@ -510,6 +531,73 @@ describe('codegen exit code', () => {
       // It used to exit 0, so a targeted regeneration step could do nothing
       // at all and still report success.
       expect(status).not.toBe(0);
+    }, 120_000);
+  });
+
+  /**
+   * Issue #317. A type the mapping does not know is reported and emitted as
+   * `unknown`; with `failOnError: true` the run used to say so and exit **0**
+   * anyway, writing the file. This one needs its own project, because the
+   * example's own queries all map cleanly.
+   */
+  describe('a type the mapping does not support', () => {
+    const scratch = (failOnError: boolean) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pgtyped-317-'));
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(
+        path.join(dir, 'src', 'record.sql'),
+        '/* @name GetRecord */\nSELECT ROW(1,2) AS r;\n',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'config.json'),
+        JSON.stringify({
+          transforms: [{ mode: 'sql', include: '**/*.sql' }],
+          srcDir: './src/',
+          failOnError,
+          // The PG* environment variables win over this, which is how it
+          // reaches the database both in the compose network and on a laptop.
+          dbUrl: 'postgres://postgres:password@localhost/postgres',
+        }),
+      );
+      return dir;
+    };
+
+    const run = (dir: string) =>
+      spawnSync(process.execPath, [cliEntry, '-c', 'config.json'], {
+        cwd: dir,
+        encoding: 'utf-8',
+        timeout: 120_000,
+      });
+
+    test('is reported, generated as unknown, and exits 0 by default', () => {
+      const dir = scratch(false);
+      try {
+        const { status, stdout } = run(dir);
+
+        expect(stdout).toContain(
+          "Postgres type 'record' is not supported by mapping",
+        );
+        expect(
+          fs.readFileSync(path.join(dir, 'src', 'record.ts'), 'utf-8'),
+        ).toContain('r: unknown');
+        expect(status).toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }, 120_000);
+
+    test('fails the run under failOnError, and writes nothing', () => {
+      const dir = scratch(true);
+      try {
+        const { status, stderr } = run(dir);
+
+        expect(stderr).toContain('uses types the mapping does not support');
+        expect(fs.existsSync(path.join(dir, 'src', 'record.ts'))).toBe(false);
+        // It used to exit 0: the error was logged and then ignored.
+        expect(status).not.toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     }, 120_000);
   });
 });

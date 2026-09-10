@@ -24,6 +24,42 @@ const Transform = z.discriminatedUnion('mode', [
 ]);
 
 /**
+ * `typesOverrides` is keyed by Postgres **type** name. A column-shaped key
+ * passed validation and then did nothing at all — no warning, no error — which
+ * is a bad failure mode next to the strictness everywhere else in this file
+ * (#567).
+ *
+ * It is rejected rather than implemented, because it cannot be implemented for
+ * both directions. A result column can be traced back to its table, but a
+ * *parameter* cannot be traced back to a column at all: ParameterDescription
+ * carries type OIDs and nothing else, and nothing in the protocol says that the
+ * `$1` in `WHERE status = $1` has anything to do with `lobbies.status`.
+ * Answering that needs a real SQL analyser, which this project deliberately
+ * does not have. A column-scoped override that silently covered results and not
+ * parameters would be the same defect one layer further in.
+ *
+ * The supported way to type one column differently is a domain, which is a name
+ * the mapping can be keyed on — and, since #503/#594, actually fires:
+ *
+ *   CREATE DOMAIN lobby_status AS text;
+ *   ALTER TABLE lobbies ALTER COLUMN status TYPE lobby_status;
+ *   "typesOverrides": { "lobby_status": "./x.js#MyStatus" }
+ *
+ * No type name Postgres reports contains a dot: `pg_type.typname` is not
+ * schema-qualified, so a dotted key never matched anything anyway.
+ */
+const TypeOverrideKey = z.string().refine(
+  (key) => !key.includes('.'),
+  (key) => ({
+    message:
+      `"${key}" looks like a column, and typesOverrides is keyed by Postgres type name — ` +
+      `a column-scoped override has never had any effect (#567). ` +
+      `Override the column's type name instead, or give the column a domain type ` +
+      `(CREATE DOMAIN) and override the domain's name.`,
+  }),
+);
+
+/**
  * Every object in the config is strict, not just the top level. A key the
  * schema does not know is silently dropped otherwise, and a dropped key is
  * indistinguishable from one that was never set: `db: { dbname: 'x' }` fell
@@ -64,6 +100,7 @@ const Config = z
       .optional(),
     typesOverrides: z
       .record(
+        TypeOverrideKey,
         z.union([
           z.string(),
           z

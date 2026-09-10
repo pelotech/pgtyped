@@ -56,7 +56,9 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. The last three entries below are not bugs but adoptions — the
+well. That bucket is now empty. Three entries from **Still open — medium** have since been taken as
+well: domain types — the one adoption in this list that needed real code — the `failOnError`
+escalation for a type the mapping does not know, and the column-shaped `typesOverrides` key. The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -537,6 +539,224 @@ All one-line fixes, verified present at the time of triage:
   documents the resolution rule in the config table, and the `--file` and `PGTYPED_` changes from
   #579 are documented there too.
 
+### Domain types were flattened to their base type — issues #503, #594; PR #637 — **FIXED**
+
+`typesOverrides` keyed on a domain name silently never fired for result columns, and a domain over an
+enum lost the enum.
+
+Reproduced on pg17, and re-verified on pg18 while fixing it:
+
+```sql
+CREATE DOMAIN email AS text CHECK (VALUE ~ '@');
+CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0);
+CREATE TYPE mood AS ENUM ('sad','ok','happy');
+CREATE DOMAIN mood_d AS mood;
+CREATE TABLE accounts (id serial PRIMARY KEY, contact email NOT NULL,
+                       score positive_int, feeling mood_d);
+```
+
+with `"typesOverrides": {"email": "./types#Email", "positive_int": "./types#PositiveInt"}`:
+
+```ts
+export interface GetAccountsResult {
+  contact: string; // want Email
+  feeling: mood | null; // domain name mood_d lost; resolves to the base enum
+  id: number;
+  score: number | null; // want PositiveInt | null
+}
+```
+
+No import of `./types` was emitted at all — dead config, no warning. Same for a direct column alias
+(`SELECT contact AS c1` → `c1: string`).
+
+Independently reproduced with `CREATE DOMAIN uint128 AS numeric(39,0)` and
+`"typesOverrides": {"uint128": "BigInt"}` → generated `big: string | null`, override ignored, while
+the control in the same run (`"interval": "./types#PgInterval"`) **was** respected. The symptom had
+changed since #594 was filed: 3.0 no longer errored
+`Postgres type 'uint128' is not supported by mapping`, it silently resolved to the base type.
+
+**Root cause, traced and instrumented:** Postgres reports the domain's _base_ type OID in
+RowDescription, never the domain's own OID.
+
+```
+custom_time   oid 16406  typtype d  typbasetype 1184
+timestamptz   oid 1184
+RowDescription dataTypeID for domain column ctime: 1184   <- base type, not 16406
+```
+
+So `typeMap[f.typeOID]` could only ever resolve to the base type name. `DatabaseTypeKind.Domain` was
+declared in `packages/cli/src/db/type.ts` and never used.
+
+**Fixed** by the amendment PR #637 does not contain. `getTypes()` in `packages/cli/src/db/types.ts`
+**already ran** a `pg_attribute` query per result column, for `attname`/`attnotnull`, and
+`pg_attribute.atttypid` holds the _domain_ OID:
+
+```
+attrelid | attnum | attname | atttypid | attnotnull
+   16408 |      2 | ctime   |    16406 | t
+```
+
+That query now also selects `atttypid` and runs _before_ the catalog query rather than after, so the
+declared type is one of the OIDs the catalog query covers. No extra round trip.
+
+**Merging #637 verbatim would have regressed every project with a domain column.** Remapping the OID
+makes the catalog query return the _domain_ row (`typtype = 'd'`, `typname = 'email'`), and
+`reduceTypeRows` had no domain branch — it yielded the bare string `'email'`, which
+`TypeAllocator.use()` does not know. Verified on the same code path with a composite type, which is
+also an unmapped type name:
+
+```
+$ node packages/cli/lib/cli.js -c config.json     # SELECT ROW('a','b')::addr AS a
+Error: Postgres type 'addr' is not supported by mapping
+...
+  a: unknown | null;
+```
+
+So a domain now reaches the allocator as a `DomainType` — its own name, plus whatever its base type
+resolved to. The name is offered to the mapping first, which is what makes an override fire; when
+nothing claims it the type resolves to its base, which is exactly what the column generated before.
+`mood_d` with no override is still the `mood` union, `contact` with no override is still `string`,
+and neither logs anything. A domain over a domain follows the chain, so an override on the inner one
+applies to the outer.
+
+**The parameter direction moved further than expected, in the fix's favour.** The two reproductions
+in this document appeared to contradict each other on whether ParameterDescription carries the domain
+OID. It does — but only where the server has no reason to resolve the parameter to something else,
+which is a property of the query rather than of the column:
+
+| query                                        | `$1` reported as |
+| -------------------------------------------- | ---------------- |
+| `INSERT INTO accounts (contact) VALUES ($1)` | `email` (16385)  |
+| `SELECT … WHERE contact = $1`                | `text` (25)      |
+
+Where the domain _is_ reported, an override already worked — and, without one, codegen **failed**:
+`Postgres type 'email' is not supported by mapping` and `contact: unknown`, on an INSERT into any
+domain column. That is now the base type, `contact: string`. Where the server reports the base type,
+nothing can be done: there is no column to consult, so `WHERE contact = :contact!` stays `string`.
+
+**Scope limits, all reproduced.**
+
+- Domain-typed _expressions_ stay flattened. `SELECT contact::text` and `SELECT upper(contact)` both
+  report `tableID = 0`, so there is no source column to read a declared type from — which is also
+  what stops a cast from being mistaken for the column it was applied to.
+- An _array_ of a domain (`email[]`) is unchanged, and is the `_bit` case from #552 in a different
+  costume: RowDescription reports `_email` itself, so an override on `email` already applies to its
+  elements (`EmailArray = (Email)[]`), and _without_ one it still logs
+  `Postgres type 'email' is not supported by mapping` and generates `unknownArray`. The element type
+  arrives as a name rather than as an OID, so the domain machinery does not reach it.
+- A domain's own `NOT NULL` constraint is still not read; nullability comes from the column.
+
+**Regression cover.** `packages/cli/src/db/types.test.ts` drives `getTypes` against a fake server
+that answers the catalog queries with the same `IN (…)` filter the real one applies, so the base type
+that is fetched in a second round trip is genuinely absent from the first: it pins the remap, the
+alias, the domain-over-domain chain, the two guards that stop an expression or a disagreeing base
+type from being remapped, and that a query with no domain in it makes exactly one catalog query.
+`packages/cli/src/types.test.ts` pins the allocator half — override wins, no override falls back to
+the base with no error recorded, a domain over an enum keeps the union, and an override on one
+direction only leaves the other on the base type. `packages/example` grows a
+`contact EMAIL_ADDRESS NOT NULL` column on `driver_types` with an override to a template-literal type
+that a plain `string` does not satisfy, so the example's typecheck — which CI runs — fails if the
+domain is ever flattened again. Reverting the fix and regenerating produces exactly that:
+`src/index.test.ts(342,11): error TS2322: Type 'string' is not assignable to type '`${string}@${string}`'.`
+
+### `record` was unmapped, and `failOnError` did not catch it — issue #317 — **FIXED**
+
+Reproduced with the reporter's exact message: `Error: Postgres type 'record' is not supported by
+mapping`. Unchanged from 2.x (`git show 90e567b:packages/cli/src/generator.ts` has the same
+`types.errors.forEach((err) => console.log(err))`).
+
+Two sharp edges: the column was emitted as `row: unknown | null`, and **`failOnError: true` did not
+catch it** — verified `exit=0` with `failOnError: true`. The code comment in `generator.ts` claimed "a
+`never` type is emitted which can be caught later when compiling"; it emitted `unknown`, which nothing
+would catch.
+
+**Fixed, in the escalation rather than in the mapping.** Supporting composite types is a separate and
+much larger question (#629) and is deliberately not attempted here. A `TypeAllocator` error is now
+advisory by default, exactly as it was, and fails the run under `failOnError` — the same rule the
+parser warnings and the nullability-suffix warning already follow. The message names the query and
+the file, like the #526 fix, and lists the types that failed.
+
+**`unknown` was kept deliberately, and the old comment was wrong twice.** It claimed `never` was
+emitted, and it emitted `unknown`; and `never` would have been the _weaker_ of the two, not the
+stronger. `never` is assignable to every type, so a `never` result column makes
+`const total: number = row.row` compile silently — precisely the "caught later when compiling" the
+comment promised, and precisely what it would not do. `unknown` is assignable to nothing, so the
+caller has to narrow it before using it, which is the compile error the comment always wanted. So the
+generated output does not change; only the exit code does.
+
+```
+$ node packages/cli/lib/cli.js -c config.json   # failOnError: true, SELECT ROW(1,2) AS r
+Error processing src/record.sql: Query "GetRecord" in src/record.sql uses types the mapping does not
+support:
+Postgres type 'record' is not supported by mapping
+Add a "typesOverrides" entry for each, or remove the column from the query.
+exit=1, and src/record.ts was not written
+```
+
+**A second defect was found doing it, and fixed with it.** The allocator is shared by every query in
+a file and accumulates errors, and the reporting loop printed the whole array — so each error was
+printed again for every query that followed it in the file. Only the errors a query raised itself are
+reported now, which is also what makes the thrown message attributable to one query.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` pins all four behaviours: `unknown` plus
+one logged error by default, the throw under `failOnError` naming query and file, one report per
+error rather than one per following query, and a clean query later in the same file still generating
+even though the allocator still carries the earlier error. `packages/example` runs the built CLI
+against a scratch project whose only query is `SELECT ROW(1,2) AS r`, and asserts the pair that
+matters end to end: exit 0 with `r: unknown` written by default, and a non-zero exit with **nothing
+written** under `failOnError`.
+
+### A column-shaped `typesOverrides` key was silently accepted and silently ignored — issue #567 — **FIXED**
+
+`typesOverrides` is keyed by type name only. Because the schema was `z.record(…)`, a column-shaped key
+passed validation and did nothing — no warning, no error:
+
+```json
+"typesOverrides": { "lobbies.status": "./x.js#MyStatus" }
+```
+
+```ts
+export interface ColMapResult {
+  status: lobby_status;
+} // override had no effect
+```
+
+That is a bad failure mode next to 3.0's new strictness elsewhere.
+
+**Fixed by rejecting the key, not by implementing the feature — and the reason is the parameter
+direction.** A result column can be traced back to its table: `getTypes` already knows the table OID
+and the attribute number, and one join on `pg_class` would give it the name. A _parameter_ cannot.
+ParameterDescription carries type OIDs and nothing else, and nothing in the protocol connects the
+`$1` in `WHERE status = $1` to `lobbies.status` — answering that needs a real SQL analyser, which is
+the same thing #551 needs and does not have. A column-scoped override that quietly covered results
+and not parameters would be the same defect one layer further in: a config entry that appears to
+apply and does not.
+
+So a key containing a dot is now a parse error naming the key, alongside the other config errors:
+
+```
+$ node packages/cli/lib/cli.js -c config.json
+Failed to parse config file:
+typesOverrides.lobbies.status: "lobbies.status" looks like a column, and typesOverrides is keyed by
+Postgres type name — a column-scoped override has never had any effect (#567). Override the column's
+type name instead, or give the column a domain type (CREATE DOMAIN) and override the domain's name.
+exit=1
+```
+
+**Nothing that worked stops working.** No type name Postgres reports contains a dot —
+`pg_type.typname` is not schema-qualified — so a dotted key never matched anything. If schema
+qualification is ever supported in this map, this rule is the thing to revisit.
+
+**The supported answer is a domain, and it is only supported as of the entry above.** `CREATE DOMAIN
+lobby_status AS text` plus `ALTER TABLE lobbies ALTER COLUMN status TYPE lobby_status` gives that one
+column a name the mapping can be keyed on, in both directions — which is exactly what the reporter
+wanted, and would have silently failed before
+[domains were fixed](#domain-types-were-flattened-to-their-base-type--issues-503-594-pr-637--fixed).
+
+**Regression cover.** `packages/cli/src/config.test.ts` pins the rejection in both the string and the
+`{ return }` form, that every bad key is reported rather than only the first, and that a plain type
+name — the thing this must not break — still parses into the same override it always did.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -621,97 +841,6 @@ the runtime — the reason the sweep stops where it does:
 ---
 
 ## Still open — medium
-
-### Domain types are flattened to their base type — issues #503, #594; PR #637
-
-`typesOverrides` keyed on a domain name silently never fires for result columns, and a domain over
-an enum loses the enum.
-
-Reproduced on pg17:
-
-```sql
-CREATE DOMAIN email AS text CHECK (VALUE ~ '@');
-CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0);
-CREATE TYPE mood AS ENUM ('sad','ok','happy');
-CREATE DOMAIN mood_d AS mood;
-CREATE TABLE accounts (id serial PRIMARY KEY, contact email NOT NULL,
-                       score positive_int, feeling mood_d);
-```
-
-with `"typesOverrides": {"email": "./types#Email", "positive_int": "./types#PositiveInt"}`:
-
-```ts
-export interface GetAccountsResult {
-  contact: string; // want Email
-  feeling: mood | null; // domain name mood_d lost; resolves to the base enum
-  id: number;
-  score: number | null; // want PositiveInt | null
-}
-```
-
-No import of `./types` is emitted at all — dead config, no warning. Same for parameters
-(`WHERE contact = :contact!` → `contact: string`) and for a direct column alias
-(`SELECT contact AS c1` → `c1: string`).
-
-Independently reproduced with `CREATE DOMAIN uint128 AS numeric(39,0)` and
-`"typesOverrides": {"uint128": "BigInt"}` → generated `big: string | null`, override ignored, while
-the control in the same run (`"interval": "./types#PgInterval"`) **was** respected. The symptom has
-changed since #594 was filed: 3.0 no longer errors
-`Postgres type 'uint128' is not supported by mapping`, it silently resolves to the base type.
-
-**Root cause, traced and instrumented:** Postgres reports the domain's _base_ type OID in
-`RowDescription`, never the domain's own OID.
-
-```
-custom_time   oid 16406  typtype d  typbasetype 1184
-timestamptz   oid 1184
-RowDescription dataTypeID for domain column ctime: 1184   <- base type, not 16406
-```
-
-So `typeMap[f.typeOID]` can only ever resolve to the base type name. Parameters are typed correctly
-in the `custom_time` reproduction because `ParameterDescription` _does_ carry the domain OID
-(note this contradicts the `email`/`mood_d` run above, where the parameter also came out `string` —
-the parameter side is worth re-checking before anyone relies on it). `DatabaseTypeKind.Domain` is
-declared in `packages/cli/src/db/type.ts` and never used.
-
-**How to fix, and the amendment PR #637 does not contain.** `getTypes()` in
-`packages/cli/src/db/types.ts` **already runs** a `pg_attribute` query per result column, for
-`attname`/`attnotnull`. `pg_attribute.atttypid` holds the _domain_ OID — verified on the same
-server:
-
-```
-attrelid | attnum | attname | atttypid | attnotnull
-   16408 |      2 | ctime   |    16406 | t
-```
-
-So adopting is: add `atttypid` to that existing `SELECT`, move it above `runTypesCatalogQuery`
-(today the catalog query runs first), and remap `f.typeOID` before building `usedTypesOIDs`. No
-extra round trip.
-
-**But do not merge #637 verbatim.** Remapping the OID makes `runTypesCatalogQuery` return the
-_domain_ row (`typtype = 'd'`, `typname = 'email'`), and `reduceTypeRows` has no domain branch — it
-would yield the bare string `'email'`, which `TypeAllocator.use()` does not know. Verified on the
-same code path using a composite type (also an unmapped type name):
-
-```
-$ node packages/cli/lib/index.js -c config.json     # SELECT ROW('a','b')::addr AS a
-Error: Postgres type 'addr' is not supported by mapping
-...
-  a: unknown | null;
-```
-
-Unamended, #637 turns today's `contact: string` into `contact: unknown` plus a codegen error for
-**every** project that has domain columns and has not written a `typesOverrides` entry for each one.
-`mood_d` is worse: it currently resolves usefully to the `mood` enum union and would degrade to
-`unknown`.
-
-A correct adoption needs a fallback: resolve the domain name if it is mapped or overridden,
-otherwise walk `pg_type.typbasetype` recursively (expanding enums) back to what is generated today.
-Realistically **~40–60 lines in `db/types.ts` plus tests**, not the 44 in the PR.
-
-**Scope limit:** this fixes result columns that are direct column references only. Domain-typed
-_parameters_ and domain-typed _expressions_ (`upper(contact)`) stay flattened, and no OID trick can
-fix that.
 
 ### Array elements are typed as non-nullable — issues #613, #460; PR #614
 
@@ -869,18 +998,6 @@ export interface DupHintResult {
 at `88a428f`) had no dedup either. Note a `@column id!` hint matches by name and so applies to
 _both_ columns.
 
-### `record` is unmapped, and `failOnError` does not catch it — issue #317
-
-Reproduced with the reporter's exact message: `Error: Postgres type 'record' is not supported by
-mapping`. Unchanged from 2.x (`git show 90e567b:packages/cli/src/generator.ts` has the same
-`types.errors.forEach((err) => console.log(err))`).
-
-Two sharp edges: the column is emitted as `row: unknown | null`, and **`failOnError: true` does not
-catch it** — verified `exit=0` with `failOnError: true`. The code comment in `generator.ts` claims "a
-`never` type is emitted which can be caught later when compiling"; it emits `unknown`, which nothing
-will catch. Fixing the `failOnError` escalation for `TypeAllocator` errors is cheap and worth doing
-independently of composite-type support (#629).
-
 ### Shared type aliases collide across generated files — issue #565
 
 Confirmed directly from two generated files: both declare
@@ -890,25 +1007,6 @@ reported TS2308.
 
 Not cheap: needs a shared-emit target plus a watch-mode invalidation story, which the reporter
 flagged as the hard part themselves.
-
-### A column-shaped `typesOverrides` key is silently accepted and silently ignored — issue #567
-
-`typesOverrides` is keyed by type name only. Because the schema is `z.record(…)`, a column-shaped key
-passes validation and does nothing — no warning, no error:
-
-```json
-"typesOverrides": { "lobbies.status": "./x.js#MyStatus" }
-```
-
-```ts
-export interface ColMapResult {
-  status: lobby_status;
-} // override had no effect
-```
-
-That is a bad failure mode next to 3.0's new strictness elsewhere. Implementing the feature properly
-is medium cost, and the data is already in hand: `getTypes` computes `columnName` per result column
-in `db/types.ts` and then never uses it. At minimum, warn on a key containing a dot.
 
 ---
 
@@ -986,17 +1084,6 @@ now agree, so if this flag is built it should govern both together rather than m
 parameter optional and the other not.
 
 **Unverified:** the current output and the patched branch were confirmed; the flag was not built.
-
-### PR #637 — fix handling of domain types
-
-**Effort: ~40–60 lines in `db/types.ts` plus tests.** Full analysis, the reproduction, and the
-mandatory amendment are under
-[Domain types are flattened to their base type](#domain-types-are-flattened-to-their-base-type--issues-503-594-pr-637). In
-one line: adopt the technique (read `atttypid` from the `pg_attribute` query `getTypes` already
-runs), **not** the patch, and add a `typbasetype` fallback or it converts working columns into
-`unknown` for every project with domain columns.
-
-**What it buys:** `typesOverrides` on a domain finally fires; closes #503 and #594.
 
 ### PR #614 — array element nullability
 
@@ -1227,7 +1314,7 @@ Triaged and closed out. Nobody needs to look at these again.
 | PR #639                    | Fix `AsyncQueue.replyPending`                        | Fixes `packages/wire`, the hand-rolled wire-protocol client, which was deleted. Both codegen and the runtime go through node-postgres now, so the message-dropping race cannot occur. The bug it describes is genuine and its regression test is well written — it just has no code left to protect.                                                                                                                                                                                                                                                                                                                                         |
 | PR #584 (formatting hunks) | —                                                    | The substantive change was taken; the PR also reverts prettier's formatting on four unrelated blocks and adds two stray blank lines, and `pnpm lint` gates on `prettier --check .`.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | PR #580 (mechanism)        | —                                                    | The goal was right and is [taken](#query-name-not-reachable-at-runtime--issue-522-pr-580--fixed); the mechanism — a second positional constructor argument rewriting every generated file — was wrong here, because the fork already serialises `queryName` inside the IR, so the property is read off it instead.                                                                                                                                                                                                                                                                                                                           |
-| PR #637 (as written)       | —                                                    | Do not merge verbatim: unamended it converts working `string`/`number`/enum columns into `unknown` plus a hard codegen error for any project with domain columns and no per-domain `typesOverrides` entry.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| PR #637 (as written)       | —                                                    | The technique was right and is [taken](#domain-types-were-flattened-to-their-base-type--issues-503-594-pr-637--fixed); the patch was not merged verbatim, because unamended it converts working `string`/`number`/enum columns into `unknown` plus a hard codegen error for any project with domain columns and no per-domain `typesOverrides` entry.                                                                                                                                                                                                                                                                                        |
 | PR #620 (as written)       | —                                                    | Re-splits the CLI into a second `@pgtyped/typegen` package, against the deliberate 6→3 consolidation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | PR #614 (as written)       | —                                                    | Applies `(null \| T)[]` in both scopes and renames every generated alias `TArray` → `NullTArray`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | PR #524 (as written)       | —                                                    | `parseEnvTemplate` slices the whole input rather than the match, so only an exact `{{VAR}}` value works; non-template literals are discarded; and it loosens `db.port` to `number \| string`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -1284,15 +1371,15 @@ Every triaged number, and where it is covered.
 **Issues (70).**
 #50 NA · #143 feature · #151 fixed · #159 fixed · #170 limitation/docs fixed · #202 feature ·
 #213 **FIXED here** · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
-#317 open · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
+#317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
-#460 open · #491 **FIXED here** (docs) · #498 open · #503 open · #504 NA · #512 feature/workaround ·
+#460 open · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
-#566 NA · #567 open · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
+#566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
-#594 open · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
+#594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
 #613 open · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
 
 **Pull requests (27).**
@@ -1300,5 +1387,5 @@ Every triaged number, and where it is covered.
 #580 **FIXED here** · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
 #614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
 #622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·
-#632 already fixed · #633 already fixed · #635 already fixed · #637 adopt (amended) ·
+#632 already fixed · #633 already fixed · #635 already fixed · #637 **FIXED here** (amended) ·
 #639 NA · #641 already fixed · #642 **FIXED here** · #643 already fixed

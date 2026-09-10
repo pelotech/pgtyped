@@ -1652,3 +1652,115 @@ describe('failOnError over a sql file warning', () => {
     }
   });
 });
+
+/**
+ * Issue #317. `SELECT ROW(1,2) AS r` logs
+ * `Postgres type 'record' is not supported by mapping` and emits
+ * `r: unknown | null` — and `failOnError: true` used to exit **0** anyway, so
+ * a build that had asked to fail on errors reported success and wrote a type
+ * nothing would ever complain about.
+ */
+describe('a type the mapping does not support', () => {
+  const unmapped: IQueryTypes = {
+    returnTypes: [
+      {
+        returnName: 'r',
+        columnName: 'r',
+        type: 'record',
+        nullable: false,
+      },
+    ],
+    paramMetadata: { params: [], mapping: [] },
+  };
+
+  const generate = (
+    failOnError: boolean,
+    types = new TypeAllocator(TypeMapping()),
+  ) =>
+    queryToTypeDeclarations(
+      parsedQuery('sql', '/* @name GetRecord */ SELECT ROW(1,2) AS r;'),
+      'src/queries.sql',
+      async () => unmapped,
+      types,
+      { hungarianNotation: false, failOnError } as ParsedConfig,
+    );
+
+  /**
+   * Deliberately `unknown` rather than the `never` the old comment claimed:
+   * `never` is assignable to *every* type, so `const total: number = row.r`
+   * would compile silently, where `unknown` forces the caller to narrow it.
+   */
+  test('generates unknown, and says so, by default', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await generate(false);
+
+      expect(result).toContain('r: unknown');
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(format(log.mock.calls[0][0])).toContain(
+        "Postgres type 'record' is not supported by mapping",
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test('fails the run under failOnError', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(generate(true)).rejects.toThrow(
+        /Query "GetRecord" in src\/queries\.sql uses types the mapping does not support/,
+      );
+      await expect(generate(true)).rejects.toThrow(
+        /Postgres type 'record' is not supported by mapping/,
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  /**
+   * The allocator is shared by every query in a file and accumulates errors,
+   * so reporting the whole array printed each one again for every query that
+   * followed it.
+   */
+  test('reports each error once, not once per query after it', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const types = new TypeAllocator(TypeMapping());
+      await generate(false, types);
+      await generate(false, types);
+
+      expect(types.errors).toHaveLength(2);
+      expect(log).toHaveBeenCalledTimes(2);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test('a later query is not failed by an earlier query`s error', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const types = new TypeAllocator(TypeMapping());
+      await expect(generate(true, types)).rejects.toThrow();
+
+      // Same allocator, still carrying the first error: a query of its own
+      // that maps cleanly still generates.
+      const result = await queryToTypeDeclarations(
+        parsedQuery('sql', '/* @name GetOne */ SELECT 1 AS n;'),
+        'src/queries.sql',
+        async () => ({
+          returnTypes: [
+            { returnName: 'n', columnName: 'n', type: 'int4', nullable: false },
+          ],
+          paramMetadata: { params: [], mapping: [] },
+        }),
+        types,
+        { hungarianNotation: false, failOnError: true } as ParsedConfig,
+      );
+      expect(result).toContain('n: number');
+    } finally {
+      log.mockRestore();
+    }
+  });
+});

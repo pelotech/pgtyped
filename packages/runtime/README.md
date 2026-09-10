@@ -352,6 +352,21 @@ resolves the queries — and generates their types — against `tenant1`. It wor
 
   The warning this reaches in practice is `Parameter "x" is defined but never used` — an `@param` declaration for a parameter the statement never mentions. If you set `failOnError` and have one, the run now fails. Either delete the stale `@param`, or — if leaving the parameter out of the statement was the mistake — put it in.
 
+- **`failOnError` now catches a type the mapping does not know.** `Postgres type 'record' is not supported by mapping` was logged and then ignored: the column was generated as `unknown` and the run exited **0**, even with `failOnError: true`. It now fails the run, naming the query and the file. Nothing changes on the default path — the error is still advisory, and the column is still `unknown`, which is what forces a caller to narrow it before use.
+
+  If you set `failOnError` and a query selects a type PgTyped has no mapping for — a composite type, `record`, a user-defined range, a multirange — the run now fails where it used to pass. Give each one a [`typesOverrides`](https://pgtyped.dev/docs/cli#configuration-file-format) entry naming the Postgres type.
+
+- **A `typesOverrides` key containing a dot is rejected.** `typesOverrides` is keyed by Postgres type name; a column-shaped key such as `"lobbies.status"` passed validation and then did nothing at all, with no warning. It is now a parse error naming the key. Column-scoped overrides are not supported and are not planned: a _parameter_ cannot be traced back to a column — the protocol says only what type `$1` is, never that it has anything to do with `lobbies.status` — so the feature could only ever have covered half of a query. To type one column differently, give it a domain and override the domain's name, which works in both directions:
+
+  ```sql
+  CREATE DOMAIN lobby_status AS text;
+  ALTER TABLE lobbies ALTER COLUMN status TYPE lobby_status;
+  ```
+
+  ```json
+  "typesOverrides": { "lobby_status": "./x.js#MyStatus" }
+  ```
+
 - **`maxWorkerThreads` is removed.** Delete it.
 - **`ts-implicit` transform mode is removed.** Use `"mode": "ts"` and `import { sql } from '@pelotech/pgtyped-runtime'` in the files that hold your tags.
 - **`preparedStatements` now defaults to `true`.** Queries from `.sql` files are sent as named server-side prepared statements. If you connect through PgBouncer in transaction-pooling mode, set it to `false`, or wrap your connections in `unprepared()`.
@@ -424,10 +439,11 @@ If any of those call sites passed the non-string form, it was failing against th
 
 `numeric[]` parameters are unchanged — the server takes numbers or strings either way.
 
-### Two more changes to generated output
+### Three more changes to generated output
 
-Both are widening, so regenerated files still compile against code written for 2.x — but the output does change, and a diff of your generated files will show them.
+The last two are widening, so regenerated files still compile against code written for 2.x. The first only moves a type where you had already asked it to and been ignored. All three change the output, and a diff of your generated files will show them.
 
+- **A domain is typed by its own name, not by its base type.** Postgres reports a domain-typed result column as the type the domain is built over, so `"typesOverrides": { "email": "./types#Email" }` silently did nothing for `SELECT contact FROM accounts` — you got `contact: string`, no import, and no warning. The domain is now recovered from the catalog, so that entry fires, in both the result and the parameter direction. **A domain you have not overridden generates exactly what it generated before**: `contact` stays `string`, and a domain over an enum stays that enum's union. One case gets better on its own: an `INSERT` into a domain column used to log `Postgres type 'email' is not supported by mapping` and generate `unknown` for the parameter, and is now the base type. Two cases are unchanged and cannot be fixed from the protocol — a domain-typed _expression_ (`upper(contact)`, or an explicit cast) and a parameter the server resolves for you (`WHERE contact = :contact!`) are reported as the base type with no column attached, so neither can find the domain.
 - **The six built-in range types are mapped.** `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange` and `daterange` used to generate `unknown` and log `Postgres type 'tstzrange' is not supported by mapping`; they are now `string` in both directions, which is what node-postgres sends and receives for them. If you worked around this with a `typesOverrides` entry, that entry still wins and nothing changes for you.
 - **A pick expansion's optional keys are optional.** For `@param address -> (line1!, line2)`, the generated `line2` used to be a required member typed `string | null | void`, so omitting it meant writing `line2: undefined` by hand. It is now `line2?: string | null | void`. An absent key and an explicit `undefined` reach the server as the same NULL, so this only removes the ceremony.
 
