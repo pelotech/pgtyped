@@ -54,9 +54,10 @@ names every source:
 
 ## Fixed on this branch
 
-Three of the cheap ones were taken as part of writing this document, and the mis-mapped types were
-taken straight after it. They are listed first so nobody re-opens them, with the reproduction that
-justified each.
+Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
+straight after it, and the six that were left in **Still open — cheap** have since been taken as
+well. That bucket is now empty. Everything here is listed first so nobody re-opens it, with the
+reproduction that justified each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -292,13 +293,9 @@ declaration compiles. The example is now typechecked in CI, which it was not bef
 `check` script that nothing ran, so a `check:test` was added for the existing CI step to pick up.
 Without that the type half of the assertion would be stripped by vitest and prove nothing.
 
----
+### `tstzrange` and the other range types were unmapped — issue #213 — **FIXED**
 
-## Still open — cheap
-
-### `tstzrange` and the other range types are unmapped — issue #213
-
-Still absent from `DefaultTypeMapping` (`packages/cli/src/types.ts`), so a range column generates:
+Was absent from `DefaultTypeMapping` (`packages/cli/src/types.ts`), so a range column generated:
 
 ```ts
 export interface TstzRangeResult {
@@ -322,25 +319,47 @@ export interface CreateTimesParams {
 }
 ```
 
-**Fix:** add `tstzrange`/`tsrange`/`daterange`/`int4range`/`int8range`/`numrange` to
-`DefaultTypeMapping` as `string`. Low risk; retires a five-year-old report.
+**Fixed.** All six built-in range types — `int4range`, `int8range`, `numrange`, `tsrange`,
+`tstzrange`, `daterange` — are in `DefaultTypeMapping` as `string` in both directions, which is what
+node-postgres sends and receives: it registers no parser for any of them, so the value is the
+server's own literal. An existing `typesOverrides` entry still wins, so the workaround above keeps
+working unchanged.
 
-### `.sql` discovery includes `node_modules` — issue #534
+**Deliberately not covered, and worth knowing.** A user-defined range, and a multirange (PG14+),
+still need a `typesOverrides` entry — they are not built-in type names. An _array_ of ranges is the
+`_bit` case recorded under #552: pg-types cannot parse it either, so a `tstzrange[]` arrives as one
+raw string while the derived type says `stringArray`. Both are noted in the code.
+
+**Regression cover.** `packages/cli/src/types.test.ts` pins all six in both directions and asserts
+the allocator records no error for them; `packages/example` grows a `period TSTZRANGE NOT NULL`
+column on `driver_types`, so the declaration is checked against the live server the way the other
+driver-type columns are — including the parameter direction, which round-trips a range literal
+through an INSERT.
+
+### `.sql` discovery included `node_modules` — issue #534 — **FIXED**
 
 Reproduced: `globSync('/tmp/.../src/**/*.sql')` returns `src/node_modules/somepkg/b.sql`. Neither
 `globSync` in `packages/cli/src/typescriptAndSqlTransformer.ts` nor the chokidar watcher in the same
-file excludes `node_modules`.
-
-**Fix:** add `ignore: ['**/node_modules/**']` to both.
+file excluded `node_modules`.
 
 (The reporter's specific `.bin/tsc` lines would be filtered by today's minimatch predicate; the core
-complaint — files under `node_modules` are parsed — reproduces exactly.)
+complaint — files under `node_modules` are parsed — reproduced exactly.)
 
-### `--file` only matches one exact spelling of the path — issue #579
+**Fixed.** Discovery moved into an exported `findQueryFiles`, which passes
+`ignore: ['**/node_modules/**']`, and the watcher's ignore predicate into an exported
+`isUnderNodeModules`, which splits on either separator so it holds on Windows too. Returning true for
+the directory itself is what stops chokidar descending into an installed tree at all, so watch mode
+spends no descriptors on it.
 
-Half fixed. The reported "all files are regenerated anyway" is gone — verified: with a non-matching
-`-f`, `multi/b/two.queries.ts` was never written. The other half is not:
-`fileList.includes(fileOverride)` in `typescriptAndSqlTransformer.ts` is raw string equality against
+Extracting both is also what makes the fix testable: `packages/cli/src/typescriptAndSqlTransformer.test.ts`
+plants a dependency with its own `.sql` files under `srcDir` and asserts neither is found, without
+needing a database. A directory merely _named_ like one (`node_modules_helpers/`) is still scanned.
+
+### `--file` only matched one exact spelling of the path — issue #579 — **FIXED**
+
+Half of it was already fixed. The reported "all files are regenerated anyway" was gone — verified:
+with a non-matching `-f`, `multi/b/two.queries.ts` was never written. The other half was not:
+`fileList.includes(fileOverride)` in `typescriptAndSqlTransformer.ts` was raw string equality against
 glob output, identical to 2.x.
 
 | `-f` argument                                   | Result                                                                           |
@@ -350,14 +369,31 @@ glob output, identical to 2.x.
 | `/tmp/pgt-repro/multi/a/one.sql`                | same                                                                             |
 | `multi\a\one.sql` (the Windows reporter's case) | same                                                                             |
 
-**Fix:** compare `path.relative(process.cwd(), path.resolve(x))` on both sides. Also worth exiting
-non-zero on that message rather than 0.
+**Fixed.** Both sides are resolved against the working directory (`path.resolve`, which is the same
+comparison as the `path.relative(cwd, resolve(x))` suggested above and one call shorter), so files
+are compared rather than strings and the platform decides what a separator is. Every row of the
+table above now matches. The glob's own spelling is what gets processed, so the `Processing …` lines
+no longer depend on how the flag was typed. The not-found message moved to stderr and the run exits
+**1**: a targeted regeneration step that matches nothing used to report success.
 
-**Related footgun, pre-existing:** `yargs.env()` is called with **no prefix**, so an ambient `FILE`
-environment variable sets `--file`. Verified: `FILE=one/nonexistent.sql pgtyped -c cfg.json` printed
-the override-not-found message and did nothing.
+**The related footgun is fixed too, and it was a one-liner.** `yargs.env()` is now `.env('PGTYPED')`,
+so options come from `PGTYPED_CONFIG`/`PGTYPED_WATCH`/`PGTYPED_URI`/`PGTYPED_FILE` and an ambient
+`FILE` is nobody's business but the shell's. This is a breaking change for anyone who was setting the
+unprefixed form deliberately, and is in the runtime README's upgrade notes.
 
-### Pick-expansion keys are never optional — issue #573
+**Regression cover.** The matching itself is unit-tested against all four spellings from the table
+(`typescriptAndSqlTransformer.test.ts`). The environment prefix is tested end to end through the
+built CLI in `cli.test.ts`, using `--file`'s `conflicts: 'watch'` as a discriminator that needs no
+database — whether yargs refuses the combination says whether the variable reached the flag. The
+exit code and the `./`-prefixed and absolute spellings are tested in `packages/example`, which is
+the only suite with a live server to get that far.
+
+**A detail worth recording:** the refusal a user sees for `--file` with `--watch` is yargs' own
+`Arguments file and watch are mutually exclusive`, not the CLI's
+`File override is not compatible with watch mode` — `conflicts` fires first, so that `fatal` call is
+unreachable. Left alone; noted here so the next person does not chase it.
+
+### Pick-expansion keys were never optional — issue #573 — **FIXED**
 
 Partially fixed already: **scalar** params are marked optional in 3.0
 (`const optional = param.type === ParameterTransform.Scalar && !param.required;`), verified:
@@ -389,15 +425,34 @@ export interface Get573Params {
 }
 ```
 
-**Fix:** the `else` branch of the param loop in `queryToTypeDeclarations` builds those keys as raw
-strings; append `?` when `!p.required`, mirroring the scalar branch three lines above. Decide
-alongside PR #582 / issue #556, which pull on the same line of code in the opposite direction.
+**Fixed** exactly as described: the `else` branch of the param loop in `queryToTypeDeclarations`
+now appends `?` when `!p.required`, mirroring the scalar branch three lines above.
 
-### The CLI package's `exports` map hijacks the importing process — found while evaluating PR #620
+**Checked before doing it, because the `?` has to be true and not just convenient.** `render` in the
+runtime reads each key off the object (`paramValue[name]`) and pushes whatever it finds; there is no
+required-key enforcement anywhere on the runtime path, and node-postgres sends `undefined` as NULL.
+So an absent key and an explicit `undefined` already reached the server identically — the `?`
+describes what worked rather than enabling anything new. It is purely widening: every params object
+that compiled before still compiles.
+
+**On the collision with PR #582 / issue #556.** Those want a config flag that makes non-required
+_scalar_ params non-optional, which is the opposite direction on the neighbouring line. They are not
+adopted here, and this change does not foreclose them: if that flag is ever built it should govern
+both branches together, so the two kinds of parameter cannot disagree about what "optional" means.
+Nothing in this change makes that harder — it makes the two branches agree, which is the precondition
+for one flag governing both.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` gains the reporter's own mixed case
+(`(line1!, line2, city!)`) in both `sql` and `ts` mode, and the three existing pick expectations
+moved with the output. `packages/example` regenerates one key — `categories` in
+`@param books -> ((rank!, name!, authorId!, categories)...)` — and gains a test that omits it
+entirely and asserts the column came back NULL.
+
+### The CLI package's `exports` map hijacked the importing process — found while evaluating PR #620 — **FIXED**
 
 Independent of whether #620's package split is adopted (it should not be — see
-[Not applicable](#not-applicable)), `packages/cli/package.json` has no `"."` entry and maps `"./*"`
-onto `./lib/index.js`, which is the `#!/usr/bin/env node` bin with top-level yargs parsing and
+[Not applicable](#not-applicable)), `packages/cli/package.json` had no `"."` entry and mapped `"./*"`
+onto `./lib/index.js`, which was the `#!/usr/bin/env node` bin with top-level yargs parsing and
 `process.exit`.
 
 Reproduced with the CLI symlinked into a scratch project's `node_modules`:
@@ -409,15 +464,38 @@ import('@pelotech/pgtyped-cli/generator.js') -> prints the CLI's --help text and
                                                 into the importing process
 ```
 
-Any subpath import takes over the host process.
+Any subpath import took over the host process.
 
-**Fix:** add a real `"."` library entry, stop mapping `./*` onto the bin, and move the
-argv/`process.exit` code out of `index.ts` into a `cli.ts` bin. Cheap on its own; the stable public
-API behind #620 is a separate design task.
+**Fixed.** `index.ts` is now the library — it exports `main` and its only import-time effect is
+configuring nunjucks — and a new `cli.ts` holds the shebang, the yargs parsing, the watch-mode config
+watcher and the exits. `exports` gains a real `"."`, and `"./*"` resolves to `./lib/*`, so a subpath
+import yields the module it names instead of the bin. `bin.pgtyped` points at `lib/cli.js`.
 
-### Docs and repo residue — issues #491, #548, #572
+**Preserving the exit codes was the constraint, and it shaped the split.** `main` returns the code
+the run earned — `undefined` in watch mode, which has no end — and `cli.ts` calls `process.exit` at
+exactly the point the old top-level code did. `fatal` still ends the process from inside `main` on an
+unreachable database, deliberately: routing that through a thrown error would have lost the
+underlying pg message, which is the useful half of that report. So `main` is honest enough to import
+but not yet a clean programmatic API; the stable public API behind #620 remains a separate design
+task.
 
-All one-line fixes, verified present today:
+**Regression cover.** `cli.test.ts` builds a scratch project with the package symlinked into
+`node_modules` and imports it through the real `exports` map, which is the thing under test:
+`import('@pelotech/pgtyped-cli')` must yield `main` with empty stderr and exit 0, and
+`import('@pelotech/pgtyped-cli/generator.js')` must yield `generateInterface` rather than the CLI's
+`--help`. Reverting the manifest to either of its two bad shapes reproduces the exact upstream
+symptoms — `ERR_PACKAGE_PATH_NOT_EXPORTED` for the first, `Missing required argument: config` for the
+second.
+
+**Breaking, and it needed following through the repo.** The bin path moved, so
+`packages/example/docker-compose.yml` (both the `build` and `watch` services), the CLI's own exit-code
+tests and the example's `codegen exit code` test all had to be repointed at `lib/cli.js`. Anyone
+invoking the CLI by path rather than through `npx pgtyped` has the same edit to make; it is in the
+runtime README's upgrade notes.
+
+### Docs and repo residue — issues #491, #548, #572 — **FIXED**
+
+All one-line fixes, verified present at the time of triage:
 
 - `docs-new/docs/faq.md` is **0 bytes**. It is not in `sidebars.js`, so it does not render, but it
   should not ship empty.
@@ -433,6 +511,29 @@ All one-line fixes, verified present today:
   Worse than the reporter described: running the CLI from another directory with an absolute `-c`
   path produced **no output whatsoever** and exit 0 — no `Processing`, no warning that zero files
   matched. Add the parenthetical, and consider warning when the glob matches nothing.
+
+**Fixed.**
+
+- `faq.md` has content — the questions this triage kept turning up, each pointing at the page that
+  answers it properly — and is in `sidebars.js`, so it renders.
+- The clone and repo URLs point at `pelotech/pgtyped`, in `CONTRIBUTING.md`,
+  `packages/example/README.md`, `packages/cli/README.md`, `docs-new/docs/getting-started.md`,
+  `docs-new/docusaurus.config.js` (the header link and the docs `editUrl`) and the root README. Two
+  URLs were **not** repointed and the reason matters: the `adelsz/pgtyped/issues/…` links in
+  `generator.ts` and `typescriptAndSqlTransformer.ts` are citations of upstream issues, which is
+  where those issues actually live. The root README's `github/v/release/adelsz/pgtyped` badge was
+  dropped rather than repointed — this fork publishes to GitHub Packages and cuts no GitHub releases,
+  so the repointed badge would have read "no releases" and the original was reporting a version this
+  fork does not ship.
+- The example README's steps are corrected end to end, not just at step 4: the build has to run from
+  the repository root (the example's own `pnpm build` is the `echo`), so the `cd` moves and step 5
+  enters `packages/example` itself.
+- **#572 got a code change as well as the parenthetical.** `srcDir`'s resolution is left alone —
+  changing it would silently relocate every existing project's source directory — but a transform
+  whose glob matches nothing now warns, naming both the pattern and the working directory it was
+  resolved against. That is the missing signal the reporter actually hit. `docs-new/docs/cli.md`
+  documents the resolution rule in the config table, and the `--file` and `PGTYPED_` changes from
+  #579 are documented there too.
 
 ---
 
@@ -838,8 +939,12 @@ The fork already carries two flags of exactly this character (`nonEmptyArrayPara
 
 **What it buys:** with `optionalNullParams: false`, forgetting to pass a parameter becomes a compile
 error rather than a silent `NULL`. Today the only way to get that is to mark every param `!`, which
-also changes the emitted TS type. Also answers issue #556. Decide together with #573
-(pick-expansion optionality), which pulls the same line the other way.
+also changes the emitted TS type. Also answers issue #556.
+
+**#573 has since been fixed here, in the opposite direction**: a non-required _pick_ key now gets the
+`?` a non-required scalar always had. That is not a conflict, it is a precondition — the two branches
+now agree, so if this flag is built it should govern both together rather than making one kind of
+parameter optional and the other not.
 
 **Unverified:** the current output and the patched branch were confirmed; the flag was not built.
 
@@ -896,9 +1001,12 @@ with no TCP listener.
 fork's deliberate 6-packages-to-3 consolidation.
 
 **Take instead:** fix the `exports` map (see
-[the packaging bug](#the-cli-packages-exports-map-hijacks-the-importing-process--found-while-evaluating-pr-620)),
+[the packaging bug](#the-cli-packages-exports-map-hijacked-the-importing-process--found-while-evaluating-pr-620--fixed)),
 move the argv/`process.exit` code out of `index.ts` into a `cli.ts` bin, and export a small
-`generateTypes(file, config, db)` surface. The fork is well positioned for the PGlite half: `TypeDb`
+`generateTypes(file, config, db)` surface. **The first two are done** — `index.ts` is a library that
+exports `main`, `cli.ts` is the bin, and the package has a real `"."` entry. The third, a public
+surface worth committing to, is still open: `main` takes a whole `ParsedConfig` and exits the process
+on an unreachable database, so it is importable but not yet an API. The fork is well positioned for the PGlite half: `TypeDb`
 in `db/type-db.ts` is already a two-method interface (`describe`, `rows`) over a `pg.Pool`.
 
 **Unverified:** the packaging defect was reproduced; the PGlite claim was not. `db/describe.ts` uses
@@ -978,7 +1086,7 @@ were found by diffing 3.0 against 2.4.2 in the areas the rewrite touched.
 | #585 | Switch from `antlr4ts` to `antlr4`                   | Moot: the parser package is gone. `grep -rn antlr packages/*/package.json pnpm-lock.yaml` → no hits; `packages/runtime/package.json` has no dependencies at all.                                                                                                                                                                                                                                                                                                                                    |
 | #604 | Cannot connect to PostgreSQL 16 with `scram-sha-256` | Ran the CLI against PostgreSQL **16.15** with `password_encryption = scram-sha-256` and `host all all all scram-sha-256`, using a config shaped like the reporter's: `Saved 1 query types from src/ok.sql to src/ok.queries.ts`. SCRAM works. The failure the reporters actually hit — a stale `PGPASSWORD` overriding the config — is covered by the `verifyConnection` fix below.                                                                                                                 |
 | #640 | TypeScript 6 support                                 | Peer range is `">=5 <7"` with `peerDependenciesMeta.typescript.optional = true`. Upstream is still `"3.1 - 5"`, which excludes 6.x. TS 6 now installs, and for `sql`-only transforms TS is not needed at all — `generator.ts` imports it lazily behind a clear error.                                                                                                                                                                                                                               |
-| #548 | Cannot run the example application                   | `cd packages/example && docker compose run --rm build` → all 12 files processed; `docker compose run --rm test` → 26 passed. **Residual:** the _instructions_ the reporter actually complained about are still stale — see [Docs and repo residue](#docs-and-repo-residue--issues-491-548-572).                                                                                                                                                                                                     |
+| #548 | Cannot run the example application                   | `cd packages/example && docker compose run --rm build` → all 12 files processed; `docker compose run --rm test` → 26 passed. **Residual, now also fixed:** the _instructions_ the reporter actually complained about were still stale — see [Docs and repo residue](#docs-and-repo-residue--issues-491-548-572--fixed).                                                                                                                                                                             |
 | #394 | Write types to a separate file                       | Already true for `mode: "ts"`, verified on 3.0: `tsmode/q.types.ts` is emitted with **no imports at all**, only `export interface`. Still mixed for `mode: "sql"`, but a `.sql`-mode user's `import type` is erased by TS anyway and the runtime now has zero dependencies. Effectively answered; not worth code changes.                                                                                                                                                                           |
 | #410 | Null parsed parameters in array spread and pick      | **Not creditable to 3.0 — already fixed upstream.** 2.4.2 renders `values ($1,$2)` with bindings `["id","value"]`; 3.0 renders the same. Verified 3.0 has not regressed it (`keys.map(({ name }) => entity[name])` in `render.ts`). Safe to close as fixed.                                                                                                                                                                                                                                         |
 
@@ -1114,7 +1222,10 @@ Collected from every bucket, so the gaps are in one place.
   printed directly). The parameter-side claim conflicts between two reproductions and should be
   re-checked before anyone relies on it.
 - **Windows path handling for `-f` (#579)** was approximated by passing a backslash string on macOS.
-  The failure mode is the same string comparison, but nothing ran on Windows.
+  The failure mode was the same string comparison, but nothing ran on Windows. The fix resolves both
+  sides with `path.resolve`, which is separator-aware on Windows and not on POSIX — so the reporter's
+  `multi\a\one.sql` is expected to work there and is still expected to fail here, where a backslash
+  is a legal character in a file name. That expectation, too, has not been run on Windows.
 - **PgBouncer transaction-pooling mode**, which `unprepared()` exists for, was not exercised.
 - **#561 (permissions)** and **#513 (DDL source)**: verified only that the feature does not exist and
   that the code path the reporters describe is unchanged. No attempt was made to build either to
@@ -1138,22 +1249,22 @@ Every triaged number, and where it is covered.
 
 **Issues (70).**
 #50 NA · #143 feature · #151 fixed · #159 fixed · #170 limitation/docs fixed · #202 feature ·
-#213 open-cheap · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
+#213 **FIXED here** · #221 open · #263 limitation · #273 open · #292 fixed · #314 open · #316 NA ·
 #317 open · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
-#460 open · #491 open (docs) · #498 open · #503 open · #504 NA · #512 feature/workaround ·
+#460 open · #491 **FIXED here** (docs) · #498 open · #503 open · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 open · #522 adopt #580 · #523 adopt #524 · #526 **FIXED here** ·
-#534 open-cheap · #548 fixed (residual docs) · #549 limitation · #551 limitation · #552 open ·
+#534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
-#566 NA · #567 open · #572 open (docs) · #573 open-cheap · #574 fixed · #576 feature ·
-#578 NA · #579 open-cheap · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
+#566 NA · #567 open · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
+#578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 open · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
 #613 open · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
 
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 adopt (medium) ·
 #580 adopt (cheap) · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
-#614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 adopt packaging only ·
+#614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
 #622 NA · #623 NA · #624 adopt (trivial) · #627 already fixed · #628 already fixed ·
 #632 already fixed · #633 already fixed · #635 already fixed · #637 adopt (amended) ·
 #639 NA · #641 already fixed · #642 adopt (trivial) · #643 already fixed
