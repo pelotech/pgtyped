@@ -22,6 +22,29 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # release-please takes a grouped pull request's version from a root
+      # package — a candidate whose path is "." — and this repository has none,
+      # only packages/cli and packages/runtime. A ${version} token in
+      # group-pull-request-title-pattern therefore resolves to nothing, and the
+      # title falls back to "chore: release <branch>". Squash-merging then lands
+      # a commit on the default branch that does not say what was released, so
+      # read the version the pull request itself proposes and put it in the title.
+      - name: Put the released version in the pull request title
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          number=$(jq -r '.number' <<<"$PR")
+          head=$(jq -r '.headBranchName' <<<"$PR")
+          version=$(gh api "repos/${{ github.repository }}/contents/.release-please-manifest.json?ref=$head" \
+            --jq '.content' | base64 -d | jq -r '."packages/cli"')
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "No version in .release-please-manifest.json on $head" >&2
+            exit 1
+          fi
+          gh pr edit "$number" --title "chore: release $version"
+
   publish:
     name: Publish to GitHub Packages
     needs: release-please
