@@ -230,7 +230,7 @@ matches the rows and the odd name gives the problem away. With it **on**, `camel
 declares `total`, the rows still arrive under `total!`, and `row.total` is silently `undefined`. Codegen therefore
 warns on any result column whose name ends in `!` or `?` — in `.sql` files and in `sql` tags alike — naming the column
 and the `@column` line to add; `failOnError` turns the warning into a failed run.
-See [Upgrading from 2.x](https://github.com/pelotech/pgtyped/tree/master/packages/runtime/README.md#upgrading-from-2x).
+See [Upgrading from 2.x](https://github.com/pelotech/pgtyped/tree/HEAD/packages/runtime/README.md#upgrading-from-2x).
 :::
 
 `@column` also works in `sql` tags in TS files, in a leading block comment:

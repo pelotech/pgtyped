@@ -1,4 +1,4 @@
-<img width="340" height="150" align="right" src="https://raw.githubusercontent.com/pelotech/pgtyped/master/header.png">
+<img width="340" height="150" align="right" src="https://raw.githubusercontent.com/pelotech/pgtyped/HEAD/header.png">
 
 # [PgTyped](https://pgtyped.dev/)
 
@@ -122,6 +122,6 @@ All issue reports, feature requests and PRs appreciated.
 
 ### License
 
-[MIT](https://github.com/pelotech/pgtyped/tree/master/LICENSE)
+[MIT](https://github.com/pelotech/pgtyped/tree/HEAD/LICENSE)
 
 Copyright (c) 2019-present, Adel Salakh
