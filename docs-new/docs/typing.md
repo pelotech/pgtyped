@@ -83,6 +83,40 @@ Here `dateOfBirth` should be typed `string | Date` as it can receive either. You
 }
 ```
 
+### Array types
+
+A Postgres array generates a TypeScript array of whatever its element type generates, under an alias
+named after that element type. A `text[]` result column produces:
+
+```ts
+export type nullableStringArray = (string | null)[];
+
+/** 'GetTags' return type */
+export interface GetTagsResult {
+  tags: nullableStringArray | null;
+}
+```
+
+The **elements** are nullable because a Postgres array may hold NULLs whatever the column's own
+nullability: `ARRAY['a', NULL, 'c']::text[]` is an ordinary value of a `NOT NULL` column. The two
+are separate — `| null` inside the alias is the element type, `| null` outside it is the column — so
+a nullable column of a nullable element type carries both.
+
+An array **parameter** is not widened the same way, because a caller passing `string[]` was always
+correct:
+
+```ts
+export type stringArray = (string)[];
+
+/** 'FindByTags' parameters type */
+export interface FindByTagsParams {
+  tags: stringArray;
+}
+```
+
+The two aliases are named apart because one generated file may need both directions of the same
+Postgres type.
+
 ### Default mapping
 The default mapping is as follows:
 
