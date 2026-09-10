@@ -63,4 +63,51 @@ describe('parseConfig', () => {
     writeFileSync(file, JSON.stringify({ srcDir: './src' }));
     expect(() => parseConfig(file)).toThrow(/transforms/);
   });
+
+  // Only the top level used to be strict, so a typo one level down was
+  // dropped and read back as "not set" — `db: { dbname: 'x' }` quietly
+  // generated types against the default `postgres` database.
+  describe('nested objects are strict too', () => {
+    test('an unknown key in db is rejected, naming the path', () => {
+      expect(() => parseConfig(configFile({ db: { dbname: 'x' } }))).toThrow(
+        /db\.dbname/,
+      );
+    });
+
+    test('an unknown key in a transform is rejected, naming the path', () => {
+      expect(() =>
+        parseConfig(
+          configFile({
+            transforms: [
+              { mode: 'sql', include: '**/*.sql', emitFilename: 'out.ts' },
+            ],
+          }),
+        ),
+      ).toThrow(/transforms\.0\.emitFilename/);
+    });
+
+    test('an unknown key in a typesOverrides entry is rejected', () => {
+      expect(() =>
+        parseConfig(configFile({ typesOverrides: { date: { retrun: 'x' } } })),
+      ).toThrow(/typesOverrides\.date\.retrun/);
+    });
+
+    test('the spelling that was meant still works', () => {
+      expect(parseConfig(configFile({ db: { dbName: 'x' } })).db.dbName).toBe(
+        'x',
+      );
+    });
+
+    test('db.ssl stays permissive, being handed to node TLS verbatim', () => {
+      const c = parseConfig(
+        configFile({
+          db: { dbName: 'x', ssl: { rejectUnauthorized: false, ca: ['pem'] } },
+        }),
+      );
+      expect(c.db.ssl).toStrictEqual({
+        rejectUnauthorized: false,
+        ca: ['pem'],
+      });
+    });
+  });
 });

@@ -105,3 +105,18 @@ describe('relative imports', () => {
     ).toBe("import type Alias from '../../../my/custom/path.ts';\n");
   });
 });
+
+test('a quote in the module specifier is escaped', () => {
+  // Same defect as the enum unions in #611: the specifier was interpolated
+  // into a string literal raw, so one apostrophe emitted a file that does not
+  // parse.
+  expect(
+    declareImport(
+      [{ name: 'Alias', from: "pack'age", aliasOf: 'default' }],
+      './',
+    ),
+  ).toBe("import type Alias from 'pack\\'age';\n");
+  expect(declareImport([{ name: 'Foo', from: "pack'age" }], './')).toBe(
+    "import type { Foo } from 'pack\\'age';\n",
+  );
+});

@@ -182,7 +182,9 @@ export function declareImport(
   const lines = [];
 
   if (defaultImportAlias) {
-    const defaultImportDec = `import type ${defaultImportAlias} from '${from}';`;
+    const defaultImportDec = `import type ${defaultImportAlias} from ${quoteString(
+      from,
+    )};`;
     if (names.size > 0) {
       // A type-only import can specify a default import or named bindings, but not both.
       lines.push(defaultImportDec);
@@ -210,7 +212,7 @@ export function declareImport(
   }
 
   parts.push(subParts.join(', '));
-  parts.push(`from '${from}';\n`);
+  parts.push(`from ${quoteString(from)};\n`);
 
   lines.push(parts.join(' '));
 
@@ -221,14 +223,28 @@ function declareAlias(name: string, definition: string): string {
   return `export type ${name} = ${definition};\n`;
 }
 
+/**
+ * `value` as a TypeScript string literal.
+ *
+ * Interpolating it raw emits a file that does not parse — an enum value
+ * containing an apostrophe used to generate `'car's'` while codegen still
+ * exited 0 (#611). `JSON.stringify` does the escaping, including backslashes
+ * and control characters; the result is re-quoted so that generated files keep
+ * the single-quoted style they have always had, and so that fixing this
+ * changes no output that was valid before.
+ */
+function quoteString(value: string): string {
+  const escaped = JSON.stringify(value)
+    .slice(1, -1)
+    // Inside single quotes the escaping JSON needs is the other way round: a
+    // double quote stands for itself, an apostrophe has to be escaped.
+    .replace(/\\"/g, '"')
+    .replace(/'/g, "\\'");
+  return `'${escaped}'`;
+}
+
 function declareStringUnion(name: string, values: string[]) {
-  return declareAlias(
-    name,
-    values
-      .sort()
-      .map((v) => `'${v}'`)
-      .join(' | '),
-  );
+  return declareAlias(name, values.sort().map(quoteString).join(' | '));
 }
 
 export enum TypeScope {

@@ -19,6 +19,21 @@ const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 const KEYS = `\\s*${IDENT}!?(?:\\s*,\\s*${IDENT}!?)*\\s*,?\\s*`;
 
 const NAME_RULE = `@name\\s+(${IDENT})`;
+
+/**
+ * What a header block has to open with. Leading whitespace and the `*` that
+ * decorates a multi-line comment are all that may come before the `@name`, so
+ * the decorated form, where every line opens with a `*`, still qualifies.
+ *
+ * Mentioning `@name` is not enough. A comment written inside a statement that
+ * refers to one — `\/* WHERE id = :x -- see @name GetUsersById *∕` — would
+ * otherwise be promoted to a header, inventing a query and cutting the
+ * statement it was written in half. Requiring the annotation to come first
+ * tells the two apart without weakening the rule that a header ends the
+ * statement above it, which is what reports a missing `;`.
+ */
+const HEADER_START = /^[\s*]*@name\s/;
+
 /** Matches up to the transform's opening paren; `readRule` finds its close. */
 const PARAM_HEAD = `@param\\s+(${IDENT})\\s*->\\s*(?=\\()`;
 const COLUMN_RULE = `@column\\s+(${IDENT})([!?])`;
@@ -102,52 +117,66 @@ interface Block {
  * the duplicates that would otherwise be silently overwritten. This is a
  * backstop as much as a courtesy: an annotation that no rule matches is a
  * declaration the user believes they made and the parser never saw.
+ *
+ * Severity is drawn by consequence. A malformed `@param` or `@column` and a
+ * duplicate `@name` change what is generated, so they are errors and the file
+ * emits nothing. An annotation nobody recognises cannot: `@deprecated` on a
+ * query is documentation, and failing the build over it stops the project
+ * dead. It stays a warning, which still surfaces a typo like `@nmae` and which
+ * `failOnError` promotes for anyone who wants the strict reading.
  */
 function checkAnnotations(
   inner: string,
   offset: number,
   nameAt: number,
   errors: Diagnostic[],
+  warnings: Diagnostic[],
 ): void {
   const seen = new Set<string>();
   for (const m of inner.matchAll(ANNOTATION)) {
     const at = m.index;
-    const report = (message: string): void => {
-      errors.push({ message, offset: offset + at });
+    const report = (into: Diagnostic[], message: string): void => {
+      into.push({ message, offset: offset + at });
     };
     if (m[1] === 'name') {
       // The first well-formed @name is the block's; any other is ignored.
       if (at !== nameAt)
-        report('Duplicate @name annotation; the first one wins');
+        report(errors, 'Duplicate @name annotation; the first one wins');
     } else if (m[1] === 'param') {
       const p = matchesAt(PARAM_HEAD, inner, at);
       if (!p || readRule(inner, at + p[0].length) === undefined)
-        report('Malformed @param annotation; expected `@param name -> (...)`');
+        report(
+          errors,
+          'Malformed @param annotation; expected `@param name -> (...)`',
+        );
       else if (seen.has(p[1]))
-        report(`Duplicate @param ${p[1]}; the last one wins`);
+        report(errors, `Duplicate @param ${p[1]}; the last one wins`);
       else seen.add(p[1]);
     } else if (m[1] === 'column') {
       if (!matchesAt(COLUMN_RULE, inner, at))
         report(
+          errors,
           'Malformed @column annotation; expected `@column name!` or `@column name?`',
         );
     } else {
-      report(`Unrecognised annotation @${m[1]}`);
+      report(warnings, `Unrecognised annotation @${m[1]}`);
     }
   }
 }
 
 /**
  * Reads the annotations out of the text between the comment delimiters.
- * Returns undefined if there is no `@name`, which is how an ordinary comment
- * is told from a header block. `offset` is the offset of `inner` in the source
+ * Returns undefined if the block does not open with `@name`, which is how an
+ * ordinary comment is told from a header block. `offset` is the offset of `inner` in the source
  * text, so diagnostics point at the annotation they describe.
  */
 function readBlock(
   inner: string,
   offset: number,
   errors: Diagnostic[],
+  warnings: Diagnostic[],
 ): Block | undefined {
+  if (!HEADER_START.test(inner)) return undefined;
   const name = new RegExp(NAME_RULE).exec(inner);
   if (!name) return undefined;
 
@@ -178,7 +207,7 @@ function readBlock(
   for (const m of inner.matchAll(new RegExp(COLUMN_RULE, 'g')))
     columns.push({ name: m[1], nullable: m[2] === '?' });
 
-  checkAnnotations(inner, offset, name.index, errors);
+  checkAnnotations(inner, offset, name.index, errors, warnings);
   return { name: name[1], offset: offset + name.index, params, columns };
 }
 
@@ -190,8 +219,13 @@ function readBlock(
  * Only comments *before* a block are ignored. A comment between the block and
  * the end of the statement is part of `statement`, verbatim — `statement` is
  * what codegen hashes into the prepared statement name, so it is reported
- * exactly as it will be sent. A statement with no block, a block with no
- * statement, and a statement not ended by `;` are all errors.
+ * exactly as it will be sent.
+ *
+ * A statement with no block and a block with no statement are errors. So is a
+ * statement ended by the next `@name` block rather than by `;`, since dropping
+ * the `;` there silently welds two queries together. The last statement in the
+ * file is deliberately exempt: end of input is an unambiguous end, so a file
+ * whose final query omits its `;` parses.
  *
  * `errors` is fatal: when it is non-empty, `queries` must not be used. A query
  * whose `@param` could not be read is still emitted, with that param fallen
@@ -282,6 +316,7 @@ export function parseSqlFile(text: string): SqlFileParse {
         chunk.slice(2, chunk.endsWith('*/') ? -2 : undefined),
         span.a + 2,
         errors,
+        warnings,
       );
       if (read) {
         // A header block is a hard statement boundary. Absorbing it into an

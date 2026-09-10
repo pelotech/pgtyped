@@ -16,3 +16,20 @@ export function typeDb(pool: Pool): TypeDb {
     rows: async (sql) => (await pool.query(sql)).rows,
   };
 }
+
+/**
+ * Proves the database is reachable and the credentials are accepted, by
+ * checking a client out of the pool and releasing it again.
+ *
+ * pg.Pool connects lazily, so without this a bad host, a refused port or a
+ * rejected password first surfaces as a per-query describe failure — which
+ * codegen renders as a `never` type, overwriting previously correct output
+ * while reporting a successful run. Callers do this once, before any file is
+ * processed.
+ */
+export async function verifyConnection(
+  pool: Pick<Pool, 'connect'>,
+): Promise<void> {
+  const client = await pool.connect();
+  client.release();
+}
