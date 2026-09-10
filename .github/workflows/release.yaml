@@ -43,7 +43,11 @@ jobs:
             echo "No version in .release-please-manifest.json on $head" >&2
             exit 1
           fi
-          gh pr edit "$number" --title "chore: release $version"
+          # --repo is required: this job has no actions/checkout, so gh has no
+          # git remote to infer the repository from. gh api takes an explicit
+          # path and worked; gh pr edit does not and failed with
+          # "fatal: not a git repository".
+          gh pr edit "$number" --repo "${{ github.repository }}" --title "chore: release $version"
 
   publish:
     name: Publish to GitHub Packages
