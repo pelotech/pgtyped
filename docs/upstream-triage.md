@@ -56,14 +56,16 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Six entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Seven entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
 escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
 keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
-it raises is recorded there and stays open), and the silence around an ambient `PG*` variable
-displacing an explicit config value (its precedence is deliberately unchanged). The last three entries below are not bugs but adoptions — the
-cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
-taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
+it raises is recorded there and stays open), the silence around an ambient `PG*` variable
+displacing an explicit config value (its precedence is deliberately unchanged), and the pre-flight
+privilege check of PR #563, whose technique was prototyped against a live server before anything was
+built on it and which shipped as the opt-in `checkPrivileges`. The last four entries below are not
+bugs but adoptions — PR #563 and the cheapest three in **Worth adopting from upstream** (PRs #580,
+#624 and #642), which have also been taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
@@ -944,6 +946,92 @@ camelCase one naming both source columns, the same-name one _not_ blaming camelC
 result, the `failOnError` escalation, and the case that must stay quiet: two columns that camelCase
 to distinct fields (`user_name`, `user_id`) still generate both.
 
+### Codegen accepted queries the connecting role may not execute — PR #563 — **FIXED**
+
+Postgres checks table and column privileges at **execute** time, not at Parse/Describe time, so the
+`DescribeStatement` path reported a perfectly good result type for a query the role could not run.
+
+Reproduced with role `app_user` and `REVOKE ALL ON secrets`:
+
+```sql
+/* @name GetSecrets */
+SELECT id, value FROM secrets;
+```
+
+```ts
+// codegen: exit 0, no warning
+export interface GetSecretsResult {
+  id: number;
+  value: string;
+}
+```
+
+```
+RUNTIME ERROR: 42501 permission denied for table secrets
+```
+
+Half of what #563 was after was **already** caught: the second query in the same file,
+`INSERT INTO secrets (id, value) …` against a `GENERATED ALWAYS AS IDENTITY` column, failed at Parse
+with `428C9 cannot insert a non-DEFAULT value into column "id"` and was correctly emitted as `never`.
+Only the privilege half was missing.
+
+The opt-in `checkPrivileges` config option closes it. None of upstream's code survived — `packages/query`,
+`packages/wire` and the raw Parse/Flush/Close plumbing are all gone — and neither, in the end, did its
+technique. What shipped is one `EXPLAIN` per query after the describe, on the same pool: `EXPLAIN`
+without `ANALYZE` plans the statement, which is where Postgres applies the privileges, and executes
+nothing.
+
+**The technique was prototyped before anything was built on it**, against live PostgreSQL 18.6 and
+15.19 containers with a real role and real `REVOKE`s. What the prototype settled, question by
+question:
+
+- **Missing `SELECT` privilege** is surfaced as `42501`, with and without parameters.
+- **Column-level grants are caught**, which is the case #563 was really for and the one this triage
+  had never tested. With `GRANT INSERT (a, b)` and `GRANT UPDATE (b)` on a table, `INSERT INTO items
+(a, b, c)` and `UPDATE items SET a = …` are both refused, while `INSERT INTO items (a, b)` and
+  `UPDATE items SET b = …` plan cleanly. `INSERT … RETURNING id, a` is refused too, because
+  `RETURNING` needs `SELECT` on the columns it names.
+- **It is safe for DML.** `INSERT`, `INSERT … RETURNING`, `UPDATE`, `DELETE`, `INSERT … ON CONFLICT
+DO UPDATE` and a data-modifying CTE were all planned, inside a transaction and outside one, and a
+  full before/after snapshot of every row and both sequences was byte-identical. Nothing is written
+  and no sequence advances, so no transaction is wrapped around the check — there is nothing to roll
+  back.
+- **Parameters are not a problem, and caveat 3 is settled.** Two findings, both against the recorded
+  technique rather than against what shipped. First, the rendered query codegen describes has a
+  _fixed_ `$n` per placeholder — an array spread renders `IN ($1)` and a pick spread `VALUES ($1,
+$2)` at codegen time, the per-element expansion happening only at runtime — so the "spread" worry
+  does not arise at all. Second, binding `NULL` for every parameter turned out to be dangerous in the
+  _opposite_ direction from the one predicted: it produced no spurious error in any case tried, but
+  it did produce a **false negative**. `WHERE id = $1 AND EXISTS (SELECT 1 FROM secrets)` folds
+  `id = NULL` to a constant false, the planner drops the whole join tree, and `secrets` never gets
+  checked — while the same query with a non-`NULL` parameter is correctly refused.
+  `EXPLAIN (GENERIC_PLAN)`, new in PostgreSQL 16, plans `$1` as a parameter and binds nothing, which
+  fixes the false negative and removes the premise of caveat 3 entirely. That is what is used on 16
+  and up; before 16 there is no such option, `NULL` is bound, and the under-reporting is documented.
+- **It costs one round trip per query**, plus one `SHOW server_version_num` per run. Measured against
+  a local container at ~0.11 ms per `EXPLAIN (GENERIC_PLAN)` against ~0.14 ms for the equivalent
+  parameterised query — the same order as the describe it follows, not the doubling the phrase "it
+  doubles the round trips" suggests, though against a remote database it is a real latency cost on a
+  large project.
+
+Two of the entry's caveats are settled the other way from upstream, deliberately:
+
+1. It is **opt-in and off by default** (caveat 1), because codegen very often connects as the schema
+   owner or a migration role while the application connects as a restricted one — where the check is
+   meaningless, and reassuring about exactly the queries it should not be. Upstream's hardcoded
+   `const doTestRuns = true` (caveat 2) is not copied.
+2. A privilege failure is a **warning that still generates the types**, and fails the run only under
+   `failOnError` (caveat 3, though for a different reason than the caveat gave). The SQL is valid and
+   the types describe it accurately; emitting `never`, which is what codegen does for a query it
+   cannot describe, would break every call site over something only a `GRANT` can fix.
+
+Only `42501` is reported. A statement `EXPLAIN` cannot plan at all — `TRUNCATE`, `CALL`, `SET`, DDL —
+raises `42601` and is passed over in silence rather than reported as a permissions problem; it has
+already been described successfully, so it is known to be valid SQL.
+
+Covered by a live test in `packages/example` that creates a role, revokes one table outright, grants
+two columns of another, and runs codegen as that role.
+
 ### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
 
 The data was already there and simply was not exposed. `queryName` is serialised into every emitted
@@ -1080,37 +1168,6 @@ expression is of type text' }`, and the query is emitted with `Params = never`.
 
 Not cheap: needs new annotation syntax plus IR and renderer support.
 
-### Codegen accepts queries the connecting role may not execute — PR #563
-
-Postgres checks table/column privileges at **execute** time, not at Parse/Describe time, so the
-`DescribeStatement` path reports a perfectly good result type for a query the role cannot run.
-
-Reproduced with role `app_user` and `REVOKE ALL ON secrets`:
-
-```sql
-/* @name GetSecrets */
-SELECT id, value FROM secrets;
-```
-
-```ts
-// codegen: exit 0, no warning
-export interface GetSecretsResult {
-  id: number;
-  value: string;
-}
-```
-
-```
-RUNTIME ERROR: 42501 permission denied for table secrets
-```
-
-Half of what #563 was after **is** already caught: the second query in the same file,
-`INSERT INTO secrets (id, value) …` against a `GENERATED ALWAYS AS IDENTITY` column, failed at Parse
-with `428C9 cannot insert a non-DEFAULT value into column "id"` and was correctly emitted as `never`.
-Only the privilege half is missing.
-
-See [Worth adopting](#pr-563--pre-flight-privilege-check) for the technique and its caveats.
-
 ### Shared type aliases collide across generated files — issue #565
 
 Confirmed directly from two generated files: both declare
@@ -1139,7 +1196,7 @@ the protocol gives us", not "nobody has got to it".
 | **#348** static JSON aggregate typing        | `SELECT json_agg(json_build_object(…)) AS family` → `family: Json \| null`                                                                                                                                                                         | Unchanged; would need to interpret the aggregate's arguments.                                                                                                                                                                                                                                                                                                                                                                             |
 | **#170**, **#446** dynamic column / order-by | `ORDER BY (CASE WHEN :asc = true THEN :sort_column END) ASC, :sort_column DESC` compiles to `… $2 …` with `values:[false,"id"]`; changing `sort_column` does not change the row order at all (verified against the correct raw `ORDER BY age ASC`) | `$n` is a value, not an identifier. **Cannot be fixed in code.** The docs promised otherwise; that has been corrected (see [Fixed in this fork](#fixed-in-this-fork)).                                                                                                                                                                                                                                                                    |
 | **#549** `:name` inside a `DO $$ … $$` block | `export type CreateNamedSequenceIfNotExistsParams = void;`, `"params":[]`                                                                                                                                                                          | Deliberate in 3.0: the scanner treats `$$ … $$` as a dollar-quoted string, matching what Postgres would do. Close as working-as-intended — but the silent `void` is a poor signal, and a warning for a `:name` sigil inside a dollar-quoted body would be kind.                                                                                                                                                                           |
-| **#561** permission reflection               | Not implemented                                                                                                                                                                                                                                    | `db/describe.ts` derives types from Parse/Describe, which carries no grant information. The limitation the reporter deduced still holds.                                                                                                                                                                                                                                                                                                  |
+| **#561** permission reflection               | Not implemented                                                                                                                                                                                                                                    | `db/describe.ts` derives types from Parse/Describe, which carries no grant information, so the limitation the reporter deduced still holds for _typing_. Grants are no longer entirely invisible, though: the opt-in `checkPrivileges` added for PR #563 plans each query and reports what the role may not execute.                                                                                                                      |
 | **#513** DDL instead of a live database      | Not implemented; the CLI still requires a live connection                                                                                                                                                                                          | Not attempted; only verified the feature does not exist.                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Unimplemented feature requests — reproduced as absent
@@ -1164,9 +1221,9 @@ the protocol gives us", not "nobody has got to it".
 
 # Worth adopting from upstream
 
-Ordered by value per unit of effort. The three cheapest — PRs #580, #624 and #642 — have been taken
-and are recorded in [Fixed on this branch](#fixed-on-this-branch); what is left all needs real code
-or a decision first.
+Ordered by value per unit of effort. The three cheapest — PRs #580, #624 and #642 — have been taken,
+as has PR #563, the pre-flight privilege check; all four are recorded in
+[Fixed on this branch](#fixed-on-this-branch). What is left all needs real code or a decision first.
 
 ### PR #582 — an `optionalNullParams` config flag
 
@@ -1254,34 +1311,6 @@ in `db/type-db.ts` is already a two-method interface (`describe`, `rows`) over a
 **Unverified:** the packaging defect was reproduced; the PGlite claim was not. `db/describe.ts` uses
 `pg`'s private `Connection.parse`/`describe`/`sync`, and whether PGlite has an equivalent was not
 checked — if it does not, the "no TCP" story is more work than it looks.
-
-### PR #563 — pre-flight privilege check
-
-**Effort: medium — roughly a day with tests.** A new method on `TypeDb`/`describe.ts`, a config flag,
-and error mapping into the existing `IParseError` path.
-
-**What it buys:** codegen fails on queries the application role is not allowed to run — column-level
-`INSERT`/`UPDATE` grants in particular, which are invisible to Parse/Describe. Reproduced above as a
-live `42501` at runtime with clean codegen.
-
-**None of the code survives** (`packages/query`, `packages/wire`, the raw Parse/Flush/Close message
-plumbing are all gone). The **technique** survives: inside a transaction, `PREPARE` the rendered SQL,
-`EXPLAIN EXECUTE name(null, null, …)`, `ROLLBACK`. `EXPLAIN` without `ANALYZE` plans but does not
-execute, so it is safe for DML.
-
-**Caveats to settle before anyone starts:**
-
-1. It must be **opt-in**. Many projects run codegen as the owner/migration role and the app as a
-   restricted role, where this check is meaningless or actively wrong.
-2. Upstream hardcoded `const doTestRuns = true` with no config. Do not copy that.
-3. Binding `null` for every parameter changes the plan and can produce spurious errors for some
-   queries; failures should probably be a warning unless `failOnError`.
-4. It doubles the round trips per query.
-
-**Unverified:** only the missing-`SELECT`-privilege case was reproduced. The column-level
-`INSERT (a, b)` / `UPDATE (b)` grants in upstream's example schema were not tested, and the
-`PREPARE`/`EXPLAIN EXECUTE` replacement was not prototyped, so the effort estimate is a judgement,
-not a measurement.
 
 ---
 
@@ -1466,8 +1495,11 @@ Collected from every bucket, so the gaps are in one place.
 - **#561 (permissions)** and **#513 (DDL source)**: verified only that the feature does not exist and
   that the code path the reporters describe is unchanged. No attempt was made to build either to
   confirm feasibility.
-- **PR #563**: only the missing-`SELECT`-privilege case was reproduced; column-level grants were not,
-  and the `PREPARE`/`EXPLAIN EXECUTE` replacement was not prototyped.
+- **PR #563**: no longer unverified. Every question the entry left open was prototyped against live
+  PostgreSQL 18.6 and 15.19 containers before the feature was built — including the column-level
+  grants and the DML safety this originally disclaimed. What remains untested in CI is the pre-16
+  `NULL`-binding path: its behaviour was confirmed by hand against a 15.19 container, but the example
+  suite runs on PostgreSQL 18, so only unit tests cover which of the two paths is chosen.
 - **PR #620**: the packaging defect was reproduced, the PGlite claim was not.
 - **PR #582**: the current output and the patched branch were confirmed; the flag was not built.
 - **PR #524**: the implementation was read and the env-precedence footgun reproduced; upstream's own
@@ -1499,7 +1531,7 @@ Every triaged number, and where it is covered.
 #613 open · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
 
 **Pull requests (27).**
-#524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 adopt (medium) ·
+#524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 **FIXED here** ·
 #580 **FIXED here** · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
 #614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
 #622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·

@@ -2,6 +2,9 @@ import { EventEmitter } from 'node:events';
 import {
   describe as describeStatement,
   DescribeStatement,
+  explain,
+  serverVersionNum,
+  supportsGenericPlan,
   type Described,
 } from './describe.js';
 
@@ -168,5 +171,90 @@ describe('describe(pool, text)', () => {
       'nope',
     );
     expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('explain', () => {
+  /** A pool whose one client records every query it is given, and its release. */
+  function recordingPool(fail?: Error) {
+    const queries: { text: string; values?: unknown[] }[] = [];
+    const release = vi.fn();
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        queries.push(values === undefined ? { text } : { text, values });
+        if (fail) throw fail;
+        return { rows: [] };
+      },
+      release,
+    };
+    return { pool: { connect: async () => client }, queries, release };
+  }
+
+  test('plans generically, binding nothing, on a server that can', async () => {
+    const { pool, queries, release } = recordingPool();
+
+    await explain(pool as never, 'SELECT id FROM t WHERE id = $1', 1, true);
+
+    expect(queries).toStrictEqual([
+      { text: 'EXPLAIN (GENERIC_PLAN) SELECT id FROM t WHERE id = $1' },
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Before PostgreSQL 16 a parameterised statement cannot be planned without
+   * values, so one NULL per placeholder is the only option — and the reason
+   * the check under-reports there. `paramCount` is what decides how many, not
+   * anything read out of the SQL text.
+   */
+  test('binds a NULL per parameter on a server that cannot', async () => {
+    const { pool, queries, release } = recordingPool();
+
+    await explain(
+      pool as never,
+      'INSERT INTO t (a, b) VALUES ($1, $2)',
+      2,
+      false,
+    );
+
+    expect(queries).toStrictEqual([
+      {
+        text: 'EXPLAIN INSERT INTO t (a, b) VALUES ($1, $2)',
+        values: [null, null],
+      },
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  test('releases the client even when the server refuses to plan', async () => {
+    const denied = Object.assign(new Error('permission denied for table t'), {
+      code: '42501',
+    });
+    const { pool, release } = recordingPool(denied);
+
+    await expect(
+      explain(pool as never, 'SELECT id FROM t', 0, true),
+    ).rejects.toBe(denied);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('supportsGenericPlan', () => {
+  // EXPLAIN (GENERIC_PLAN) was added in PostgreSQL 16.
+  test.each([
+    [150019, false],
+    [159999, false],
+    [160000, true],
+    [180006, true],
+  ])('server_version_num %i -> %s', (version, supported) => {
+    expect(supportsGenericPlan(version)).toBe(supported);
+  });
+
+  test('reads server_version_num as a number', async () => {
+    const pool = {
+      query: async () => ({ rows: [{ server_version_num: '180006' }] }),
+    };
+
+    await expect(serverVersionNum(pool as never)).resolves.toBe(180006);
   });
 });

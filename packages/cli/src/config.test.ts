@@ -26,6 +26,22 @@ describe('parseConfig', () => {
     expect(parseConfig(configFile({})).hungarianNotation).toBe(false);
   });
 
+  /**
+   * Off unless asked for: plenty of projects run codegen as the owner or a
+   * migration role and the application as a restricted one, where checking the
+   * codegen role's privileges is meaningless, and it costs a round trip per
+   * query besides.
+   */
+  test('checkPrivileges defaults to false', () => {
+    expect(parseConfig(configFile({})).checkPrivileges).toBe(false);
+  });
+
+  test('checkPrivileges can be turned on', () => {
+    expect(
+      parseConfig(configFile({ checkPrivileges: true })).checkPrivileges,
+    ).toBe(true);
+  });
+
   test('explicit values are honoured', () => {
     const c = parseConfig(
       configFile({ preparedStatements: false, hungarianNotation: true }),

@@ -125,6 +125,7 @@ For a full list of options, see the [Configuration file format](#configuration-f
   "hungarianNotation": false, // Whether to prefix generated interface names with "I"
   "nonEmptyArrayParams": false, // Whether the type for an array parameter should exclude empty arrays (an empty array has no SQL to render, and throws)
   "preparedStatements": true, // Whether to give each eligible query a server-side prepared statement name
+  "checkPrivileges": false, // Whether to also check that the connecting role is allowed to execute each query (costs one round trip per query)
   "dbUrl": "postgres://user:password@host/database", // DB URL (optional - will be merged with db if provided)
   "db": {
     "dbName": "testdb", // DB name
@@ -158,12 +159,13 @@ Unrecognised config keys are an error, at every level of the file. A key that Pg
 | `transforms`            | `Transform[]`            | An array of transforms to apply to the files.                                                                                                                              |
 | `srcDir`                | `string`                 | Directory to scan or watch for query files. A relative path is resolved against the working directory the CLI was started in, **not** against the location of the config file — so running the CLI from elsewhere with an absolute `--config` path will look in the wrong place. PgTyped warns when a transform's glob matches no files. |
 | `db`                    | `DatabaseConfig`         | A database config.                                                                                                                                                         |
-| `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes every codegen warning into a failure, whichever kind of file the query lives in: a `sql.prepared` name or type argument that does not match the variable holding it, a result column left with a 2.x nullability suffix, and an `@param` declared in a `.sql` file but never used by the statement. It covers a column or parameter whose Postgres type the mapping does not know (`Postgres type 'record' is not supported by mapping`), which is otherwise reported and generated as `unknown`. **Default:** `false`                                                                                      |
+| `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes every codegen warning into a failure, whichever kind of file the query lives in: a `sql.prepared` name or type argument that does not match the variable holding it, a result column left with a 2.x nullability suffix, an `@param` declared in a `.sql` file but never used by the statement, and — with `checkPrivileges` on — a query the connecting role may not execute. It covers a column or parameter whose Postgres type the mapping does not know (`Postgres type 'record' is not supported by mapping`), which is otherwise reported and generated as `unknown`. **Default:** `false`                                                                                      |
 | `dbUrl?`                | `string`                 | A connection string to the database. Example: `postgres://user:password@host/database`. Overrides (merged) with `db` config.                                               |
 | `camelCaseColumnNames?` | `boolean`                | Whether to convert column names to camelCase. _Note that this only coverts the types. You need to do this at runtime independently using a library like `pg-camelcase`_.   |
 | `nonEmptyArrayParams?`  | `boolean`                | Whether the types for array parameters exclude empty arrays, by typing them `readonly [T, ...T[]]`. A spread renders one placeholder per element, so an empty array has no SQL to render at all: it used to reach the server as `IN ()` and come back as `42601 syntax error at or near ")"`, and now throws before anything is sent, naming the parameter. This option moves the same mistake to compile time — but only for an array literal, since it cannot see the length of one built at runtime. **Default:** `false` |
 | `hungarianNotation?`    | `boolean`                | Whether to prefix generated interface names with `I`, so `FindBookByIdResult` becomes `IFindBookByIdResult`. **Default:** `false`                                          |
 | `preparedStatements?`   | `boolean`                | Whether to give each eligible query a server-side prepared statement name. See [Prepared statements](#prepared-statements). **Default:** `true`                            |
+| `checkPrivileges?`      | `boolean`                | Whether to check that the connecting role is allowed to *execute* each query, not merely to describe it. See [Checking privileges](#checking-privileges). **Default:** `false` |
 | `typesOverrides?`       | `Record<string, string>` | A map of type overrides, **keyed by Postgres type name** — including a domain's name, which is why `CREATE DOMAIN` is the way to give one column a type of its own. A key containing a dot (`"lobbies.status"`) is rejected: column-scoped overrides are not supported, and used to be accepted and then ignored. Similarly to `camelCaseColumnNames`, this only affects the types. _You need to do this at runtime independently using a library like `pg-types`._ |
 
 Fields marked with `?` are optional.
@@ -186,6 +188,47 @@ Fields marked with `?` are optional.
 | `dbName?`   | `string`                            | The database name. Defaults to `postgres`.                                                                                                                                                                                                                                                 |
 | `password?` | `string`                            | The database password. Defaults to empty string.                                                                                                                                                                                                                                           |
 | `ssl?`      | `boolean` or `TLSConnectionOptions` | Determines whether to use SSL to connect to the database. Also accepts a TLS connection options object as defined in the Node.js [socket method](https://nodejs.org/api/tls.html#new-tlstlssocketsocket-options). More details on this in the [Configuring SSL](#configuring-ssl) section. |
+
+### Checking privileges
+
+Postgres checks table and column privileges when a statement is **executed**, not when it is parsed or described. Codegen only ever describes: it asks the server for a statement's parameter and result types and never runs it. So a query the connecting role is not allowed to run is typed perfectly well, generates cleanly, and exits 0 —
+
+```sql
+/* @name GetSecrets */
+SELECT id, value FROM secrets;
+```
+
+```ts
+export interface GetSecretsResult {
+  id: number;
+  value: string;
+}
+```
+
+— and then fails in production with `42501 permission denied for table secrets`. Column-level grants are invisible the same way: with `GRANT INSERT (a, b)` and `GRANT UPDATE (b)`, an `INSERT` that also writes `c`, or an `UPDATE` that also sets `a`, describes without complaint.
+
+`checkPrivileges: true` closes that gap. After describing a query, codegen asks the server to **plan** it as well — `EXPLAIN` without `ANALYZE`, which applies every privilege check and executes nothing. Nothing is written, no sequence advances, and an `INSERT … RETURNING`, `UPDATE` or `DELETE` is as safe to check as a `SELECT`. A `42501` is reported against the query and the file it came from:
+
+```
+Query 'GetSecrets' in src/secrets.sql was described successfully, but the role codegen
+connected as may not execute it: permission denied for table secrets. Types were still
+generated — …
+```
+
+The types are still generated, and the run still exits 0. That is deliberate: the SQL is valid and its types are an accurate description of it, so replacing them with `never` — which is what codegen does for a query it cannot describe — would break every call site over something only a `GRANT` can fix. Under [`failOnError`](#configuration-file-format) the same finding fails the run instead, and nothing is written.
+
+#### Why it is off by default
+
+- **It is the wrong question for most projects.** Codegen very often connects as the schema owner or a migration role, while the application connects as a restricted one. Checking the owner's privileges tells you nothing about the application's, and the check would be reassuring for exactly the queries it should not be. Turn it on only when codegen connects as the role that will run the queries in production.
+- **It costs a round trip per query,** plus one `SHOW server_version_num` for the run. That is a real cost on a large project against a remote database, and it buys nothing at all in the case above.
+
+#### What it needs, and what it misses
+
+On **PostgreSQL 16 and later** the statement is planned with `EXPLAIN (GENERIC_PLAN)`, which plans `$1` as a parameter rather than as a value. No parameter value is invented, so no query can be reported for a plan that a made-up value produced.
+
+**Before PostgreSQL 16** there is no such option: the only way to plan a parameterised statement is to give it values, so `NULL` is bound for each one. That is still safe and still catches the cases above, but it under-reports one shape — a table reachable only through a branch the planner can fold away, such as `WHERE id = $1 AND EXISTS (SELECT 1 FROM secrets)`, is dropped from the plan along with its privilege check.
+
+The check reports `42501` and nothing else. A statement `EXPLAIN` cannot plan at all — `TRUNCATE`, `CALL`, `SET`, DDL — is passed over in silence rather than reported as a permissions problem; it has already been described successfully, so it is known to be valid SQL. Row-level security is not covered either: an `RLS` policy filters rows at execute time and is not a privilege error.
 
 ### Prepared statements
 

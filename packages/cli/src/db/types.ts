@@ -8,6 +8,14 @@ import type { TypeDb } from './type-db.js';
 import { DatabaseTypeKind, isEnum, MappableType } from './type.js';
 
 export interface IQueryTypes {
+  /**
+   * Set when the pre-flight privilege check ran and the connected role may not
+   * execute the query. The types alongside it are still correct — Postgres
+   * described the statement perfectly well — so this is reported and the
+   * declarations are emitted, rather than replacing them with `never` the way
+   * an unparseable query does.
+   */
+  privilegeError?: IParseError;
   paramMetadata: {
     mapping: QueryParameter[];
     params: MappableType[];
@@ -48,6 +56,29 @@ function toParseError(err: unknown): IParseError {
   }
   const { code, hint, position } = err as DatabaseError;
   return { errorCode: code ?? 'UNKNOWN', message: err.message, hint, position };
+}
+
+/** `insufficient_privilege`. */
+const INSUFFICIENT_PRIVILEGE = '42501';
+
+/**
+ * The privilege failure in `err`, or `undefined` if it is not one.
+ *
+ * Only `42501` is reported. The statement reached this point by being parsed
+ * and described successfully, so it is known to be valid SQL against the
+ * current schema; anything else `EXPLAIN` says is about `EXPLAIN`, not about
+ * the query's privileges. The one that actually occurs is `42601` from a
+ * statement `EXPLAIN` cannot plan at all — `TRUNCATE`, `CALL`, `SET`, DDL —
+ * which is a perfectly good thing to have in a .sql file and must not be
+ * reported as a permissions problem.
+ */
+function toPrivilegeError(err: unknown): IParseError | undefined {
+  if (!(err instanceof Error)) {
+    throw err;
+  }
+  return (err as DatabaseError).code === INSUFFICIENT_PRIVILEGE
+    ? toParseError(err)
+    : undefined;
 }
 
 enum TypeCategory {
@@ -314,6 +345,7 @@ interface AttributeRow {
 export async function getTypes(
   queryData: InterpolatedQuery,
   db: TypeDb,
+  checkPrivileges = false,
 ): Promise<IQueryTypes | IParseError> {
   const typeData = await db
     .describe(queryData.query)
@@ -323,6 +355,14 @@ export async function getTypes(
   }
 
   const { params, fields } = typeData;
+
+  // After the describe, never instead of it: the check costs a round trip per
+  // query and only makes sense for a statement the server already accepted.
+  const privilegeError = checkPrivileges
+    ? await db
+        .explain(queryData.query, params.length)
+        .then(() => undefined, toPrivilegeError)
+    : undefined;
 
   const attrMatcher = ({
     tableOID,
@@ -423,5 +463,7 @@ export async function getTypes(
     mapping: queryData.mapping,
   };
 
-  return { paramMetadata, returnTypes };
+  return privilegeError
+    ? { paramMetadata, returnTypes, privilegeError }
+    : { paramMetadata, returnTypes };
 }
