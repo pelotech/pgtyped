@@ -89,6 +89,7 @@ function nullabilitySuffixWarning(
 
 export async function queryToTypeDeclarations(
   ir: QueryIR,
+  fileName: string,
   typeSource: TypeSource,
   types: TypeAllocator,
   config: ParsedConfig,
@@ -110,7 +111,15 @@ export async function queryToTypeDeclarations(
   if (typeError || hasAnonymousColumns) {
     // tslint:disable:no-console
     if (typeError) {
-      console.error('Error in query. Details: %o', typeData);
+      // Named, because on the default failOnError: false path this is the only
+      // thing the user sees, and files are processed concurrently — the
+      // interleaved `Processing …` lines cannot attribute it (#526, #584).
+      console.error(
+        'Error in query "%s" in %s. Details: %o',
+        queryName,
+        fileName,
+        typeData,
+      );
       if (config.failOnError) {
         throw new Error(
           `Query "${queryName}" is invalid. Can't generate types.`,
@@ -401,6 +410,7 @@ export async function generateTypedecsFromFile(
   for (const ir of queries) {
     const typeDeclaration = await queryToTypeDeclarations(
       ir,
+      fileName,
       typeSource,
       types,
       config,
