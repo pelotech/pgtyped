@@ -24,6 +24,13 @@ import {
   selectExistsTest,
 } from './comments/comments.queries.js';
 import {
+  getDriverTypes,
+  insertDriverTypes,
+  type InsertDriverTypesParams,
+  type PgInterval,
+  type PgPoint,
+} from './driverTypes/driverTypes.queries.js';
+import {
   countNotifications,
   getAllNotifications,
   insertNotification,
@@ -241,6 +248,113 @@ test('@column total! removes null from the generated type and the value is a num
   const [row] = await countBooksTotal.run(client);
   const n: number = row.total; // type-level: fails to compile if the hint did not apply
   expect(typeof n).toBe('number');
+});
+
+/**
+ * The regression test for the six `DefaultTypeMapping` entries that declared a
+ * type node-postgres does not return (issue #552). Both halves are load-bearing
+ * and neither catches the other's failure:
+ *
+ * - the `const x: T = row.col` annotations are the *type* assertion. Vitest
+ *   strips types without checking them, so these are enforced by
+ *   `pnpm --filter @pelotech/pgtyped-example check:test`, which CI runs.
+ * - the `expect`s are the *value* assertion, against the live server. Nothing
+ *   in codegen consults a real value, so this is the only place the two are
+ *   ever compared.
+ */
+describe('generated types describe what the driver really returns', () => {
+  test('the return direction', async () => {
+    const [row] = await getDriverTypes.run(client);
+
+    // `interval` was `string`. It is an object, and only the fields the
+    // interval actually uses are set — hence every field being optional.
+    const duration: PgInterval = row.duration;
+    expect(duration).toEqual({
+      years: 1,
+      months: 2,
+      days: 3,
+      hours: 4,
+      minutes: 5,
+      seconds: 6,
+      milliseconds: 789,
+    });
+    expect(duration.toPostgres()).toBe(
+      '6.789 seconds 5 minutes 4 hours 3 days 2 months 1 years',
+    );
+    expect(duration.toISO()).toBe('P1Y2M3DT4H5M6.789S');
+    expect(duration.toISOString()).toBe('P1Y2M3DT4H5M6.789S');
+
+    // `time` and `timetz` were `Date`. They are the server's own text.
+    const startTime: string = row.start_time;
+    expect(startTime).toBe('01:02:03');
+    const startTimeTz: string = row.start_time_tz;
+    expect(startTimeTz).toBe('01:02:03+00');
+
+    // `bit` was `boolean`. It is the digits.
+    const flags: string = row.flags;
+    expect(flags).toBe('101');
+
+    // `numeric[]` was `(string)[]`, inherited from scalar `numeric`. The
+    // elements are parsed with parseFloat even though the scalar is not.
+    const amounts: number[] = row.amounts;
+    expect(amounts).toEqual([1.5, 2.5]);
+    expect(amounts.map((a) => typeof a)).toEqual(['number', 'number']);
+
+    // `point` was `(number)[]`.
+    const location: PgPoint = row.location;
+    expect(location).toEqual({ x: 1, y: 2 });
+
+    // Controls. These two were right all along and must not move with the six
+    // above: a lone `numeric` really is a string, and `timestamptz` a `Date`.
+    const amount: string = row.amount;
+    expect(amount).toBe('2.5');
+    const recordedAt: Date = row.recorded_at;
+    expect(recordedAt).toEqual(new Date('2020-01-01T00:00:00Z'));
+  });
+
+  const insertParams: InsertDriverTypesParams = {
+    duration: '2 hours 30 minutes',
+    startTime: '07:08:09',
+    startTimeTz: '07:08:09+00',
+    flags: '011',
+    // Both members of the union the parameter type allows.
+    amounts: [3.5, '4.5'],
+    amount: 5.5,
+    location: '(3,4)',
+    recordedAt: new Date('2021-02-03T04:05:06Z'),
+  };
+
+  test('the parameter direction round-trips', async () => {
+    const [{ id }] = await insertDriverTypes.run(client, insertParams);
+
+    const inserted = (await getDriverTypes.run(client)).find(
+      (r) => r.id === id,
+    );
+    expect(inserted).toMatchObject({
+      duration: { hours: 2, minutes: 30 },
+      start_time: '07:08:09',
+      start_time_tz: '07:08:09+00',
+      flags: '011',
+      amounts: [3.5, 4.5],
+      amount: '5.5',
+      location: { x: 3, y: 4 },
+    });
+  });
+
+  /**
+   * Why `time`, `timetz` and `interval` take a `string` rather than the
+   * `Date | string` they used to: node-postgres serialises a `Date` to a full
+   * ISO timestamp, which none of the three can parse. The declaration that
+   * allowed it turned a compile error into a query that fails in production.
+   */
+  test('a Date is not a valid time input, which the old parameter type allowed', async () => {
+    await expect(
+      insertDriverTypes.run(client, {
+        ...insertParams,
+        startTime: new Date('2020-01-01T01:02:03Z') as unknown as string,
+      }),
+    ).rejects.toThrow(/invalid input syntax for type time/);
+  });
 });
 
 describe('prepared statements', () => {
