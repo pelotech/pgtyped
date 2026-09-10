@@ -17,7 +17,7 @@ This will help us verify your issue or pull request and prevent regressions in t
 To get started, clone the repository and install the dependencies:
 
 ```bash
-git clone git@github.com:adelsz/pgtyped.git
+git clone git@github.com:pelotech/pgtyped.git
 cd pgtyped
 corepack enable
 pnpm install

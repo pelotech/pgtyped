@@ -14,11 +14,13 @@ Try starting PgTyped and editing them to see live query type generation.
 ### Using the dockerized example setup:
 
 1. Clone the whole pgtyped monorepo into some directory.  
-   `git clone git@github.com:adelsz/pgtyped.git pgtyped`
-2. `cd pgtyped/packages/example`
+   `git clone git@github.com:pelotech/pgtyped.git pgtyped`
+2. `cd pgtyped`
 3. `pnpm install`
-4. `pnpm build`
-5. `docker compose run watch`
+4. `pnpm build` — from the **repository root**. The example's own `pnpm build` is a
+   no-op, and the containers run the CLI out of `packages/cli/lib`, which the root
+   build is what produces.
+5. `cd packages/example && docker compose run watch`
 6. Try editing queries in the SQL and TS files and see how PgTyped handles it.
 
 The dockerized setup isn't required and is included for convenience.  

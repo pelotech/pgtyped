@@ -25,7 +25,7 @@ module.exports = {
           position: 'left',
         },
         {
-          href: 'https://github.com/adelsz/pgtyped',
+          href: 'https://github.com/pelotech/pgtyped',
           label: 'GitHub',
           position: 'right',
         },
@@ -43,7 +43,7 @@ module.exports = {
         docs: {
           sidebarPath: require.resolve('./sidebars.js'),
           // Please change this to your repo.
-          editUrl: 'https://github.com/adelsz/pgtyped/edit/master/docs-new/',
+          editUrl: 'https://github.com/pelotech/pgtyped/edit/master/docs-new/',
         },
         gtag: {
           trackingID: 'G-M3YNPCWP14',

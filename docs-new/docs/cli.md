@@ -18,7 +18,7 @@ The CLI supports a number of flags:
 
 - `--config config_file_path.json` to pass the config file path.
 - `--watch` to start in watch mode.
-- `--file file_path.ts` if you only want to process one file (which can be useful when working on a big project). Incompatible with watch mode. Uses transforms defined in the config file to determine the mode and emit template, so a file path that doesn't fit the include glob patterns will not be processed.
+- `--file file_path.ts` if you only want to process one file (which can be useful when working on a big project). Incompatible with watch mode. Uses transforms defined in the config file to determine the mode and emit template, so a file path that doesn't fit the include glob patterns will not be processed, and the run exits non-zero. The path is resolved against the working directory, so any spelling of it works: `src/q.sql`, `./src/q.sql` and an absolute path are the same file.
 - `--uri` to specify a PG connection URI (overriding the config value).
 - `--help` for a quick flag reference.
 - `--version` to show the version number.
@@ -38,6 +38,7 @@ The CLI exits `0` only when the run succeeded, so CI can rely on it:
 | The config file is missing, unparseable, or has an unrecognised key     | `1`       |
 | The database could not be reached, or refused the credentials            | `1`       |
 | A file or query failed and `failOnError` is set                          | `1`       |
+| `--file` named a path no transform covers                                | `1`       |
 
 Every failure is reported on stderr.
 
@@ -55,6 +56,12 @@ PgTyped supports common PostgreSQL environment variables:
 - `PGURI` or `DATABASE_URL`
 
 These variables will override values provided in `config.json`.
+
+Every CLI flag can also be set from an environment variable, named after the flag with a `PGTYPED_` prefix: `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`.
+
+:::caution
+The prefix is new in 3.0. Before it, the variables were unprefixed — so an ambient `FILE` (or `CONFIG`, or `URI`) set the corresponding flag, and a run could quietly generate nothing because something unrelated in the environment happened to use that name. If you were relying on the unprefixed form, add the prefix.
+:::
 
 #### `PGOPTIONS`, and setting a `search_path`
 
@@ -95,7 +102,7 @@ For a full list of options, see the [Configuration file format](#configuration-f
       "emitTemplate": "{{dir}}/{{name}}.types.ts" // File name template to save generated files
     }
   ],
-  "srcDir": "./src/", // Directory to scan or watch for query files
+  "srcDir": "./src/", // Directory to scan or watch for query files (relative to the working directory, not to this file)
   "failOnError": false, // Whether to fail on a file processing error and abort generation (can be omitted - default is false)
   "camelCaseColumnNames": false, // convert to camelCase column names of result interface
   "hungarianNotation": false, // Whether to prefix generated interface names with "I"
@@ -132,7 +139,7 @@ Unrecognised config keys are an error, at every level of the file. A key that Pg
 | Name                    | Type                     | Description                                                                                                                                                                |
 |-------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `transforms`            | `Transform[]`            | An array of transforms to apply to the files.                                                                                                                              |
-| `srcDir`                | `string`                 | Directory to scan or watch for query files.                                                                                                                                |
+| `srcDir`                | `string`                 | Directory to scan or watch for query files. A relative path is resolved against the working directory the CLI was started in, **not** against the location of the config file — so running the CLI from elsewhere with an absolute `--config` path will look in the wrong place. PgTyped warns when a transform's glob matches no files. |
 | `db`                    | `DatabaseConfig`         | A database config.                                                                                                                                                         |
 | `failOnError?`          | `boolean`                | Whether to fail on a file processing error and abort generation. Also promotes every codegen warning into a failure, whichever kind of file the query lives in: a `sql.prepared` name or type argument that does not match the variable holding it, a result column left with a 2.x nullability suffix, and an `@param` declared in a `.sql` file but never used by the statement. **Default:** `false`                                                                                      |
 | `dbUrl?`                | `string`                 | A connection string to the database. Example: `postgres://user:password@host/database`. Overrides (merged) with `db` config.                                               |

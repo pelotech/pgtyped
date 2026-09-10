@@ -47,5 +47,5 @@ Unrecognised config keys are rejected, at every level of the file. If you are up
 :::
 
 :::note
-If you are having trouble configuring PgTyped, you can refer to the [example app](https://github.com/adelsz/pgtyped/tree/master/packages/example) for a preconfigured example.  
+If you are having trouble configuring PgTyped, you can refer to the [example app](https://github.com/pelotech/pgtyped/tree/master/packages/example) for a preconfigured example.  
 :::

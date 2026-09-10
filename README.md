@@ -1,9 +1,8 @@
-<img width="340" height="150" align="right" src="https://raw.githubusercontent.com/adelsz/pgtyped/master/header.png">
+<img width="340" height="150" align="right" src="https://raw.githubusercontent.com/pelotech/pgtyped/master/header.png">
 
 # [PgTyped](https://pgtyped.dev/)
 
-![Version](https://img.shields.io/github/v/release/adelsz/pgtyped)
-[![Actions Status](https://github.com/adelsz/pgtyped/workflows/CI/badge.svg)](https://github.com/adelsz/pgtyped/actions) [![Join the chat at https://gitter.im/pgtyped/community](https://badges.gitter.im/pgtyped/community.svg)](https://gitter.im/pgtyped/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![Actions Status](https://github.com/pelotech/pgtyped/workflows/CI/badge.svg)](https://github.com/pelotech/pgtyped/actions) [![Join the chat at https://gitter.im/pgtyped/community](https://badges.gitter.im/pgtyped/community.svg)](https://gitter.im/pgtyped/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 PgTyped makes it possible to use raw SQL in TypeScript with guaranteed type-safety.  
 No need to map or translate your DB schema to TypeScript, PgTyped automatically generates types and interfaces for your SQL queries by using your running Postgres database as the source of type information.
@@ -123,6 +122,6 @@ All issue reports, feature requests and PRs appreciated.
 
 ### License
 
-[MIT](https://github.com/adelsz/pgtyped/tree/master/LICENSE)
+[MIT](https://github.com/pelotech/pgtyped/tree/master/LICENSE)
 
 Copyright (c) 2019-present, Adel Salakh

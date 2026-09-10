@@ -401,6 +401,19 @@ If any of those call sites passed the non-string form, it was failing against th
 
 `numeric[]` parameters are unchanged — the server takes numbers or strings either way.
 
+### Two more changes to generated output
+
+Both are widening, so regenerated files still compile against code written for 2.x — but the output does change, and a diff of your generated files will show them.
+
+- **The six built-in range types are mapped.** `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange` and `daterange` used to generate `unknown` and log `Postgres type 'tstzrange' is not supported by mapping`; they are now `string` in both directions, which is what node-postgres sends and receives for them. If you worked around this with a `typesOverrides` entry, that entry still wins and nothing changes for you.
+- **A pick expansion's optional keys are optional.** For `@param address -> (line1!, line2)`, the generated `line2` used to be a required member typed `string | null | void`, so omitting it meant writing `line2: undefined` by hand. It is now `line2?: string | null | void`. An absent key and an explicit `undefined` reach the server as the same NULL, so this only removes the ceremony.
+
+### Three CLI changes to check in your build scripts
+
+- **The bin moved from `lib/index.js` to `lib/cli.js`.** `npx pgtyped` and the `pgtyped` bin name are unaffected, but anything that invokes the CLI by path — a Dockerfile, a CI step, a `node ./node_modules/@pelotech/pgtyped-cli/lib/index.js` invocation — needs updating. The old path was both the bin _and_ the package's only export, so importing anything from the package ran the CLI's argument parsing in the importing process; `lib/index.js` is now the library entry point and exports `main`.
+- **Environment variables that set CLI flags need a `PGTYPED_` prefix.** `CONFIG`, `WATCH`, `URI` and `FILE` become `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`. Unprefixed, an ambient `FILE` — common enough in a Makefile — set `--file` and the run quietly generated nothing. The `PG*` variables that configure the database connection are unchanged.
+- **`--file` exits non-zero when it matches no transform**, rather than printing "file was not found in provided transforms" and exiting 0. It also now accepts any spelling of the path: `src/q.sql`, `./src/q.sql` and an absolute path all name the same file, where before only the one glob happened to produce did.
+
 ### Two smaller behaviour changes
 
 - **Mid-statement block comments are kept in the statement text** rather than blanked out. Because a query's prepared statement name is a hash of its text, editing a comment inside a query renames its statement. That is harmless — it just means a fresh `Parse` — but it is why an unrelated-looking comment edit changes generated output.
