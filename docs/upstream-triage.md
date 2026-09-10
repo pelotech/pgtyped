@@ -56,8 +56,10 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Everything here is listed first so nobody re-opens it, with the
-reproduction that justified each.
+well. That bucket is now empty. The last three entries below are not bugs but adoptions — the
+cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
+taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
+each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -535,6 +537,87 @@ All one-line fixes, verified present at the time of triage:
   documents the resolution rule in the config table, and the `--file` and `PGTYPED_` changes from
   #579 are documented there too.
 
+### Query name not reachable at runtime — issue #522, PR #580 — **FIXED**
+
+The data was already there and simply was not exposed. `queryName` is serialised into every emitted
+IR literal (`{"queryName":"GetAccounts", …}`), but `TypedQuery` held the IR in a `private readonly ir`
+and published only `name`, which is the **prepared statement** name, not the query name.
+
+```
+codegen query .name:  GetAccounts_8bb00196     # preparedStatements: true
+.name with preparedStatements:false -> undefined
+public API surface: [ 'constructor', 'compile', 'execute', 'run', 'interpolate', 'split' ]
+plain sql tag .name: undefined
+sql.prepared('findAccount') .name: findAccount_e0594094
+```
+
+Three cases had **no public query identifier at all**: `preparedStatements: false`; a plain `sql`
+tag; and any query with an array spread, which never gets a statement name even with prepared
+statements on (confirmed in the committed example — `insertBooksIR` has no `"name"` field while its
+13 siblings do). And even where `.name` was set it was `GetAccounts_8bb00196`, whose hash suffix
+changes whenever the SQL is edited — unusable as a stable metrics dimension. The stated upstream
+motivation is that a fork is being maintained solely for this.
+
+**Fixed** as a `readonly queryName: string` assigned from `ir.queryName` in the constructor. It is
+always present, never hashed, and does not move when the SQL does, so it is what a caller labels
+per-query metrics, OpenTelemetry span names and slow-query logs with; `name` remains the identifier
+the server knows, and is the one to look up in `pg_prepared_statements`.
+
+**Upstream's mechanism was deliberately not taken.** PR #580 passes the name as a second positional
+constructor argument, which would rewrite every generated file for data the IR already carries.
+Reading it off the IR changes no generated output at all — `packages/example` regenerates
+byte-identical — and a `sql` tag gets the property for free rather than needing codegen to inject it.
+
+**One limit was found doing it, and it is documented rather than worked around.** A tag has no name
+of its own at runtime unless it is given one: codegen derives a tag's name from the variable it is
+assigned to, but that happens while generating types and never reaches the emitted query. So a plain
+`sql` tag and a `sql.prepared()` called with no name both report `queryName` as the placeholder
+`'query'`. Naming a tag with `sql.prepared('…')` is what makes it measurable, and the runtime README
+says so.
+
+**Regression cover.** `packages/runtime/src/typed-query.test.ts` pins each case the change exists
+for: `@name` alongside a statement name; `preparedStatements: false`, where `name` is `undefined`
+and `queryName` is not; an array spread, asserting through `preparedStatementName` that the name is
+withheld by rule rather than merely absent from that IR; and an edit to the SQL that moves `name`
+while leaving `queryName` alone. `sql.test.ts` covers the three tag forms, including the placeholder.
+
+### The example's Postgres image was 17-alpine — PR #624 — **FIXED**
+
+**Fixed**, and re-verified rather than carried over from the first pass, since the tree had moved
+since. Against `postgres:18-alpine` (18.6, aarch64-musl) after a `docker compose down -v` so
+`initdb` ran fresh on 18: codegen reports `Skipped … no changes` for all 15 files, `git status` is
+clean, and the example suite is **35 passed**, identical to 17-alpine on the same tree. Regeneration
+was run twice more to confirm it is stable. No behaviour difference between the two major versions
+shows up anywhere the example reaches.
+
+**What it buys:** broader coverage of what CI proves. A matrix over 17 and 18 would prove more than
+the straight swap does, but CI runs this compose file directly, so that is a change to the workflow
+rather than to the image tag, and it is not made here.
+
+**Still unverified:** pg18 is checked for codegen and the example suite only, not for anything it
+changes outside those paths.
+
+### `actions/checkout` was two majors behind — PR #642 — **FIXED**
+
+All three workflows (`main.yml`, `release.yaml`, `commit-conventions.yml`) were on
+`actions/checkout@v5` and `pnpm/action-setup@v4`. **Both are now on v7 and v6 respectively**, and
+both are pure runtime bumps for a consumer: `action.yml` declares an identical set of inputs and
+outputs across v5→v7 for checkout and v4→v6 for the pnpm action, the latter differing only in
+`using: node20` → `node24`. checkout v6 moved the token out of `.git/config` into a separate
+credential file and v7 refuses to check out a fork's head for `pull_request_target` and
+`workflow_run`; nothing here reads git credentials or uses either trigger.
+
+**Two actions are deliberately left behind**, because their majors change behaviour rather than just
+the runtime — the reason the sweep stops where it does:
+
+- `actions/setup-node@v4` is **three** majors behind. v5 caches automatically when `package.json`
+  carries a `packageManager` field, which this repo does (`pnpm@10.33.2`); v6 then narrowed that
+  automatic caching to npm only. Every workflow here already passes `cache: 'pnpm'` alongside
+  `pnpm/action-setup`, so how the two interact has to be worked out rather than assumed.
+- `googleapis/release-please-action@v4` is one major behind. v5 is nominally just a node24 bump, but
+  it carries release-please 17.3.0 → 17.6.0 with it, and this is the one workflow whose first real
+  run happens on `master` rather than on a PR.
+
 ---
 
 ## Still open — medium
@@ -854,7 +937,6 @@ the protocol gives us", not "nobody has got to it".
 | ---------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | #523                   | Support arbitrary env var names in config                 | `config.ts` reads only fixed `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`/`PGPORT`/`PGURI`/`DATABASE_URL`; no `{{MY_DB_HOST}}` templating. See PR #524 in [Worth adopting](#pr-524--env-var-templating-in-config).                                                                                                                                                                                                                                                                 |
 | #586, #556             | A setting to force non-nullability / drop optional params | Not implemented. Verified against the zod schema: `failOnError`, `camelCaseColumnNames`, `hungarianNotation`, `nonEmptyArrayParams`, `preparedStatements` only. `.strict()` now rejects `noOptionalParameters` outright: `(root): Unrecognized key(s) in object: 'noOptionalParameters'`. **Cheap** — one boolean plus one condition. The reporter offered the PR; see PR #582.                                                                                                   |
-| #522                   | Expose the query name on the query object                 | See PR #580 in [Worth adopting](#pr-580--expose-the-query-name-on-the-query-object).                                                                                                                                                                                                                                                                                                                                                                                              |
 | #143                   | Emit type info at runtime                                 | **Partial.** 3.0 emits the whole `QueryIR` into generated files (`queryName`, `statement`, `params` with transforms and locs, `columns`, prepared `name`) — verified in generated output. Column _types_ are still not emitted, which is what the issue actually asks for.                                                                                                                                                                                                        |
 | #404                   | `@comment` annotation                                     | Not supported. `bcc4b07` downgraded unrecognised annotations from fatal to a warning, so a file with `@comment` now generates. Adding the annotation itself is unimplemented.                                                                                                                                                                                                                                                                                                     |
 | #459                   | SQL-formatter-friendly variable syntax                    | No syntax change in 3.0. One thing did move that the issue should know: the quoted-identifier workaround it floats (`":id!"`) _was_ being parsed as a param by 2.4.2 and is now correctly ignored, so that avenue is definitively closed. Worth a comment on the issue.                                                                                                                                                                                                           |
@@ -871,52 +953,9 @@ the protocol gives us", not "nobody has got to it".
 
 # Worth adopting from upstream
 
-Ordered by value per unit of effort.
-
-### PR #580 — expose the query name on the query object
-
-**Effort: ~2 lines.** Also closes issue #522.
-
-The data is already there and simply is not exposed. `queryName` is serialised into every emitted IR
-literal (`{"queryName":"GetAccounts", …}`) but `TypedQuery` holds the IR in a `private readonly ir`
-and publishes only `name`, which is the **prepared statement** name, not the query name.
-
-```
-codegen query .name:  GetAccounts_8bb00196     # preparedStatements: true
-.name with preparedStatements:false -> undefined
-public API surface: [ 'constructor', 'compile', 'execute', 'run', 'interpolate', 'split' ]
-plain sql tag .name: undefined
-sql.prepared('findAccount') .name: findAccount_e0594094
-```
-
-Three cases have **no public query identifier at all**: `preparedStatements: false`; a plain `sql`
-tag; and any query with an array spread, which never gets a statement name even with prepared
-statements on (confirmed in the committed example — `insertBooksIR` has no `"name"` field while its
-13 siblings do). And even when `.name` is set it is `GetAccounts_8bb00196`, whose hash suffix changes
-whenever the SQL is edited — unusable as a stable metrics dimension.
-
-**What it buys:** per-query metrics, OTel span names, slow-query logs. The stated upstream motivation
-is that a fork is being maintained solely for this.
-
-**Do not copy the PR's mechanism** — a second positional constructor argument would churn every
-generated file. Add `readonly queryName: string` assigned from `ir.queryName` in the constructor,
-plus a line of docs.
-
-### PR #624 — bump the example's Postgres image 17-alpine → 18-alpine
-
-**Effort: one line in `packages/example/docker-compose.yml`.** Verified rather than assumed, against
-`postgres:18.6`:
-
-- Copied `packages/example` to `/tmp`, pointed `dbUrl` at the pg18 container, loaded
-  `sql/schema.sql`, ran codegen: every file `Skipped … no changes`, and `diff -r` against the
-  committed `packages/example/src` reported **no diff**. Generated output is byte-identical on pg18.
-- Ran the example suite against pg18: **27 passed (27)**.
-
-**What it buys:** broader coverage of what CI proves. Worth folding into a CI matrix over 17 and 18
-rather than a straight swap.
-
-**Unverified:** pg18 was checked for codegen and the example suite only, not for anything it changes
-outside those paths.
+Ordered by value per unit of effort. The three cheapest — PRs #580, #624 and #642 — have been taken
+and are recorded in [Fixed on this branch](#fixed-on-this-branch); what is left all needs real code
+or a decision first.
 
 ### PR #582 — an `optionalNullParams` config flag
 
@@ -1040,12 +1079,6 @@ execute, so it is safe for DML.
 `INSERT (a, b)` / `UPDATE (b)` grants in upstream's example schema were not tested, and the
 `PREPARE`/`EXPLAIN EXECUTE` replacement was not prototyped, so the effort estimate is a judgement,
 not a measurement.
-
-### PR #642 — `actions/checkout` v5 → v7
-
-**Trivial.** All three workflows are on `actions/checkout@v5` (`main.yml`, `release.yaml`,
-`commit-conventions.yml`), and also still `actions/setup-node@v4`, which the PR does not touch. Pure
-maintenance — adopt with the next dependency sweep, not on this PR's authority.
 
 ---
 
@@ -1193,7 +1226,7 @@ Triaged and closed out. Nobody needs to look at these again.
 | PR #622, #623              | lerna → 8.2.4 / v10                                  | `package-lock.json` only. The fork uses pnpm workspaces + release-please; there is no lerna anywhere in the tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | PR #639                    | Fix `AsyncQueue.replyPending`                        | Fixes `packages/wire`, the hand-rolled wire-protocol client, which was deleted. Both codegen and the runtime go through node-postgres now, so the message-dropping race cannot occur. The bug it describes is genuine and its regression test is well written — it just has no code left to protect.                                                                                                                                                                                                                                                                                                                                         |
 | PR #584 (formatting hunks) | —                                                    | The substantive change was taken; the PR also reverts prettier's formatting on four unrelated blocks and adds two stray blank lines, and `pnpm lint` gates on `prettier --check .`.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| PR #580 (mechanism)        | —                                                    | The goal is right; the mechanism — a second positional constructor argument rewriting every generated file — is wrong here, because the fork already serialises `queryName` inside the IR.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| PR #580 (mechanism)        | —                                                    | The goal was right and is [taken](#query-name-not-reachable-at-runtime--issue-522-pr-580--fixed); the mechanism — a second positional constructor argument rewriting every generated file — was wrong here, because the fork already serialises `queryName` inside the IR, so the property is read off it instead.                                                                                                                                                                                                                                                                                                                           |
 | PR #637 (as written)       | —                                                    | Do not merge verbatim: unamended it converts working `string`/`number`/enum columns into `unknown` plus a hard codegen error for any project with domain columns and no per-domain `typesOverrides` entry.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | PR #620 (as written)       | —                                                    | Re-splits the CLI into a second `@pgtyped/typegen` package, against the deliberate 6→3 consolidation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | PR #614 (as written)       | —                                                    | Applies `(null \| T)[]` in both scopes and renames every generated alias `TArray` → `NullTArray`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -1236,7 +1269,8 @@ Collected from every bucket, so the gaps are in one place.
 - **PR #582**: the current output and the patched branch were confirmed; the flag was not built.
 - **PR #524**: the implementation was read and the env-precedence footgun reproduced; upstream's own
   test file was not run.
-- **PR #624**: pg18 verified for codegen and the example suite only.
+- **PR #624**: pg18 verified for codegen and the example suite only — twice, before and after the
+  image bump was taken, but never outside those two paths.
 - **Renovate PRs** were assessed against manifests, not by installing.
 - **Array-type parsers**: only six array OIDs were probed (`_text`, `_int4`, `_int8`, `_numeric`,
   `_timestamptz`, `_point`).
@@ -1253,7 +1287,7 @@ Every triaged number, and where it is covered.
 #317 open · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
 #460 open · #491 **FIXED here** (docs) · #498 open · #503 open · #504 NA · #512 feature/workaround ·
-#513 limitation · #517 open · #522 adopt #580 · #523 adopt #524 · #526 **FIXED here** ·
+#513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 open ·
 #566 NA · #567 open · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
@@ -1263,8 +1297,8 @@ Every triaged number, and where it is covered.
 
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 adopt (medium) ·
-#580 adopt (cheap) · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
+#580 **FIXED here** · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
 #614 adopt (rescope) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
-#622 NA · #623 NA · #624 adopt (trivial) · #627 already fixed · #628 already fixed ·
+#622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·
 #632 already fixed · #633 already fixed · #635 already fixed · #637 adopt (amended) ·
-#639 NA · #641 already fixed · #642 adopt (trivial) · #643 already fixed
+#639 NA · #641 already fixed · #642 **FIXED here** · #643 already fixed
