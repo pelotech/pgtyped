@@ -176,3 +176,142 @@ describe('parseConfig', () => {
     });
   });
 });
+
+/**
+ * Environment over config is the precedence PgTyped has always had, and it is
+ * not changing — someone is relying on it. What was wrong is that it was
+ * silent: `PGDATABASE=prod` in a developer's shell replaced an explicit
+ * `dbUrl` and generated types from the wrong schema without a word, and the
+ * only reason the triage saw it at all was that the displaced database
+ * happened not to exist.
+ */
+describe('an ambient PG* variable displacing the config', () => {
+  const dbUrl = 'postgres://alice:s3cret@dbhost:6000/app_dev';
+
+  beforeEach(() => {
+    // The developer running the tests may well have some of these exported.
+    for (const name of [
+      'PGHOST',
+      'PGUSER',
+      'PGPASSWORD',
+      'PGDATABASE',
+      'PGPORT',
+      'PGURI',
+      'DATABASE_URL',
+    ]) {
+      vi.stubEnv(name, undefined);
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const parse = (body: Record<string, unknown>, uri?: string) => {
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation((...args: [unknown]) => {
+        warnings.push(String(args[0]));
+      });
+    try {
+      return { config: parseConfig(configFile(body), uri), warnings };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  test('is reported, naming the variable and the field it displaced', () => {
+    vi.stubEnv('PGDATABASE', 'prod');
+    const { config, warnings } = parse({ dbUrl });
+
+    expect(warnings).toEqual([
+      'Warning: environment variable PGDATABASE overrides dbName from the config file: ' +
+        '"prod" replaces "app_dev", set by dbUrl. Environment variables take precedence over ' +
+        'the config file, so that is what PgTyped will connect with — unset PGDATABASE if it ' +
+        'is not what you meant.',
+    ]);
+    // The precedence itself is unchanged.
+    expect(config.db.dbName).toBe('prod');
+  });
+
+  test('names the db key when that is where the value came from', () => {
+    vi.stubEnv('PGHOST', 'elsewhere');
+    const { warnings } = parse({ db: { host: 'configured-host' } });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('PGHOST');
+    expect(warnings[0]).toContain('set by db.host');
+    expect(warnings[0]).toContain('"elsewhere" replaces "configured-host"');
+  });
+
+  // Filling in what the config left unset is what these variables are *for*.
+  test('stays quiet when the config left the field unset', () => {
+    vi.stubEnv('PGHOST', 'from-env');
+    vi.stubEnv('PGPORT', '6543');
+    const { config, warnings } = parse({ db: { dbName: 'app_dev' } });
+
+    expect(warnings).toEqual([]);
+    expect(config.db.host).toBe('from-env');
+    expect(config.db.port).toBe(6543);
+  });
+
+  test('stays quiet when there is no config file db section at all', () => {
+    vi.stubEnv('PGHOST', 'from-env');
+    vi.stubEnv('PGDATABASE', 'from-env');
+    expect(parse({}).warnings).toEqual([]);
+  });
+
+  test('stays quiet when the variable agrees with the config', () => {
+    vi.stubEnv('PGDATABASE', 'app_dev');
+    vi.stubEnv('PGPORT', '6000');
+    expect(parse({ dbUrl }).warnings).toEqual([]);
+  });
+
+  // The flag has already taken precedence over the config by then, so the
+  // environment is not what displaced the config's value.
+  test('stays quiet when a --uri flag already displaced the config value', () => {
+    vi.stubEnv('PGDATABASE', 'from-env');
+    const { config, warnings } = parse(
+      { dbUrl },
+      'postgres://bob:pw@flaghost:7000/from_flag',
+    );
+
+    expect(warnings).toEqual([]);
+    expect(config.db.dbName).toBe('from-env');
+  });
+
+  test('PGPASSWORD is named but its value is not printed', () => {
+    vi.stubEnv('PGPASSWORD', 'from-env-password');
+    const { warnings } = parse({ db: { password: 'configured-password' } });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      'environment variable PGPASSWORD overrides the password set by db.password',
+    );
+    expect(warnings[0]).not.toContain('from-env-password');
+    expect(warnings[0]).not.toContain('configured-password');
+  });
+
+  // A URI displaces every field at once, and neither value can be quoted into
+  // the message because a connection string carries the password.
+  test('PGURI displacing dbUrl is reported once, without either URI', () => {
+    vi.stubEnv('PGURI', 'postgres://bob:pw@urihost:7000/from_uri');
+    const { config, warnings } = parse({ dbUrl });
+
+    expect(warnings).toEqual([
+      'Warning: environment variable PGURI overrides dbUrl from the config file. ' +
+        'Environment variables take precedence over the config file, so that is what PgTyped ' +
+        'will connect with — unset PGURI if it is not what you meant.',
+    ]);
+    expect(config.db.dbName).toBe('from_uri');
+  });
+
+  test('DATABASE_URL is named as itself', () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://bob:pw@urihost:7000/from_uri');
+    const { warnings } = parse({ dbUrl });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('environment variable DATABASE_URL');
+  });
+});

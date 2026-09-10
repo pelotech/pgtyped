@@ -56,11 +56,12 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Five entries from **Still open — medium** have since been taken as
+well. That bucket is now empty. Six entries from **Still open — medium** have since been taken as
 well: domain types — the one adoption in this list that needed real code — the `failOnError`
 escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
-keys in a generated interface, and the diagnosis for an empty array in a spread (the rendering
-question it raises is recorded there and stays open). The last three entries below are not bugs but adoptions — the
+keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
+it raises is recorded there and stays open), and the silence around an ambient `PG*` variable
+displacing an explicit config value (its precedence is deliberately unchanged). The last three entries below are not bugs but adoptions — the
 cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been
 taken. Everything here is listed first so nobody re-opens it, with the reproduction that justified
 each.
@@ -759,6 +760,67 @@ wanted, and would have silently failed before
 `{ return }` form, that every bad key is reported rather than only the first, and that a plain type
 name — the thing this must not break — still parses into the same override it always did.
 
+### Ambient `PG*` environment variables overrode an explicit `dbUrl` silently — found while evaluating PR #524 — **FIXED (the silence)**
+
+`parseConfig` merges `envDBConfig` last. Reproduced:
+
+```
+$ PGDATABASE=nonexistent_db node packages/cli/lib/index.js -c config.json
+Could not connect to the database at localhost:55444 as user "postgres". No files were written.
+database "nonexistent_db" does not exist
+```
+
+It failed loudly here only because `verifyConnection` now exists. With a _valid_ but wrong
+`PGDATABASE` — a developer with `PGDATABASE=prod` exported in their shell — codegen would connect
+happily and generate types from the wrong schema.
+
+**The precedence is unchanged, and that is the decision.** Environment over config is a normal
+convention, it is what this project has always done, and someone is relying on it — including this
+repository's own example, which reaches the database in the compose network that way. Changing it
+would break those setups to fix a problem they do not have. The defect was never the order; it was
+that the displacement happened without a word, so the only case that ever surfaced was the one where
+the displaced value was unreachable.
+
+**Fixed by reporting the conflict.** When a `PG*` variable displaces a value the config file set
+**explicitly**, `parseConfig` names both the variable and the field it replaced:
+
+```
+Warning: environment variable PGDATABASE overrides dbName from the config file: "prod" replaces
+"app_dev", set by dbUrl. Environment variables take precedence over the config file, so that is what
+PgTyped will connect with — unset PGDATABASE if it is not what you meant.
+```
+
+The source is named as `dbUrl` or as `db.<field>`, whichever set it. `PGURI`/`DATABASE_URL`
+displacing the config's `dbUrl` is reported the same way, with neither URI quoted into the message —
+a connection string carries the password. `PGPASSWORD` is named but never printed for the same
+reason.
+
+**Staying quiet is the harder half, and it is what the tests are mostly about.** Nothing is said
+when the variable fills in a field the config left unset, which is the intended way to configure
+PgTyped from the environment; when the config has no `db` section at all, so the value it "set" was
+a default; when the variable agrees with the config; when it is the empty string, which `merge`
+skips anyway; or when something between the config and the environment already displaced the value —
+a `--uri` flag, or a `PGURI` that replaced the whole connection string — since then the environment
+is not what the config lost to.
+
+**One repository change followed from it, and it is the intended fix rather than a workaround.**
+`packages/example`'s compose services set `PGHOST: db` over a config whose `dbUrl` says `localhost`,
+which is exactly the shape being reported. They now pass `PGTYPED_URI` instead: the `--uri` flag
+outranks both, so the container's connection is stated deliberately rather than arrived at by an
+override nobody can see. Codegen for the example is silent again.
+
+**A second defect was found doing it, and fixed with it.** `const { default: parseDatabaseUri } =
+dbUrlModule` — the "module import hack" — depends on who performed the CJS interop. It is right under
+node and wrong under vitest, where `dbUrlModule` is already the function, so **every code path that
+parsed a connection string threw `parseDatabaseUri is not a function` in the test suite** while
+working in the built CLI. No test had ever set `dbUrl`, so nothing noticed. Both shapes are accepted
+now, which is what makes the `dbUrl` half of this entry testable at all.
+
+**Regression cover.** `packages/cli/src/config.test.ts` pins both message shapes verbatim, that the
+`db.<field>` source is named as such, that `PGPASSWORD`'s value appears in neither direction, and —
+in four separate tests — each of the ways this must stay quiet. Every case also asserts the merged
+result, so the precedence itself is pinned where it is.
+
 ### Empty array in a spread rendered `IN ()` — issues #221, #314, #273 — **FIXED (the diagnosis)**
 
 Reproduced in three shapes:
@@ -1049,22 +1111,6 @@ Only the privilege half is missing.
 
 See [Worth adopting](#pr-563--pre-flight-privilege-check) for the technique and its caveats.
 
-### Ambient `PG*` environment variables override an explicit `dbUrl` — found while evaluating PR #524
-
-`parseConfig` merges `envDBConfig` last. Reproduced:
-
-```
-$ PGDATABASE=nonexistent_db node packages/cli/lib/index.js -c config.json
-Could not connect to the database at localhost:55444 as user "postgres". No files were written.
-database "nonexistent_db" does not exist
-```
-
-It failed loudly here only because `verifyConnection` now exists. With a _valid_ but wrong
-`PGDATABASE` — a developer with `PGDATABASE=prod` exported in their shell — codegen would connect
-happily and generate types from the wrong schema. The precedence is inherited from upstream and
-`docs-new/docs/cli.md` documents it, but it is worth deciding deliberately whether config should beat
-ambient env. Bundle the decision with PR #524 (see [Worth adopting](#pr-524--env-var-templating-in-config)).
-
 ### Shared type aliases collide across generated files — issue #565
 
 Confirmed directly from two generated files: both declare
@@ -1177,8 +1223,11 @@ rather than being used as a literal. It also loosens `db.port` to `number | stri
 fork's deliberately strict zod schema.
 
 Rewrite as a proper `replace(/\{\{(\w+)\}\}/g, …)` over string-valued `db` fields, applied before
-validation, with a clear error on an unset variable. Bundle it with the env-precedence decision
-above.
+validation, with a clear error on an unset variable. The env-precedence question it was to be
+bundled with is
+[settled](#ambient-pg-environment-variables-overrode-an-explicit-dburl-silently--found-while-evaluating-pr-524--fixed-the-silence):
+the environment still wins, and now says when it does. A templated field is one the config set
+explicitly, so it would earn the same warning if a `PG*` variable displaced it.
 
 **Unverified:** upstream's own test file was read, not run against upstream's code.
 

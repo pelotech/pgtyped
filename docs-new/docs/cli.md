@@ -57,6 +57,23 @@ PgTyped supports common PostgreSQL environment variables:
 
 These variables will override values provided in `config.json`.
 
+That precedence is deliberate and is not changing, but it is no longer silent. When one of them
+displaces a value the config file set **explicitly**, PgTyped says so, naming the variable and the
+field it replaced:
+
+```
+Warning: environment variable PGDATABASE overrides dbName from the config file: "prod" replaces
+"app_dev", set by dbUrl. Environment variables take precedence over the config file, so that is what
+PgTyped will connect with — unset PGDATABASE if it is not what you meant.
+```
+
+The case worth catching is a *valid but wrong* value — a shell with `PGDATABASE=prod` exported
+generates types against the wrong schema and connects perfectly happily while doing it. Only a
+genuine conflict is reported: a variable that fills in something the config left unset is the
+intended way to configure PgTyped from the environment and stays quiet, as does one that agrees with
+the config. `--uri` still beats both, and naming the connection there is the way to say that
+overriding the config is deliberate.
+
 Every CLI flag can also be set from an environment variable, named after the flag with a `PGTYPED_` prefix: `PGTYPED_CONFIG`, `PGTYPED_WATCH`, `PGTYPED_URI` and `PGTYPED_FILE`.
 
 :::caution

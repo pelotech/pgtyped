@@ -554,8 +554,9 @@ describe('codegen exit code', () => {
           transforms: [{ mode: 'sql', include: '**/*.sql' }],
           srcDir: './src/',
           failOnError,
-          // The PG* environment variables win over this, which is how it
-          // reaches the database both in the compose network and on a laptop.
+          // What a run on the host uses. In the compose network PGTYPED_URI
+          // is set and takes precedence over it, which is how the same config
+          // reaches the database in both places.
           dbUrl: 'postgres://postgres:password@localhost/postgres',
         }),
       );
