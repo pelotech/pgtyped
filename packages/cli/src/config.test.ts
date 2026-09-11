@@ -43,6 +43,27 @@ describe('parseConfig', () => {
   });
 
   /**
+   * On by default, because turning it off changes every generated params
+   * interface: a non-required parameter stops being an optional member and
+   * has to be named, null and all (#556).
+   */
+  test('optionalNullParams defaults to true', () => {
+    expect(parseConfig(configFile({})).optionalNullParams).toBe(true);
+  });
+
+  test('optionalNullParams can be turned off', () => {
+    expect(
+      parseConfig(configFile({ optionalNullParams: false })).optionalNullParams,
+    ).toBe(false);
+  });
+
+  test('optionalNullParams rejects a non-boolean', () => {
+    expect(() => parseConfig(configFile({ optionalNullParams: 'no' }))).toThrow(
+      /optionalNullParams/,
+    );
+  });
+
+  /**
    * On by default: the aliases every generated file shares are declared once,
    * so `export *` from two of them is no longer TS2308 (#565).
    */

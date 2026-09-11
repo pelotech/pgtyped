@@ -113,6 +113,7 @@ const Config = z
     camelCaseColumnNames: z.boolean().default(false),
     hungarianNotation: z.boolean().default(false),
     nonEmptyArrayParams: z.boolean().default(false),
+    optionalNullParams: z.boolean().default(true),
     preparedStatements: z.boolean().default(true),
     checkPrivileges: z.boolean().default(false),
     sharedTypesFile: SharedTypesFile,
@@ -171,6 +172,7 @@ export interface ParsedConfig {
   camelCaseColumnNames: boolean;
   hungarianNotation: boolean;
   nonEmptyArrayParams: boolean;
+  optionalNullParams: boolean;
   preparedStatements: boolean;
   checkPrivileges: boolean;
   sharedTypesFile: string | false;
@@ -372,6 +374,7 @@ export function parseConfig(
     camelCaseColumnNames,
     hungarianNotation,
     nonEmptyArrayParams,
+    optionalNullParams,
     preparedStatements,
     checkPrivileges,
     sharedTypesFile,
@@ -464,6 +467,7 @@ export function parseConfig(
     camelCaseColumnNames,
     hungarianNotation,
     nonEmptyArrayParams,
+    optionalNullParams,
     preparedStatements,
     checkPrivileges,
     sharedTypesFile,

@@ -17,7 +17,15 @@ import type { TypeDb } from './db/type-db.js';
 import { parseCode as parseTypeScriptFile } from './parseTypescript.js';
 import { TypeAllocator, TypeMapping, TypeScope } from './types.js';
 
-const partialConfig = { hungarianNotation: true } as ParsedConfig;
+/**
+ * A hand-built config, filled in with the defaults a fixture would otherwise
+ * leave `undefined`. Only a flag whose schema default is not `false` has to be
+ * named here — today that is `optionalNullParams`.
+ */
+const testConfig = (overrides: Partial<ParsedConfig> = {}): ParsedConfig =>
+  ({ optionalNullParams: true, ...overrides }) as ParsedConfig;
+
+const partialConfig = testConfig({ hungarianNotation: true });
 
 /** A database that describes every query as taking and returning nothing. */
 const emptyDb: TypeDb = {
@@ -250,7 +258,7 @@ export interface IInsertNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        {} as ParsedConfig,
+        testConfig(),
       );
 
       expect(result).toContain(`  address: {
@@ -317,7 +325,7 @@ export interface IInsertNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        {} as ParsedConfig,
+        testConfig(),
       );
 
       expect(described).toContain('(VALUES ($1::int4,$2::text))');
@@ -460,7 +468,7 @@ export interface IDeleteUsersQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ camelCaseColumnNames: true, hungarianNotation: true }),
       );
       const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
@@ -539,7 +547,7 @@ export interface IGetNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ camelCaseColumnNames: true, hungarianNotation: true }),
       );
       const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
@@ -618,7 +626,7 @@ export interface IGetNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ nonEmptyArrayParams: true, hungarianNotation: true }),
       );
       const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
@@ -697,7 +705,7 @@ export interface IGetNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ nonEmptyArrayParams: true, hungarianNotation: true }),
       );
       const expectedTypes = `import { TypedQuery } from '@pelotech/pgtyped-runtime';
 
@@ -774,7 +782,7 @@ export interface IGetNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { nonEmptyArrayParams: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ nonEmptyArrayParams: true, hungarianNotation: true }),
       );
       const expected = `/** 'InsertNotifications' parameters type */
 export interface IInsertNotificationsParams {
@@ -1020,9 +1028,157 @@ export interface ICountNotificationsQuery {
         'src/queries.sql',
         typeSource,
         types,
-        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ camelCaseColumnNames: true, hungarianNotation: true }),
       );
       expect(result).toContain('totalCount: number;');
+    });
+  });
+});
+
+/**
+ * `optionalNullParams: false` keeps a non-required parameter nullable but
+ * takes the `?` away, so leaving one out is a compile error rather than a
+ * silent NULL (upstream PR #582, issue #556). It governs pick keys and scalars
+ * together, and has to: #573 is what made those two branches agree on what
+ * "not required" means, and a flag that moved only one of them would re-open
+ * the gap.
+ */
+describe('optionalNullParams', () => {
+  const generate = (
+    mode: Mode,
+    queryString: string,
+    mockTypes: IQueryTypes,
+    optionalNullParams: boolean,
+  ) =>
+    queryToTypeDeclarations(
+      parsedQuery(mode, queryString),
+      'src/queries.sql',
+      async () => mockTypes,
+      new TypeAllocator(TypeMapping()),
+      testConfig({ optionalNullParams }),
+    );
+
+  (['sql', 'ts'] as const).forEach((mode) => {
+    const scalarQuery =
+      mode === 'sql'
+        ? `
+    /*
+      @name Get582
+      @param tags -> (...)
+    */
+    SELECT id FROM users WHERE id = :id! AND note = :note AND tag IN :tags;
+    `
+        : 'const get582 = sql`SELECT id FROM users WHERE id = $id! AND note = $note AND tag IN $$tags`;';
+
+    const scalarTypes: IQueryTypes = {
+      returnTypes: [
+        {
+          returnName: 'id',
+          columnName: 'id',
+          type: 'text',
+          nullable: false,
+        },
+      ],
+      paramMetadata: {
+        params: ['text', 'text', 'text'],
+        mapping: [
+          {
+            name: 'id',
+            type: ParameterTransform.Scalar,
+            assignedIndex: 1,
+            required: true,
+          },
+          {
+            name: 'note',
+            type: ParameterTransform.Scalar,
+            assignedIndex: 2,
+            required: false,
+          },
+          {
+            name: 'tags',
+            type: ParameterTransform.Spread,
+            assignedIndex: 3,
+            required: false,
+          },
+        ],
+      },
+    };
+
+    const pickQuery =
+      mode === 'sql'
+        ? `
+    /*
+      @name Get582Address
+      @param address -> (line1!, line2)
+    */
+    INSERT INTO postal_codes (line1, line2) VALUES :address RETURNING code;
+    `
+        : 'const get582Address = sql`INSERT INTO postal_codes (line1, line2) VALUES $address(line1!, line2) RETURNING code`;';
+
+    const pickTypes: IQueryTypes = {
+      returnTypes: [],
+      paramMetadata: {
+        params: ['text', 'text'],
+        mapping: [
+          {
+            name: 'address',
+            type: ParameterTransform.Pick,
+            dict: {
+              line1: {
+                name: 'line1',
+                assignedIndex: 1,
+                required: true,
+                type: ParameterTransform.Scalar,
+              },
+              line2: {
+                name: 'line2',
+                assignedIndex: 2,
+                required: false,
+                type: ParameterTransform.Scalar,
+              },
+            },
+          },
+        ],
+      },
+    };
+
+    test(`on by default, a non-required scalar is an optional member (${mode})`, async () => {
+      expect(await generate(mode, scalarQuery, scalarTypes, true))
+        .toContain(`export interface Get582Params {
+  id: string;
+  note?: string | null | void;
+  tags: readonly (string | null | void)[];
+}`);
+    });
+
+    /**
+     * The spread keeps its `| void` either way: that one sits in the element
+     * type rather than on a key, and the flag is about keys the caller can
+     * leave out.
+     */
+    test(`off, a non-required scalar is a required nullable member (${mode})`, async () => {
+      expect(await generate(mode, scalarQuery, scalarTypes, false))
+        .toContain(`export interface Get582Params {
+  id: string;
+  note: string | null;
+  tags: readonly (string | null | void)[];
+}`);
+    });
+
+    test(`on by default, a non-required pick key is optional (${mode})`, async () => {
+      expect(await generate(mode, pickQuery, pickTypes, true))
+        .toContain(`  address: {
+    line1: string,
+    line2?: string | null | void
+  };`);
+    });
+
+    test(`off, a non-required pick key is required and nullable (${mode})`, async () => {
+      expect(await generate(mode, pickQuery, pickTypes, false))
+        .toContain(`  address: {
+    line1: string,
+    line2: string | null
+  };`);
     });
   });
 });
@@ -1281,7 +1437,7 @@ describe('a sql.prepared tag with an explicit name', () => {
       'src/queries.sql',
       async () => mockTypes,
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false } as ParsedConfig,
+      testConfig({ hungarianNotation: false }),
     );
 
     expect(result).toContain('export interface GetUsersParams');
@@ -1299,7 +1455,7 @@ describe('a sql.prepared tag with an explicit name', () => {
         emptyDb,
         { mode: 'ts', include: '*.ts' },
         new TypeAllocator(TypeMapping()),
-        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+        testConfig({ hungarianNotation: false, failOnError: false }),
       );
 
       // Advisory only: the types are still generated, under the name.
@@ -1322,7 +1478,7 @@ describe('a sql.prepared tag with an explicit name', () => {
           emptyDb,
           { mode: 'ts', include: '*.ts' },
           new TypeAllocator(TypeMapping()),
-          { hungarianNotation: false, failOnError: true } as ParsedConfig,
+          testConfig({ hungarianNotation: false, failOnError: true }),
         ),
       ).rejects.toThrow('expected `getUsers`');
     } finally {
@@ -1339,7 +1495,7 @@ describe('a sql.prepared tag with an explicit name', () => {
         emptyDb,
         { mode: 'ts', include: '*.ts' },
         new TypeAllocator(TypeMapping()),
-        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+        testConfig({ hungarianNotation: false, failOnError: false }),
       );
 
       expect(result.typedQueries).toEqual([]);
@@ -1359,7 +1515,7 @@ describe('a sql.prepared tag with an explicit name', () => {
         emptyDb,
         { mode: 'ts', include: '*.ts' },
         new TypeAllocator(TypeMapping()),
-        { hungarianNotation: false, failOnError: false } as ParsedConfig,
+        testConfig({ hungarianNotation: false, failOnError: false }),
       );
 
       expect(result.typedQueries).toEqual([]);
@@ -1391,7 +1547,7 @@ describe('a sql.prepared tag with no name', () => {
       'src/queries.sql',
       async () => mockTypes,
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false } as ParsedConfig,
+      testConfig({ hungarianNotation: false }),
     );
 
     expect(result).toContain('export type GetUsersParams');
@@ -1409,7 +1565,7 @@ describe('a sql.prepared tag with no name', () => {
         emptyDb,
         { mode: 'ts', include: '*.ts' },
         new TypeAllocator(TypeMapping()),
-        { hungarianNotation: false, failOnError: true } as ParsedConfig,
+        testConfig({ hungarianNotation: false, failOnError: true }),
       );
 
       expect(result.typedQueries).toHaveLength(1);
@@ -1432,7 +1588,7 @@ describe('the type argument lint', () => {
       emptyDb,
       { mode: 'ts', include: '*.ts' },
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false, failOnError } as ParsedConfig,
+      testConfig({ hungarianNotation: false, failOnError }),
     );
 
   test('warns on a stale type argument, and still generates', async () => {
@@ -1539,7 +1695,7 @@ describe('the nullability-suffix alias lint', () => {
         ? { mode: 'sql', include: '*.sql' }
         : { mode: 'ts', include: '*.ts' },
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false, failOnError } as ParsedConfig,
+      testConfig({ hungarianNotation: false, failOnError }),
     );
 
   // The lint lives in queryToTypeDeclarations, the one point both front ends
@@ -1624,7 +1780,7 @@ describe('the nullability-suffix alias lint', () => {
         'src/queries.sql',
         typeSource,
         new TypeAllocator(TypeMapping()),
-        { camelCaseColumnNames: true, hungarianNotation: true } as ParsedConfig,
+        testConfig({ camelCaseColumnNames: true, hungarianNotation: true }),
       );
       // Postgres returns the row under `total!`; the type says `total`.
       expect(camelCased).toContain('total: number;');
@@ -1635,10 +1791,10 @@ describe('the nullability-suffix alias lint', () => {
         'src/queries.sql',
         typeSource,
         new TypeAllocator(TypeMapping()),
-        {
+        testConfig({
           camelCaseColumnNames: false,
           hungarianNotation: true,
-        } as ParsedConfig,
+        }),
       );
       expect(asIs).toContain('"total!": number;');
     } finally {
@@ -1666,7 +1822,7 @@ describe('failOnError over a sql file warning', () => {
       emptyDb,
       { mode: 'sql', include: '*.sql' },
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false, failOnError } as ParsedConfig,
+      testConfig({ hungarianNotation: false, failOnError }),
     );
 
   test('warns and still generates by default', async () => {
@@ -1751,7 +1907,7 @@ describe('a type the mapping does not support', () => {
       'src/queries.sql',
       async () => unmapped,
       types,
-      { hungarianNotation: false, failOnError } as ParsedConfig,
+      testConfig({ hungarianNotation: false, failOnError }),
     );
 
   /**
@@ -1825,7 +1981,7 @@ describe('a type the mapping does not support', () => {
           paramMetadata: { params: [], mapping: [] },
         }),
         types,
-        { hungarianNotation: false, failOnError: true } as ParsedConfig,
+        testConfig({ hungarianNotation: false, failOnError: true }),
       );
       expect(result).toContain('n: number');
     } finally {
@@ -1862,7 +2018,7 @@ describe('duplicate keys in a generated interface', () => {
       'src/queries.sql',
       describing(columns) as any,
       new TypeAllocator(TypeMapping()),
-      { hungarianNotation: false, ...config } as ParsedConfig,
+      testConfig({ hungarianNotation: false, ...config }),
     );
 
   const collect = async (run: () => Promise<string>) => {
@@ -2009,11 +2165,11 @@ describe('the pre-flight privilege check', () => {
       deniedDb,
       { mode: 'sql', include: '*.sql' },
       new TypeAllocator(TypeMapping()),
-      {
+      testConfig({
         hungarianNotation: false,
         failOnError: false,
         ...config,
-      } as ParsedConfig,
+      }),
     );
 
   test('says nothing unless the config asks for it', async () => {

@@ -320,13 +320,25 @@ export async function queryToTypeDeclarations(
       const pgTypeName = params[assignedIndex - 1];
       let tsTypeName = types.use(pgTypeName, TypeScope.Parameter);
 
-      if (!param.required) {
-        tsTypeName += ' | null | void';
-      }
-
-      // Allow optional scalar parameters to be missing from parameters object
+      // Allow optional scalar parameters to be missing from parameters
+      // object, unless `optionalNullParams: false` asked for the opposite:
+      // still nullable, but the caller has to name it, so forgetting one is
+      // a compile error rather than a silent NULL (#556).
       const optional =
-        param.type === ParameterTransform.Scalar && !param.required;
+        config.optionalNullParams &&
+        param.type === ParameterTransform.Scalar &&
+        !param.required;
+
+      if (!param.required) {
+        // `void` is only there so the key may be left out; a key that has to
+        // be present has no use for it, and `null` already says "bind NULL"
+        // in as many words. A spread keeps it either way: its `| void` sits
+        // in the element type, where no key was ever omittable.
+        tsTypeName +=
+          optional || param.type === ParameterTransform.Spread
+            ? ' | null | void'
+            : ' | null';
+      }
 
       paramFieldTypes.push({
         optional,
@@ -346,11 +358,17 @@ export async function queryToTypeDeclarations(
           // of the params object — and for the same reason: `render` reads
           // the key off the object and binds whatever it finds, so an absent
           // key and an explicit `undefined` both reach the server as NULL.
-          // Without the `?` the only way to omit an optional key was to spell
-          // out `key: undefined` (#573).
-          return p.required
-            ? `    ${p.name}: ${paramType}`
-            : `    ${p.name}?: ${paramType} | null | void`;
+          // Without the `?` the only way to omit an optional key was to
+          // spell out `key: undefined` (#573). `optionalNullParams` governs
+          // pick keys and scalars together, and has to: #573 is what made the
+          // two branches agree on what "not required" means, and a flag that
+          // moved only one of them would re-open that gap.
+          if (p.required) {
+            return `    ${p.name}: ${paramType}`;
+          }
+          return config.optionalNullParams
+            ? `    ${p.name}?: ${paramType} | null | void`
+            : `    ${p.name}: ${paramType} | null`;
         })
         .join(',\n');
       fieldType = `{\n${fieldType}\n  }`;

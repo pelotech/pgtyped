@@ -234,6 +234,7 @@ describe('shared types across a watch session', () => {
       camelCaseColumnNames: false,
       hungarianNotation: false,
       nonEmptyArrayParams: false,
+      optionalNullParams: true,
       preparedStatements: true,
       checkPrivileges: false,
       typesOverrides: {},
