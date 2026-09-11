@@ -366,11 +366,12 @@ describe('the type argument is linted against the query name', () => {
   });
 });
 
-// The statement text codegen reads is what the tag says, verbatim. Codegen
-// types the query from it and the runtime hashes its rendering into the
-// prepared statement name, so any edit to the interior would generate types
-// and a name for a query the runtime never sends.
-describe('the statement text is the tag interior, verbatim', () => {
+// The statement text codegen reads is the tag's *cooked* text: what the
+// JavaScript engine hands the runtime as `strings[0]`, which is what the
+// runtime parses, hashes into a prepared statement name and sends. Codegen
+// types the query from it, so reading the source spelling instead would
+// generate types and a name for a query the runtime never sends.
+describe("the statement text is the tag's cooked text", () => {
   const statementOf = (source: string) => {
     const result = parseCode(source, 'queries.ts');
     expect(result.errors).toEqual([]);
@@ -423,17 +424,20 @@ describe('the statement text is the tag interior, verbatim', () => {
     ).toBe('select id\n    from users\n    where id = $id');
   });
 
-  // `\n` inside a SQL string literal is two characters of source, not a line
-  // break, and reaches the server as the escape the author wrote.
-  test('an escape inside a string literal is left alone', () => {
+  // `\n` is two characters of source and one character of tag: the engine
+  // cooks it to a line break before the runtime ever sees it, so that is what
+  // Postgres receives and what codegen has to describe. `E'\n'` means the same
+  // thing to Postgres either way, which is why this one is harmless — see the
+  // `LIKE` and regex cases below for the same mechanism doing damage.
+  test('an escape inside a string literal is cooked, as the runtime sends it', () => {
     expect(
       statementOf(
         String.raw`const q = sql` + '`' + String.raw`select E'a\nb'` + '`;',
       ),
-    ).toBe(String.raw`select E'a\nb'`);
+    ).toBe("select E'a\nb'");
   });
 
-  test('and is still left alone in a multi-line tag', () => {
+  test('and is still cooked in a multi-line tag', () => {
     expect(
       statementOf(
         [
@@ -441,6 +445,83 @@ describe('the statement text is the tag interior, verbatim', () => {
           'from users`;',
         ].join('\n'),
       ),
-    ).toBe(String.raw`select E'a\nb'` + '\nfrom users');
+    ).toBe("select E'a\nb'\nfrom users");
+  });
+
+  // The cases where cooking changes the query rather than spelling it
+  // differently. Each of these was typed from the source spelling before,
+  // while Postgres received the cooked text in the right-hand column.
+  test.each([
+    [
+      'an escaped LIKE wildcard, which stops being escaped',
+      String.raw`select id from users where name like 'The\_%'`,
+      "select id from users where name like 'The_%'",
+    ],
+    [
+      'a regex character class, which becomes a literal letter',
+      String.raw`select id from users where name ~ '\d'`,
+      "select id from users where name ~ 'd'",
+    ],
+    [
+      'a doubled backslash, which halves',
+      String.raw`select '{"p":"x\\y"}'::jsonb`,
+      String.raw`select '{"p":"x\y"}'::jsonb`,
+    ],
+    [
+      'a tab and a newline in an ordinary string',
+      String.raw`select 'a\tb\nc'`,
+      "select 'a\tb\nc'",
+    ],
+    [
+      'a hex escape, which is harmless: both spell the same letter',
+      String.raw`select E'\x41'`,
+      "select E'A'",
+    ],
+  ])('%s', (_label, source, cooked) => {
+    expect(statementOf('const q = sql`' + source + '`;')).toBe(cooked);
+  });
+
+  // A CRLF checkout is the second way the source spelling and the cooked text
+  // diverge: the engine normalises the line break and the runtime sends `\n`,
+  // so every multi-line tag on Windows used to be typed from text nobody sent.
+  test('a CRLF source yields the LF the runtime sends', () => {
+    expect(statementOf('const q = sql`select id\r\nfrom users`;')).toBe(
+      'select id\nfrom users',
+    );
+  });
+});
+
+// An escape JavaScript does not define leaves the tag with no text at all:
+// `strings[0]` is `undefined` and the tag throws as the module is imported.
+// TypeScript hands back the source spelling in exactly this case, so reading
+// it would type a query that cannot even be constructed.
+describe('a tag whose text the runtime cannot construct', () => {
+  test.each([
+    ['a Postgres octal escape', String.raw`select E'\101'`],
+    ['a decimal escape', String.raw`select '\8'`],
+    ['a malformed unicode escape', String.raw`select '\uZZZZ'`],
+  ])('%s is an error, not a silent miscue', (_label, source) => {
+    const result = parseCode('const q = sql`' + source + '`;', 'queries.ts');
+
+    expect(result.queries).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('queries.ts:');
+    expect(result.errors[0]).toContain('escape JavaScript does not define');
+    expect(result.errors[0]).toContain(source.slice(0, 20));
+  });
+
+  // The runtime reads `strings[0]` and nothing else, so an interpolation is
+  // not merely untypable, it is truncated at the first `${…}`.
+  test('an interpolation is an error, not a query missing its tail', () => {
+    const result = parseCode(
+      'const q = sql`select id from ${table} where id = $id`;',
+      'queries.ts',
+    );
+
+    expect(result.queries).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('queries.ts:');
+    expect(result.errors[0]).toContain('cannot interpolate');
   });
 });

@@ -76,6 +76,72 @@ function readSqlTag(tag: ts.Expression): SqlTag | undefined {
 }
 
 /**
+ * The compiler's flag for a template token holding an escape JavaScript does
+ * not define. It is internal, so it is read through a cast and named here: the
+ * public `ts.TokenFlags` stops at the numeric-literal flags, and nothing else
+ * in the API distinguishes a template whose cooked text exists from one whose
+ * cooked text is `undefined` at run time.
+ */
+const CONTAINS_INVALID_ESCAPE = 1 << 11;
+
+/**
+ * A tag's source text, first line only and bounded, for quoting in a message.
+ * The whole interior of a multi-line tag would bury the sentence explaining it.
+ */
+function excerpt(template: ts.TemplateLiteral) {
+  const source = template.getText();
+  const [first] = source.split('\n');
+  const head = first.slice(0, 60);
+  return head === source ? head : `${head}…`;
+}
+
+/**
+ * The text of a tag as the JavaScript engine hands it to the runtime.
+ *
+ * `.text` is the *cooked* value, the one `strings[0]` holds — which is what
+ * the runtime parses, hashes into a prepared statement name and sends. The
+ * source spelling is a different string wherever the tag contains a backslash:
+ * `like 'The\_%'` is written with an escaped underscore and reaches Postgres
+ * as the wildcard `The_%`, and `~ '\d'` reaches it as the letter `d`. Codegen
+ * has to describe the text that is sent, so it reads the cooked value and
+ * never the raw one. `.text` also normalises CRLF to LF the way the engine
+ * does, so a tag is typed the same on a Windows checkout as anywhere else.
+ *
+ * Two shapes have no usable cooked text, and in both the runtime gets
+ * something other than the query codegen would describe, so both are fatal:
+ *  - an invalid escape leaves `strings[0]` undefined and the tag throws as the
+ *    module is imported. TypeScript falls back to the raw text here, so
+ *    reading `.text` would quietly type a query that cannot be constructed.
+ *  - an interpolation is cut short at the first `${…}`, because the runtime
+ *    reads `strings[0]` and nothing else.
+ */
+function tagText(
+  template: ts.TemplateLiteral,
+): { text: string } | { reason: string } {
+  if (!ts.isNoSubstitutionTemplateLiteral(template)) {
+    return {
+      reason:
+        `A \`sql\` tag cannot interpolate, and ${excerpt(template)} does. ` +
+        `The runtime reads the first string of the template and nothing else, ` +
+        `so everything from the first \`\${…}\` on is dropped. Pass the value ` +
+        `as a \`$param\` instead.`,
+    };
+  }
+  const flags = (template as { templateFlags?: number }).templateFlags ?? 0;
+  if (flags & CONTAINS_INVALID_ESCAPE) {
+    return {
+      reason:
+        `A \`sql\` tag contains an escape JavaScript does not define, and ` +
+        `${excerpt(template)} does. Such a tag has no text at all — ` +
+        `\`strings[0]\` is undefined and the tag throws as the module is ` +
+        `imported. Postgres escapes are not JavaScript escapes: double the ` +
+        `backslash, as in \`E'\\\\101'\`.`,
+    };
+  }
+  return { text: template.text.trim() };
+}
+
+/**
  * The name of the variable a tag is assigned to, if there is one. A tag used
  * inline as an argument, assigned to a property, or destructured has no plain
  * identifier to compare a statement name against, so it reports none.
@@ -153,19 +219,17 @@ export function parseFile(
   function parseNode(node: ts.Node) {
     if (ts.isTaggedTemplateExpression(node)) {
       const tag = readSqlTag(node.tag);
-      // getText() is the template's source text, backticks included, so
-      // dropping the first and last character and trimming the surrounding
-      // whitespace leaves exactly what the author wrote. Nothing else may
-      // touch the interior: codegen types the query from this text and the
-      // runtime hashes its rendering into the prepared statement name, so an
-      // edit here describes a query the runtime never sends.
-      const queryText = node.template.getText().slice(1, -1).trim();
+      const text = tag && tagText(node.template);
       if (tag?.kind === 'invalid') {
         // Fatal: without the name codegen cannot tell what the generated
         // types should be called, and guessing would name them after a
         // variable the runtime never sees.
         errors.push(`${sourceFile.fileName}: ${tag.reason}`);
-      } else if (tag?.kind === 'prepared' && tag.name !== undefined) {
+      } else if (text && 'reason' in text) {
+        // Fatal for the same reason: the tag's text is not the text the
+        // runtime will hold, so there is nothing honest to generate from.
+        errors.push(`${sourceFile.fileName}: ${text.reason}`);
+      } else if (text && tag?.kind === 'prepared' && tag.name !== undefined) {
         // The explicit name wins, exactly as `@name` does in a `.sql` file,
         // so the generated types follow the statement and not the variable.
         const variableName = variableNameOf(node);
@@ -178,13 +242,13 @@ export function parseFile(
           );
         }
         lintTypeArgument(node, tag.name);
-        foundNodes.push({ queryName: tag.name, queryText });
-      } else if (tag) {
+        foundNodes.push({ queryName: tag.name, queryText: text.text });
+      } else if (text) {
         // A plain tag, or a `sql.prepared()` that derives its name: either way
         // the variable is the only name codegen has to work from.
         const queryName = node.parent.getChildren()[0].getText();
         lintTypeArgument(node, queryName);
-        foundNodes.push({ queryName, queryText });
+        foundNodes.push({ queryName, queryText: text.text });
       }
     }
 

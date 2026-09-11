@@ -60,6 +60,22 @@ export interface UpdateBooksFromValuesTagQuery {
   result: UpdateBooksFromValuesTagResult;
 }
 
+/** 'MatchBooksWithEscapesTag' parameters type */
+export type MatchBooksWithEscapesTagParams = void;
+
+/** 'MatchBooksWithEscapesTag' return type */
+export interface MatchBooksWithEscapesTagResult {
+  like_the: boolean | null;
+  name: string | null;
+  tilde_d: boolean | null;
+}
+
+/** 'MatchBooksWithEscapesTag' query type */
+export interface MatchBooksWithEscapesTagQuery {
+  params: MatchBooksWithEscapesTagParams;
+  result: MatchBooksWithEscapesTagResult;
+}
+
 /** 'CountBookCommentsTag' parameters type */
 export type CountBookCommentsTagParams = void;
 

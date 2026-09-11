@@ -53,6 +53,7 @@ import type {
   CountBookCommentsTagQuery,
   FindBookByIdTagQuery,
   FindBooksRankedAboveTagQuery,
+  MatchBooksWithEscapesTagQuery,
   UpdateBooksFromValuesTagQuery,
 } from './index.test.types.js';
 
@@ -74,6 +75,19 @@ SET rank = item.rank, name = item.name
 FROM (VALUES $$books(id!::int4, rank!::int4, name!::text)) AS item(id, rank, name)
 WHERE b.id = item.id
 RETURNING b.id, b.rank, b.name`;
+
+/**
+ * A tag holding backslashes. JavaScript cooks the template before the runtime
+ * ever sees it, so `\_` reaches Postgres as a bare `_` — a single-character
+ * wildcard, not an escaped underscore — and `\d` reaches it as the letter `d`,
+ * not a digit class. Codegen used to read the source spelling instead and
+ * describe a different query than the one the server is sent.
+ */
+const matchBooksWithEscapesTag = sql<MatchBooksWithEscapesTagQuery>`SELECT name,
+       name LIKE 'The\_%' AS like_the,
+       name ~ '\d' AS tilde_d
+FROM books
+ORDER BY id`;
 
 // Run by exactly one test, the plain-tag case in `prepared statements` below.
 // pg_prepared_statements is per session and this suite shares one client, so a
@@ -301,6 +315,27 @@ test('a tag wrapped from the backtick line runs as written', async () => {
     [...ranked.map((b) => b.id)].sort((a, b) => a - b),
   );
   expect(ranked.every((b) => b.rank !== null && b.rank > 2)).toBe(true);
+});
+
+/**
+ * What a backslash in a tag actually does, against the live server.
+ *
+ * `LIKE 'The\_%'` reads as an escaped underscore and matches nothing here;
+ * `~ '\d'` reads as a digit class and matches nothing either. Neither is what
+ * runs: the engine cooks both before the tag is called, so Postgres sees
+ * `LIKE 'The_%'` and `~ 'd'`, and both pick out "The Dragons Of Eden" alone.
+ * These are the rows the runtime returns, and since the fix they are also the
+ * query codegen described.
+ */
+test('a backslash in a tag is cooked before Postgres sees it', async () => {
+  const rows = await matchBooksWithEscapesTag.run(client);
+
+  expect(rows).toEqual([
+    { name: 'Black Swan', like_the: false, tilde_d: false },
+    { name: 'The Dragons Of Eden', like_the: true, tilde_d: true },
+    { name: 'Mysteries of a Barbershop', like_the: false, tilde_d: false },
+    { name: 'In the Jungle of Cities', like_the: false, tilde_d: false },
+  ]);
 });
 
 /**
@@ -882,6 +917,65 @@ describe('codegen exit code', () => {
         expect(fs.existsSync(path.join(dir, 'src', 'record.ts'))).toBe(false);
         // It used to exit 0: the error was logged and then ignored.
         expect(status).not.toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }, 120_000);
+  });
+
+  /**
+   * A tag is cooked by JavaScript before the runtime sees it, and an escape
+   * JavaScript does not define leaves it with no text at all: `strings[0]` is
+   * `undefined`, so the tag throws a `TypeError` as the module is imported and
+   * takes the whole module with it. `E'\101'` is the shape that bites — valid
+   * Postgres octal, not a valid JavaScript escape.
+   *
+   * TypeScript hands back the source spelling in exactly this case, so codegen
+   * used to generate perfectly good types for a query that cannot be built.
+   * It needs a scratch project: this suite is itself one of the files codegen
+   * reads, so the tag cannot live here without taking the suite down with it.
+   */
+  describe('a tag whose text JavaScript cannot cook', () => {
+    const scratch = () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pgtyped-escape-'));
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(
+        path.join(dir, 'src', 'octal.ts'),
+        "import { sql } from '@pelotech/pgtyped-runtime';\n\n" +
+          "export const getA = sql`SELECT E'\\101' AS a`;\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, 'config.json'),
+        JSON.stringify({
+          transforms: [
+            {
+              mode: 'ts',
+              include: '**/*.ts',
+              emitTemplate: '{{dir}}/{{name}}.types.ts',
+            },
+          ],
+          srcDir: './src/',
+          dbUrl: 'postgres://postgres:password@localhost/postgres',
+        }),
+      );
+      return dir;
+    };
+
+    test('is reported, and no types are written for it', () => {
+      const dir = scratch();
+      try {
+        const { stderr } = spawnSync(
+          process.execPath,
+          [cliEntry, '-c', 'config.json'],
+          { cwd: dir, encoding: 'utf-8', timeout: 120_000 },
+        );
+
+        expect(stderr).toContain('escape JavaScript does not define');
+        // It used to generate `GetAResult` from the source spelling, which
+        // describes cleanly and is a query the tag can never construct.
+        expect(fs.existsSync(path.join(dir, 'src', 'octal.types.ts'))).toBe(
+          false,
+        );
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
