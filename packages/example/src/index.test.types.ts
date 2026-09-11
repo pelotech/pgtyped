@@ -21,6 +21,23 @@ export interface FindBookByIdTagQuery {
   result: FindBookByIdTagResult;
 }
 
+/** 'FindBooksRankedAboveTag' parameters type */
+export interface FindBooksRankedAboveTagParams {
+  minRank: number;
+}
+
+/** 'FindBooksRankedAboveTag' return type */
+export interface FindBooksRankedAboveTagResult {
+  id: number;
+  rank: number | null;
+}
+
+/** 'FindBooksRankedAboveTag' query type */
+export interface FindBooksRankedAboveTagQuery {
+  params: FindBooksRankedAboveTagParams;
+  result: FindBooksRankedAboveTagResult;
+}
+
 /** 'UpdateBooksFromValuesTag' parameters type */
 export interface UpdateBooksFromValuesTagParams {
   books: readonly ({

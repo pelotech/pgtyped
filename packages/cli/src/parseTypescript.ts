@@ -153,11 +153,13 @@ export function parseFile(
   function parseNode(node: ts.Node) {
     if (ts.isTaggedTemplateExpression(node)) {
       const tag = readSqlTag(node.tag);
-      const queryText = node.template
-        .getText()
-        .replace('\n', '')
-        .slice(1, -1)
-        .trim();
+      // getText() is the template's source text, backticks included, so
+      // dropping the first and last character and trimming the surrounding
+      // whitespace leaves exactly what the author wrote. Nothing else may
+      // touch the interior: codegen types the query from this text and the
+      // runtime hashes its rendering into the prepared statement name, so an
+      // edit here describes a query the runtime never sends.
+      const queryText = node.template.getText().slice(1, -1).trim();
       if (tag?.kind === 'invalid') {
         // Fatal: without the name codegen cannot tell what the generated
         // types should be called, and guessing would name them after a

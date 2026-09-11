@@ -52,17 +52,28 @@ import { sql, unprepared } from '@pelotech/pgtyped-runtime';
 import type {
   CountBookCommentsTagQuery,
   FindBookByIdTagQuery,
+  FindBooksRankedAboveTagQuery,
   UpdateBooksFromValuesTagQuery,
 } from './index.test.types.js';
 
 const findBookByIdTag = sql<FindBookByIdTagQuery>`SELECT * FROM books WHERE id = $id`;
 
+// Deliberately wrapped with its first line on the backtick line, the shape
+// codegen used to weld together; see the test of the same name below.
+const findBooksRankedAboveTag = sql<FindBooksRankedAboveTagQuery>`SELECT id, rank
+FROM books
+WHERE rank > $minRank!::int4
+ORDER BY id`;
+
 // The tag spelling of the `.sql` query of the same name; see `books.sql` for
-// why the casts are there. On one line, like every other tag here: codegen's
-// `queryText` does `.replace('\n', '')`, which drops the *first* newline
-// wherever it falls, so a tag wrapped across lines is described to the server
-// with two of its lines welded together.
-const updateBooksFromValuesTag = sql<UpdateBooksFromValuesTagQuery>`UPDATE books b SET rank = item.rank, name = item.name FROM (VALUES $$books(id!::int4, rank!::int4, name!::text)) AS item(id, rank, name) WHERE b.id = item.id RETURNING b.id, b.rank, b.name`;
+// why the casts are there. Wrapped from the backtick line as well: codegen
+// describes the tag's text against a live server, so `b` welded onto `SET`
+// would fail typegen outright rather than reaching the test below.
+const updateBooksFromValuesTag = sql<UpdateBooksFromValuesTagQuery>`UPDATE books b
+SET rank = item.rank, name = item.name
+FROM (VALUES $$books(id!::int4, rank!::int4, name!::text)) AS item(id, rank, name)
+WHERE b.id = item.id
+RETURNING b.id, b.rank, b.name`;
 
 // Run by exactly one test, the plain-tag case in `prepared statements` below.
 // pg_prepared_statements is per session and this suite shares one client, so a
@@ -271,6 +282,25 @@ test('sql tag query', async () => {
   const books = await findBookByIdTag.run(client, { id: 1 });
   expect(findBookByIdTag.name).toBeUndefined(); // tags are never prepared
   expect(books).toMatchSnapshot();
+});
+
+/**
+ * The shape codegen used to mangle: a tag whose text begins on the backtick
+ * line and wraps. Both halves are load-bearing. Codegen describes this text
+ * against a live server, so `rank` welded onto `FROM` — the old behaviour —
+ * fails typegen outright with a column that does not exist; and the
+ * assertions here are what prove the query the runtime sends is the one that
+ * was typed.
+ */
+test('a tag wrapped from the backtick line runs as written', async () => {
+  const ranked = await findBooksRankedAboveTag.run(client, { minRank: 2 });
+  expect(ranked.length).toBeGreaterThan(0);
+  const id: number = ranked[0].id; // type-level: fails to compile if untyped
+  expect(typeof id).toBe('number');
+  expect(ranked.map((b) => b.id)).toEqual(
+    [...ranked.map((b) => b.id)].sort((a, b) => a - b),
+  );
+  expect(ranked.every((b) => b.rank !== null && b.rank > 2)).toBe(true);
 });
 
 /**
