@@ -2,12 +2,11 @@
 import type {
   ColumnHint,
   Diagnostic,
-  Key,
   ParamIR,
   QueryIR,
   Transform,
 } from './ir.js';
-import { scanParams, spans } from './scanner.js';
+import { KEY_LIST_SOURCE, parseKeys, scanParams, spans } from './scanner.js';
 
 export interface SqlFileParse {
   queries: QueryIR[];
@@ -16,7 +15,12 @@ export interface SqlFileParse {
 }
 
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
-const KEYS = `\\s*${IDENT}!?(?:\\s*,\\s*${IDENT}!?)*\\s*,?\\s*`;
+/**
+ * Shared with the tag front-end so that `(id!::int4, val::text)` means the same
+ * thing written either way. `parseKeys` throws on a key this admits but cannot
+ * read, which `readBlock` turns into a diagnostic naming the `@param`.
+ */
+const KEYS = KEY_LIST_SOURCE;
 
 const NAME_RULE = `@name\\s+(${IDENT})`;
 
@@ -78,22 +82,19 @@ function matchesAt(
   return re.exec(text);
 }
 
-function keys(list: string): Key[] {
-  return list
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean)
-    .map((k) => ({ name: k.replace(/!$/, ''), required: k.endsWith('!') }));
-}
-
-/** `(...)` | `(a, b!)` | `((a, b)...)`, or undefined if unrecognised. */
+/**
+ * `(...)` | `(a, b!::int4)` | `((a, b)...)`, or undefined if unrecognised.
+ * Throws, rather than returning undefined, on a key list that is shaped like
+ * one but contains a key `parseKeys` will not read: the shape is unambiguous
+ * enough to say what is wrong with it.
+ */
 function transform(rule: string): Transform | undefined {
   const r = rule.trim();
   if (/^\(\s*\.\.\.\s*\)$/.test(r)) return { type: 'array_spread' };
   const spread = new RegExp(`^\\(\\((${KEYS})\\)\\s*\\.\\.\\.\\s*\\)$`).exec(r);
-  if (spread) return { type: 'pick_array_spread', keys: keys(spread[1]) };
+  if (spread) return { type: 'pick_array_spread', keys: parseKeys(spread[1]) };
   const pick = new RegExp(`^\\((${KEYS})\\)$`).exec(r);
-  if (pick) return { type: 'pick_tuple', keys: keys(pick[1]) };
+  if (pick) return { type: 'pick_tuple', keys: parseKeys(pick[1]) };
   return undefined;
 }
 
@@ -186,7 +187,18 @@ function readBlock(
     const rule = readRule(inner, m.index + m[0].length);
     if (rule === undefined) continue;
     read++;
-    const t = transform(rule);
+    let t: Transform | undefined;
+    try {
+      t = transform(rule);
+    } catch (err) {
+      errors.push({
+        message: `Cannot parse transform for @param ${m[1]}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        offset: offset + m.index,
+      });
+      continue;
+    }
     if (t) params.set(m[1], { transform: t, offset: offset + m.index });
     else
       errors.push({

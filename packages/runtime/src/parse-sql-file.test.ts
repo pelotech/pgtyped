@@ -621,6 +621,92 @@ SELECT 1;`;
   });
 });
 
+describe('parseSqlFile — key types on a @param transform', () => {
+  test('a pick_tuple carries a type per key', () => {
+    const q = one(
+      `/* @name Q @param u -> (id::int4, val::text, plain) */ SELECT :u;`,
+    );
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_tuple',
+      keys: [
+        { name: 'id', required: false, type: 'int4' },
+        { name: 'val', required: false, type: 'text' },
+        { name: 'plain', required: false },
+      ],
+    });
+  });
+
+  test('so does a pick_array_spread, and `!` combines with a cast', () => {
+    const q = one(
+      `/* @name Q @param us -> ((id!::int4, val::text[])...) */ SELECT :us;`,
+    );
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'id', required: true, type: 'int4' },
+        { name: 'val', required: false, type: 'text[]' },
+      ],
+    });
+  });
+
+  test('a cast survives a transform wrapped across lines', () => {
+    const q = one(`/*
+  @name Q
+  @param us -> ((
+    id!::int4,
+    val::text
+  )...)
+*/
+SELECT :us;`);
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'id', required: true, type: 'int4' },
+        { name: 'val', required: false, type: 'text' },
+      ],
+    });
+  });
+
+  // A key list this shape is unambiguous, so the diagnostic says what is wrong
+  // with the key rather than reprinting the whole rule as unrecognised.
+  test('`!` after the cast is reported at its @param, by name', () => {
+    const text = `/* @name A @param u -> (id::int4!) */ SELECT :u;`;
+    const r = parseSqlFile(text);
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Cannot parse transform for @param u: Key "id::int4!" writes "!" after ' +
+        'the cast; a required typed key is "id!::int4", with "!" on the name',
+    ]);
+    expect(at(text, r.errors[0].offset, 8)).toBe('@param u');
+  });
+
+  test('a type that is not an identifier is reported, naming the key', () => {
+    const text = `/* @name A @param u -> (id::int4, name::character varying) */ SELECT :u;`;
+    const r = parseSqlFile(text);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].message).toMatch(
+      /^Cannot parse transform for @param u: Key "name" is cast to "character varying"/,
+    );
+    expect(at(text, r.errors[0].offset, 8)).toBe('@param u');
+  });
+
+  test('a type with a length modifier is rejected rather than passed through', () => {
+    // `numeric(10,2)` would reach the SQL verbatim if it were accepted, and
+    // the modifier cannot change the OID Describe reports anyway.
+    const r = parseSqlFile(
+      `/* @name A @param u -> (n::numeric(10,2)) */ SELECT :u;`,
+    );
+    expect(r.errors.map((e) => e.message)).toStrictEqual([
+      'Cannot parse transform for @param u: (n::numeric(10,2))',
+    ]);
+  });
+
+  test('a param whose transform was rejected is left scalar, so the errors are the result', () => {
+    const r = parseSqlFile(`/* @name A @param u -> (id::int4!) */ SELECT :u;`);
+    expect(r.errors).toHaveLength(1);
+    expect(r.queries[0].params[0].transform).toStrictEqual({ type: 'scalar' });
+  });
+});
+
 describe('parseSqlFile — a block or a statement is never lost silently', () => {
   test('a trailing block with no statement is an error', () => {
     const text = `/* @name A */\nSELECT 1;\n/* @name B */\n`;

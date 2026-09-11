@@ -57,19 +57,21 @@ names every source:
 
 Three of the cheap ones were taken as part of writing this document, the mis-mapped types were taken
 straight after it, and the six that were left in **Still open — cheap** have since been taken as
-well. That bucket is now empty. Nine entries from **Still open — medium** have since been taken as
-well: domain types — the one adoption in this list that needed real code — the `failOnError`
-escalation for a type the mapping does not know, the column-shaped `typesOverrides` key, duplicate
-keys in a generated interface, the diagnosis for an empty array in a spread (the rendering question
+well. That bucket is now empty. Ten entries from **Still open — medium** have since been taken as
+well, which empties that bucket too: domain types — the one adoption in this list that needed real
+code — the `failOnError` escalation for a type the mapping does not know, the column-shaped
+`typesOverrides` key, duplicate keys in a generated interface, the diagnosis for an empty array in
+a spread (the rendering question
 it raises is recorded there and stays open), the silence around an ambient `PG*` variable
 displacing an explicit config value (its precedence is deliberately unchanged), the pre-flight
 privilege check of PR #563, whose technique was prototyped against a live server before anything was
 built on it and which shipped as the opt-in `checkPrivileges`, the element nullability of array
-results, which absorbs the PR #614 adoption entry, and the shared type aliases of #565, the last
-entry below and the only one here that changes the shape of generated output. PR #563 is an
-adoption rather than a bug, as are the three entries before that last one — the cheapest three in
-**Worth adopting from upstream** (PRs #580, #624 and #642), which have also been taken. Everything
-here is listed first so nobody re-opens it, with the reproduction that justified each.
+results, which absorbs the PR #614 adoption entry, the shared type aliases of #565, the only one
+here that changes the shape of generated output, and the key types of #498/#517/#630, the last
+entry below. PR #563 is an adoption rather than a bug, as are the three entries before the #565 one
+— the cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also
+been taken. Everything here is listed first so nobody re-opens it, with the reproduction that
+justified each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -1241,22 +1243,99 @@ Regeneration was run twice to confirm the output is stable, and `check-git-diff.
 
 ---
 
-## Still open — medium
+### No way to type the keys of a `VALUES :rows` pick — issues #498, #517, #630 — **FIXED**
 
-### No way to type the keys of a `VALUES :rows` pick — issues #498, #517, #630
+**This entry's earlier description of #498 was wrong and is corrected here.** It said the failing
+construct was `INSERT INTO t (a, b) VALUES :rows`. It is not: that form has always worked, because
+the target table's columns give the placeholders their types directly. The reporter's query is an
+`INSERT … SELECT … FROM (VALUES :issues) AS tmp(issue_id, badge_id)`, and the `VALUES` list is
+inside a **sub-select**. That is the whole defect, and it is the same construct in all three reports.
 
-One issue with three reports.
+Postgres must assign a sub-select's columns concrete types before it typechecks anything downstream,
+and a `VALUES` list resolves its columns from its own rows and nothing else. With every row an
+`unknown` parameter, the `unknown` → `text` fallback fires and locks in. Measured directly against
+a live server, by `PREPARE` and `pg_prepared_statements.parameter_types`:
 
-- **#498**, reproduced against a live DB with the reporter's exact schema (`issue.id TEXT`,
-  `issue.badge_id INT`):
+| Construct                                                        | Inferred parameter types                |
+| ---------------------------------------------------------------- | --------------------------------------- |
+| `INSERT INTO issue (id, badge_id) VALUES ($1, $2)`               | `{text,integer}` — correct              |
+| the same, multi-row `($1,$2),($3,$4)`                            | `{text,integer,text,integer}` — correct |
+| `SELECT * FROM (VALUES ($1,$2)) AS tmp(a, b)`                    | `{text,text}` — **wrong**               |
+| `SELECT * FROM (VALUES ($1::int,$2::text),($3,$4)) AS tmp(a, b)` | `{integer,text,integer,text}` — correct |
+
+The last row is the fix and also its economy: **a cast in the first row propagates down the column**,
+so one row of casts types the whole list however many rows are passed. Confirmed by `PREPARE` and by
+`EXECUTE` against real rows.
+
+Reproductions as reported, before the fix:
+
+- **#498**, against the reporter's schema (`issue.id TEXT`, `issue.badge_id INT`):
   `Error in query. Details: { errorCode: '42804', message: 'column "badge_id" is of type integer but
-expression is of type text' }`, and the query is emitted with `Params = never`.
-- **#630**, reproduced:
-  `UPDATE foo f SET val = item.val FROM (VALUES :foos) AS item(id, val) WHERE f.id = item.id` →
-  `42883 operator does not exist: integer = text`.
-- **#517** asks for the annotation syntax that would fix both. None exists.
+expression is of type text' }`, and the query emitted with `Params = never`.
+- **#630**: `UPDATE foo f SET val = item.val FROM (VALUES :foos) AS item(id, val) WHERE f.id =
+item.id` → `42883 operator does not exist: integer = text`.
+- **#517** asks for the annotation syntax that would fix both.
 
-Not cheap: needs new annotation syntax plus IR and renderer support.
+#### What now happens
+
+A pick key may carry a cast, in either front-end:
+
+```sql
+/*
+  @name UpdateFoos
+  @param foos -> ((id!::int4, val!::text)...)
+*/
+UPDATE foo f SET val = item.val
+FROM (VALUES :foos) AS item(id, val)
+WHERE f.id = item.id;
+```
+
+```ts
+const updateFoos = sql<UpdateFoosQuery>`UPDATE foo f SET val = item.val FROM (VALUES $$foos(id!::int4, val!::text)) AS item(id, val) WHERE f.id = item.id`;
+```
+
+which renders `(VALUES ($1::int4,$2::text),($3,$4))` and generates
+`foos: readonly { id: number; val: string }[]` — `number`, where it was `string`. Both spellings are
+pinned live in `packages/example`, which runs the #630 query against the server and asserts both the
+generated type and the returned value.
+
+Three things are worth recording about the shape of the fix.
+
+- **Codegen needed no change at all.** The cast goes into the SQL, the server reports the resulting
+  OID in its `ParameterDescription`, and the existing pick branch in `generator.ts` maps that OID
+  like any other. Nothing in PgTyped infers, maps or validates the type name, which is why the type
+  written is a Postgres type name rather than a TypeScript one.
+- **The type grammar is deliberately narrow**: an identifier, optionally schema-qualified, with any
+  number of `[]` suffixes. The text reaches the SQL verbatim, so a grammar admitting arbitrary text
+  would admit arbitrary SQL. Multi-word spellings and length modifiers are rejected by name, and
+  cost nothing — every multi-word type has a single-word alias, and a modifier cannot change the OID
+  Describe reports.
+- **The required marker comes first**, `id!::int4`. That keeps it on the name it qualifies, which is
+  already how a scalar reference reads: `:id!::int4` has parsed all along. `id::int4!` is rejected
+  with a message naming the key and the correct spelling.
+
+This entry is also why `fix!: hash the rendered SQL into the prepared statement name` had to land
+first. A `pick_tuple` renders a fixed number of placeholders, so it **is** named — and a key type
+changes only the rendered SQL, never `ir.statement`. Under the old hash, two picks over identical
+statement text with different key types would have taken the same statement name for two different
+statement texts, which node-postgres rejects with "Prepared statements must be unique". There is a
+test for exactly that pair.
+
+#### Not fixed: a cast outside the `VALUES` row
+
+Casting the sub-select's column instead of the key — `WHERE f.id = item.id::int4`, or
+`SET val = item.val::text` — **describes successfully and silently generates the wrong type**. The
+column is already `text` by the time the cast applies, so the parameter stays `text` and `id` comes
+out `string`; PgTyped's report is a true description of the statement that was sent. Nothing here
+detects it, and it remains the trap it was. The cast has to be on the key, inside the row. The
+documentation says so under a caution.
+
+Two query shapes that solve the same problem without the new syntax were verified end to end through
+the CLI and are documented alongside it: `unnest(:ids!::int4[], :vals!::text[]) AS u(id, val)`,
+which is correctly typed and cheaper for a large batch but changes the call shape to parallel
+arrays; and a literal seed row, `FROM (VALUES (0, ''), :foos OFFSET 1) AS item(id, val)`, which
+keeps the array-of-objects shape but is ugly and leans on `OFFSET` without an `ORDER BY`, which
+Postgres does not contractually order.
 
 ---
 
@@ -1592,14 +1671,14 @@ Every triaged number, and where it is covered.
 #213 **FIXED here** · #221 **FIXED here** (diagnosis) · #263 limitation · #273 **FIXED here** (diagnosis) · #292 fixed · #314 **FIXED here** (diagnosis) · #316 NA ·
 #317 **FIXED here** · #348 limitation · #375 NA · #394 fixed · #395 feature · #404 fixed (warn) ·
 #410 fixed upstream · #446 limitation/docs fixed · #454 fixed · #455 limitation · #459 feature ·
-#460 **FIXED here** · #491 **FIXED here** (docs) · #498 open · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
-#513 limitation · #517 open · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
+#460 **FIXED here** · #491 **FIXED here** (docs) · #498 **FIXED here** · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
+#513 limitation · #517 **FIXED here** · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
 #556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 **FIXED here** ·
 #566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
-#613 **FIXED here** · #625 fixed · #629 feature · #630 open · #634 limitation · #636 fixed · #640 fixed
+#613 **FIXED here** · #625 fixed · #629 feature · #630 **FIXED here** · #634 limitation · #636 fixed · #640 fixed
 
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 **FIXED here** ·

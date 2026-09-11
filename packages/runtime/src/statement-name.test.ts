@@ -183,6 +183,44 @@ describe('what the hash is taken over: the SQL, not the statement text', () => {
     expect(derivedStatementName(pickSpread)).toBeUndefined();
   });
 
+  // The regression the key-type syntax would otherwise reintroduce. A
+  // `pick_tuple` renders a fixed number of placeholders, so it *is* named — and
+  // a key type changes only the rendered SQL, never `ir.statement`. Hashing the
+  // body would give these two the same name for two different statement texts,
+  // and node-postgres rejects the second with "Prepared statements must be
+  // unique".
+  test('two key types over one statement text get two names', () => {
+    const typed = irFor(
+      '/* @name InsertT @param u -> (id::int4, val::text) */ INSERT INTO t VALUES :u;',
+    );
+    const untyped = insertWith('id, val');
+    expect(typed.statement).toBe(untyped.statement);
+    expect(render(typed).query).toBe(
+      'INSERT INTO t VALUES ($1::int4,$2::text)',
+    );
+    expect(render(untyped).query).toBe('INSERT INTO t VALUES ($1,$2)');
+    expect(preparedStatementName(typed)).not.toBe(
+      preparedStatementName(untyped),
+    );
+    expect(derivedStatementName(typed)).not.toBe(derivedStatementName(untyped));
+
+    // And two different key types differ from each other, not just from none.
+    const other = irFor(
+      '/* @name InsertT @param u -> (id::int8, val::text) */ INSERT INTO t VALUES :u;',
+    );
+    expect(preparedStatementName(typed)).not.toBe(preparedStatementName(other));
+  });
+
+  test('a typed pick_tuple still renders one SQL text, so it may be named', () => {
+    const typed = irFor(
+      '/* @name InsertT @param u -> (id::int4, val::text) */ INSERT INTO t VALUES :u;',
+    );
+    expect(render(typed).query).toBe(
+      render(typed, { u: { id: 1, val: 'x' } }).query,
+    );
+    expect(preparedStatementName(typed)).toBeDefined();
+  });
+
   // Truncation gives on the prefix, never on the hash — including here, where
   // the hash is over text the query name cannot be read off.
   test('the 63-byte cap still holds, and still keeps the whole hash', () => {

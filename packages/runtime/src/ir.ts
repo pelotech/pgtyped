@@ -2,10 +2,20 @@
 
 /**
  * A key inside a pick transform: `(name!, age)` declares `name` required.
+ *
+ * `type` is the Postgres type a key's placeholder is cast to — `(id::int4,
+ * val::text)`. It exists because a `VALUES` list inside a sub-select resolves
+ * its column types from its own rows alone, so every column of `FROM (VALUES
+ * :rows) AS t(a, b)` falls back to `text` and the query fails downstream with
+ * `42804` or `42883`. The renderer emits it as a cast; nothing infers or maps
+ * it, because once the cast is in the SQL the server's `ParameterDescription`
+ * reports the real OID and codegen picks it up unchanged.
  */
 export interface Key {
   name: string;
   required: boolean;
+  /** Absent unless the key was written with a cast, so an untyped key's IR is unchanged. */
+  type?: string;
 }
 
 /**

@@ -29,6 +29,7 @@ PgTyped has a number of requirements for SQL file contents:
 5. Annotations can include param expansions if needed using the `@param` tag.
 6. Parameters can be forced to be not nullable using an exclamation mark `:paramName!`.
 7. Nullability on output columns can be specified in the annotation using the `@column` tag, ex. `@column name!` or `@column name?`.
+8. Keys of a `@param` expansion can carry a Postgres type, ex. `@param rows -> ((id::int4, val::text)...)`, which is rendered into the query as a cast. See [Typing the keys of a pick](#typing-the-keys-of-a-pick).
 
 ## Parameter expansions
 
@@ -152,6 +153,158 @@ insertUsers.run(connection, {
 -- Bindings: ['Rob', 56, 'Tom', 45]
 INSERT INTO users (name, age) VALUES ($1, $2), ($3, $4) RETURNING id;
 ```
+
+### Typing the keys of a pick
+
+Every expansion above renders bare `$n` placeholders and lets Postgres work out what they are. That
+works everywhere the placeholder sits in a position with a known type — an `INSERT` column list, a
+comparison against a column — and it does not work in one place: a `VALUES` list inside a
+sub-select.
+
+```sql
+UPDATE foo f SET val = item.val
+FROM (VALUES :foos) AS item(id, val)
+WHERE f.id = item.id;
+```
+
+Postgres has to give a sub-select's columns concrete types before it typechecks anything downstream,
+and a `VALUES` list resolves its columns from its own rows and nothing else. Every row here is an
+`unknown` parameter, so the `unknown` → `text` fallback fires and locks in: `item.id` is `text`,
+`id` is generated as `string`, and the query fails at run time with
+`42883 operator does not exist: integer = text`.
+
+Write a cast on the key to pin it:
+
+```sql title="Query definition:"
+/*
+  @name UpdateFoos
+  @param foos -> ((id!::int4, val!::text)...)
+*/
+UPDATE foo f SET val = item.val
+FROM (VALUES :foos) AS item(id, val)
+WHERE f.id = item.id;
+```
+
+```ts title="Execution:"
+updateFoos.run(connection, {
+  foos: [
+    { id: 1, val: 'a' },
+    { id: 2, val: 'b' },
+  ],
+});
+```
+
+```sql title="Resulting query:"
+-- Bindings: [1, 'a', 2, 'b']
+UPDATE foo f SET val = item.val
+FROM (VALUES ($1::int4,$2::text),($3,$4)) AS item(id, val)
+WHERE f.id = item.id;
+```
+
+```ts title="Resulting code:"
+export interface UpdateFoosParams {
+  foos: readonly {
+    id: number;
+    val: string;
+  }[];
+}
+```
+
+Only the first row carries the casts. Postgres resolves a `VALUES` list column-wise, so a type
+pinned in the first row types the whole column — repeating the cast on every row would say the same
+thing once per element of your array.
+
+PgTyped does not interpret the type name. It puts the cast in the SQL, the server reports the
+resulting OID in its parameter description, and codegen maps that OID exactly as it maps any other.
+So the type you write is a **Postgres** type name, not a TypeScript one, and any type the mapping
+already knows works.
+
+#### The type grammar
+
+A key type is an identifier, optionally schema-qualified, with any number of `[]` suffixes:
+`int4`, `text`, `timestamptz`, `public.my_enum`, `text[]`. Nothing else is accepted, because the
+text goes into the SQL verbatim.
+
+That rules out the multi-word spellings and the length modifiers, and neither one costs you
+anything: every multi-word type has a single-word alias (`timestamptz`, `varchar`, `float8`,
+`numeric`), and a modifier such as `numeric(10,2)` cannot change the OID the server reports. A type
+outside the grammar is a parse error naming the query and the offending key, so a typo is never
+silently passed through to Postgres.
+
+#### Combining with the `!` marker
+
+`!` comes **before** the cast — `id!::int4`. The marker always sits directly on the name it
+qualifies, which is how it already reads on a scalar reference: `:id!::int4` has always been a
+required parameter with a cast after it. `id::int4!` is rejected, by name:
+
+```
+Cannot parse transform for @param foos: Key "id::int4!" writes "!" after the cast;
+a required typed key is "id!::int4", with "!" on the name
+```
+
+Key types combine with everything `!` already does: a key without it stays optional in the
+generated interface, and one with it is required.
+
+:::note
+A plain `INSERT INTO t (a, b) VALUES :rows` never needed this. The columns of the target table give
+the placeholders their types directly, so it has always generated correctly. Reach for a key type
+when the `VALUES` list is inside a sub-select — `FROM (VALUES :rows) AS t(...)`, a CTE, a
+`USING (VALUES :rows)` — which is the only place the fallback bites.
+:::
+
+:::caution
+Casting **outside** the `VALUES` row does not fix it, and fails silently. Writing
+`WHERE f.id = item.id::int4` or `SET val = item.val::text` describes successfully and generates
+`id: string` for an integer column — the cast is applied to the already-`text` column of the
+sub-select, so the parameter is still `text` and the type PgTyped reports is a true description of
+the statement you sent. The cast has to be on the key, inside the row.
+:::
+
+#### Alternatives that need no new syntax
+
+Two other shapes solve the same problem and are worth knowing, because for some queries they are the
+better answer.
+
+**Parallel arrays through `unnest`.** Pass one array per column, each cast at the call site:
+
+```sql title="Query definition:"
+/* @name UpdateFoos */
+UPDATE foo f SET val = u.val
+FROM unnest(:ids!::int4[], :vals!::text[]) AS u(id, val)
+WHERE f.id = u.id;
+```
+
+```ts title="Resulting code:"
+export interface UpdateFoosParams {
+  ids: numberArray;
+  vals: stringArray;
+}
+```
+
+This is clean, correctly typed, and **better than a key type for a large batch**: the whole update
+travels as two array parameters however many rows it carries, where a spread-and-pick renders one
+placeholder per value and sends `rows × columns` of them. What it costs is the call shape — you
+build parallel arrays rather than an array of objects, and it is on you to keep them the same length
+and in the same order.
+
+**A literal seed row.** Put one row of literals in front of the parameter to type the columns, then
+skip it:
+
+```sql
+/*
+  @name UpdateFoos
+  @param foos -> ((id!, val!)...)
+*/
+UPDATE foo f SET val = item.val
+FROM (VALUES (0, ''), :foos OFFSET 1) AS item(id, val)
+WHERE f.id = item.id;
+```
+
+The literals give the columns their types, and the array-of-objects call shape is preserved exactly.
+It is ugly, it puts a dummy row in your query, and it leans on `OFFSET` without an `ORDER BY` —
+which Postgres does not contractually order. A `VALUES` list is emitted in written order in
+practice, and this does work, but nothing in the standard or the documentation promises the row
+skipped is the seed row. Prefer a key type.
 
 ### Enforcing non-nullability for parameters
 

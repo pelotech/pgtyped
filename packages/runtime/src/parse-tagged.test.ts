@@ -94,6 +94,37 @@ describe('parseTagged', () => {
       /different selections/,
     );
   });
+
+  test('inline key types, with `!` before the cast', () => {
+    const q = parseTagged(
+      'UPDATE t SET x = 1 FROM (VALUES $$us(id!::int4, val::text)) AS i(id, val)',
+      'q',
+    );
+    expect(q.params[0].transform).toStrictEqual({
+      type: 'pick_array_spread',
+      keys: [
+        { name: 'id', required: true, type: 'int4' },
+        { name: 'val', required: false, type: 'text' },
+      ],
+    });
+  });
+
+  // A tag with an unusable key type is reported by the caller that catches
+  // this, per tag and by name, rather than reaching the server as SQL.
+  test('an unusable key type throws, naming the parameter and the key', () => {
+    expect(() => parseTagged('VALUES $$us(id::int4!)', 'q')).toThrow(
+      /^Parameter "us": Key "id::int4!" writes "!" after the cast/,
+    );
+    expect(() => parseTagged('VALUES $$us(id::4bad)', 'q')).toThrow(
+      /^Parameter "us": Key "id" is cast to "4bad"/,
+    );
+  });
+
+  test('two references to one param must agree on key types too', () => {
+    expect(() => parseTagged('SELECT $a(x::int4), $a(x::text)', 'q')).toThrow(
+      /different selections/,
+    );
+  });
 });
 
 // Ported from the old ANTLR-based TS parser's conformance suite

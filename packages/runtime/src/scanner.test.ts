@@ -247,6 +247,83 @@ describe('escape rules that decide where a string ends', () => {
   });
 });
 
+describe('key types in a tag selection', () => {
+  test('a type is captured per key, and untyped keys carry none', () => {
+    const [p] = scanParams('VALUES $$foos(id::int4, val)', '$');
+    expect(p.keys).toStrictEqual([
+      { name: 'id', required: false, type: 'int4' },
+      { name: 'val', required: false },
+    ]);
+  });
+
+  test('the required marker comes before the cast', () => {
+    const [p] = scanParams('VALUES $foo(id!::int4)', '$');
+    expect(p.keys).toStrictEqual([
+      { name: 'id', required: true, type: 'int4' },
+    ]);
+  });
+
+  test('the selection span still covers the whole reference', () => {
+    const sql = 'X $a(b::int4, c) Y';
+    const [p] = scanParams(sql, '$');
+    expect(sql.slice(p.a, p.b)).toBe('$a(b::int4, c)');
+  });
+
+  test('schema qualification and [] suffixes are accepted', () => {
+    const [p] = scanParams('VALUES $x(a::public.my_enum, b::text[])', '$');
+    expect(p.keys).toStrictEqual([
+      { name: 'a', required: false, type: 'public.my_enum' },
+      { name: 'b', required: false, type: 'text[]' },
+    ]);
+  });
+
+  test('the reversed ordering is rejected by name', () => {
+    expect(() => scanParams('VALUES $$foos(id::int4!)', '$')).toThrow(
+      'Parameter "foos": Key "id::int4!" writes "!" after the cast; a required ' +
+        'typed key is "id!::int4", with "!" on the name',
+    );
+  });
+
+  test('a type that is not an identifier is rejected, naming the key', () => {
+    expect(() =>
+      scanParams('VALUES $$foos(id::int4, name::character varying)', '$'),
+    ).toThrow(/Key "name" is cast to "character varying"/);
+  });
+
+  test('a cast with no type is rejected', () => {
+    expect(() => scanParams('VALUES $x(a::)', '$')).toThrow(
+      /Key "a" is cast to ""/,
+    );
+  });
+});
+
+describe('a cast does not turn a subquery into a selection', () => {
+  // Loosening the key-list sniff to admit `a::int4` is the one place this
+  // change could silently reclassify SQL. `SELECT` is a legal identifier, so
+  // what keeps the subquery a subquery is that nothing a key list allows —
+  // a `::`, a comma, or the end — follows it.
+  test('a cast directly on an identifier is a selection', () => {
+    const [p] = scanParams('VALUES $x(a::int4)', '$');
+    expect(p.keys).toStrictEqual([
+      { name: 'a', required: false, type: 'int4' },
+    ]);
+  });
+
+  test('a subquery whose projection has a cast is still a subquery', () => {
+    const sql = 'WHERE id = $x(SELECT 1::int4)';
+    const [p] = scanParams(sql, '$');
+    expect(p.keys).toBeUndefined();
+    expect(sql.slice(p.a, p.b)).toBe('$x');
+  });
+
+  test('and so is one that selects a cast column from a table', () => {
+    const sql = 'WHERE id = $x(SELECT id::int4 FROM t)';
+    const [p] = scanParams(sql, '$');
+    expect(p.keys).toBeUndefined();
+    expect(sql.slice(p.a, p.b)).toBe('$x');
+  });
+});
+
 describe('known limits, pinned so a change is a decision', () => {
   test('a slice with a non-numeric upper bound reports it as a param', () => {
     expect(
