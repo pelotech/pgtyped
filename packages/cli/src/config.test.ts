@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig } from './config.js';
+import { configExports, parseConfig } from './config.js';
 
 function configFile(body: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), 'pgtyped-config-'));
@@ -16,6 +16,29 @@ function configFile(body: Record<string, unknown>): string {
   );
   return file;
 }
+
+/**
+ * A config written as a module rather than JSON, in a package whose
+ * `package.json` decides whether Node reads a `.js` file as CommonJS or as an
+ * ES module. That decision is the whole subject of these tests.
+ */
+function moduleConfigFile(
+  name: string,
+  source: string,
+  packageType?: 'module',
+): string {
+  const dir = mkdtempSync(join(tmpdir(), 'pgtyped-config-'));
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify(packageType ? { type: packageType } : {}),
+  );
+  const file = join(dir, name);
+  writeFileSync(file, source);
+  return file;
+}
+
+const MODULE_BODY =
+  "srcDir: './src', transforms: [{ mode: 'sql', include: '**/*.sql' }]";
 
 describe('parseConfig', () => {
   test('preparedStatements defaults to true', () => {
@@ -244,6 +267,71 @@ describe('parseConfig', () => {
         name: 'BigInt',
       });
     });
+  });
+});
+
+describe('a config written as a module', () => {
+  test('a .cjs file is CommonJS whatever the package says', () => {
+    const file = moduleConfigFile(
+      'config.cjs',
+      `module.exports = { ${MODULE_BODY} };`,
+      'module',
+    );
+    expect(parseConfig(file).transforms).toHaveLength(1);
+  });
+
+  test('module.exports is read in a package that is not type: module', () => {
+    const file = moduleConfigFile(
+      'config.js',
+      `module.exports = { ${MODULE_BODY} };`,
+    );
+    expect(parseConfig(file).transforms).toHaveLength(1);
+  });
+
+  test('an ES module default export is unwrapped', () => {
+    const file = moduleConfigFile(
+      'config.js',
+      `export default { ${MODULE_BODY} };`,
+      'module',
+    );
+    expect(parseConfig(file).transforms).toHaveLength(1);
+  });
+
+  test('ES module named exports are read from the namespace', () => {
+    const file = moduleConfigFile(
+      'config.js',
+      `export const srcDir = './src';\nexport const transforms = [{ mode: 'sql', include: '**/*.sql' }];`,
+      'module',
+    );
+    expect(parseConfig(file).transforms).toHaveLength(1);
+  });
+
+  /**
+   * The one shape that cannot be rescued: the assignment reaches nothing and
+   * the namespace comes back empty. Reporting that as `transforms: Required`
+   * sent people looking at the config's contents, which are fine.
+   *
+   * Asserted against `configExports` rather than through `parseConfig`,
+   * because this is the one case the test runner cannot reproduce: Vitest's
+   * module runner evaluates the file and Node raises `module is not defined in
+   * ES module scope`, while plain Node — which is what the CLI is — hands back
+   * an empty namespace and no error at all. That silence is what the message
+   * exists for, so it is pinned on the function that produces it.
+   */
+  test('module.exports in an ES module names the real cause', () => {
+    const emptyNamespace = Object.defineProperty({}, Symbol.toStringTag, {
+      value: 'Module',
+    });
+    expect(() => configExports(emptyNamespace, '/p/config.js')).toThrow(
+      /loaded as an ES module and exported nothing/,
+    );
+    expect(() => configExports(emptyNamespace, '/p/config.js')).toThrow(
+      /\.cjs|export default/,
+    );
+    // The old failure blamed the config's contents; this one must not.
+    expect(() => configExports(emptyNamespace, '/p/config.js')).not.toThrow(
+      /transforms: Required/,
+    );
   });
 });
 

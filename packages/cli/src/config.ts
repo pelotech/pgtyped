@@ -288,6 +288,52 @@ function convertParsedURLToDBConfig({
 
 const require = createRequire(import.meta.url);
 
+/**
+ * What `require` hands back for a config file, reduced to the object the schema
+ * expects.
+ *
+ * A CommonJS file gives its `module.exports` directly and needs nothing. An ES
+ * module gives a namespace, and Node decides which a `.js` file is from the
+ * nearest `package.json` — so the same config text loads differently depending
+ * on a `"type"` field several directories away. Two of the three shapes used to
+ * arrive as an object the schema could not read, and the failure surfaced as
+ * `transforms: Required`, which points at the config's contents when the
+ * problem is how the file was loaded.
+ *
+ * `export default {…}` is unwrapped, because that is how an ES module says what
+ * `module.exports =` says. Named exports already worked and still do: the
+ * namespace has the fields on it. What cannot be rescued is `module.exports =`
+ * inside a file Node treats as an ES module, where the assignment reaches
+ * nothing and the namespace comes back empty — that one gets an error naming
+ * the cause.
+ */
+export function configExports(loaded: unknown, fullPath: string): unknown {
+  const isNamespace =
+    typeof loaded === 'object' &&
+    loaded !== null &&
+    (loaded as { [Symbol.toStringTag]?: string })[Symbol.toStringTag] ===
+      'Module';
+  if (!isNamespace) {
+    return loaded;
+  }
+
+  const namespace = loaded as Record<string, unknown>;
+  if ('default' in namespace) {
+    return namespace.default;
+  }
+  // `__esModule` is a marker, not configuration, so a namespace carrying only
+  // that is as empty as one carrying nothing.
+  if (Object.keys(namespace).every((key) => key === '__esModule')) {
+    throw new Error(
+      `${fullPath} was loaded as an ES module and exported nothing. ` +
+        `Node decides that from the nearest package.json, and \`"type": "module"\` makes a .js file ` +
+        `an ES module, where \`module.exports =\` assigns to nothing. Either rename the file to .cjs ` +
+        `to have it loaded as CommonJS, or write \`export default { … }\` instead.`,
+    );
+  }
+  return namespace;
+}
+
 export function stringToType(str: string): Type {
   if (
     str.startsWith('./') ||
@@ -319,7 +365,7 @@ export function parseConfig(
   argConnectionUri?: string,
 ): ParsedConfig {
   const fullPath = isAbsolute(path) ? path : join(process.cwd(), path);
-  const configObject = require(fullPath);
+  const configObject = configExports(require(fullPath), fullPath);
 
   const declaredTransforms = (
     configObject as { transforms?: { mode?: unknown }[] }
