@@ -808,3 +808,97 @@ SELECT 1;`);
     expect(at(text, r.errors[0].offset, 8)).toBe('SELECT 1');
   });
 });
+
+/**
+ * Issue #549. `DO $$ … :name … $$` generated `Params = void` and said nothing
+ * about it. Reading the body as a string is what Postgres does and it stays;
+ * what was missing is any sign that the `:name` in it was never a parameter.
+ */
+describe('parseSqlFile — a param sigil inside a dollar-quoted body', () => {
+  const warnings = (sql: string) => {
+    const r = parseSqlFile(sql);
+    expect(r.errors).toStrictEqual([]);
+    return r.warnings.map((w) => w.message);
+  };
+
+  test('the reported case warns, and still takes no params', () => {
+    const text = `/* @name CreateSeq */
+DO $$ BEGIN EXECUTE 'CREATE SEQUENCE ' || :name; END $$;`;
+    const r = parseSqlFile(text);
+
+    expect(r.errors).toStrictEqual([]);
+    // The behaviour is unchanged: the body is a string, so there is no param.
+    expect(r.queries[0].params).toStrictEqual([]);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0].message).toBe(
+      `Parameter ":name" in @name CreateSeq is inside a dollar-quoted string ` +
+        `($$ … $$), so Postgres reads it as literal text: no parameter is generated ` +
+        `for it and the sigil reaches the server as written. A dollar-quoted body ` +
+        `cannot take parameters — if it was meant as one, the reference has to move ` +
+        `outside the quotes.`,
+    );
+    expect(at(text, r.warnings[0].offset, 5)).toBe(':name');
+  });
+
+  test('a tagged dollar quote warns, and names its tag', () => {
+    expect(
+      warnings(`/* @name Do */\nDO $body$ SELECT :name $body$;`),
+    ).toStrictEqual([
+      expect.stringContaining('a dollar-quoted string ($body$ … $body$)'),
+    ]);
+  });
+
+  test('a nested dollar quote is still a dollar quote', () => {
+    expect(
+      warnings(`/* @name Do */\nDO $o$ EXECUTE $i$ SELECT :name $i$; $o$;`),
+    ).toStrictEqual([
+      expect.stringContaining('a dollar-quoted string ($i$ … $i$)'),
+    ]);
+  });
+
+  test('the marked form is quoted back as written', () => {
+    expect(warnings(`/* @name Do */\nDO $$ SELECT :name! $$;`)).toStrictEqual([
+      expect.stringContaining('Parameter ":name!"'),
+    ]);
+  });
+
+  /**
+   * The point of the diagnostic is that it fires on a mistake, not on
+   * PL/pgSQL. Every one of these is a colon a `DO` block is expected to
+   * contain, and a warning on any of them would train the user to stop
+   * reading warnings — which costs more than the silence it replaced.
+   */
+  describe('does not warn on the colons ordinary PL/pgSQL is made of', () => {
+    const cases: [string, string][] = [
+      ['an assignment', `DO $$ DECLARE x int; BEGIN x := 1; END $$;`],
+      ['a cast', `DO $$ BEGIN PERFORM val::int4; END $$;`],
+      ['a numeric slice', `DO $$ BEGIN PERFORM arr[1:2]; END $$;`],
+      ['a colon in a string', `DO $$ BEGIN RAISE NOTICE 'bad:thing'; END $$;`],
+      ['a colon in a comment', `DO $$ BEGIN -- see :name\n END $$;`],
+      ['a named cast of a param', `DO $$ SELECT x::text FROM t $$;`],
+    ];
+    cases.forEach(([label, body]) => {
+      test(label, () => {
+        expect(warnings(`/* @name Do */\n${body}`)).toStrictEqual([]);
+      });
+    });
+  });
+
+  test('a param outside any dollar quote is unaffected', () => {
+    const r = parseSqlFile(
+      `/* @name Q */\nSELECT * FROM t WHERE id = :id AND x = (SELECT $$lit$$);`,
+    );
+    expect(r.warnings).toStrictEqual([]);
+    expect(r.queries[0].params.map((p) => p.name)).toStrictEqual(['id']);
+  });
+
+  test('a real param and a quoted one in the same statement', () => {
+    const r = parseSqlFile(
+      `/* @name Q */\nSELECT :real, (SELECT $$ :fake $$) AS lit;`,
+    );
+    expect(r.queries[0].params.map((p) => p.name)).toStrictEqual(['real']);
+    expect(r.warnings.map((w) => w.message)).toStrictEqual([
+      expect.stringContaining('Parameter ":fake"'),
+    ]);
+  });
+});

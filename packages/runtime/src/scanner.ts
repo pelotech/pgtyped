@@ -6,6 +6,9 @@ export interface Span extends Loc {
   kind: 'code' | 'opaque';
 }
 
+/** An opening dollar-quote delimiter, `$$` or `$tag$`, anchored at the start. */
+const DOLLAR_TAG = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/;
+
 /**
  * Splits SQL text into code and opaque spans. Params are only recognised in
  * code spans, so `:name` inside a string, a comment or a double-quoted
@@ -106,7 +109,7 @@ export function spans(text: string, opts: { dollarQuotes: boolean }): Span[] {
       continue;
     }
     if (opts.dollarQuotes && c === '$') {
-      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(text.slice(i));
+      const m = DOLLAR_TAG.exec(text.slice(i));
       if (m) {
         cut('code', i);
         const tag = m[0];
@@ -207,6 +210,17 @@ export function parseKeys(list: string): Key[] {
 }
 
 /**
+ * What counts as a reference, for a sigil. The single source of truth for it:
+ * `scanQuotedParams` reports only what this matches, so a colon that is not a
+ * parameter outside a dollar-quoted body is not called one inside it either.
+ */
+function paramRe(sigil: ':' | '$'): RegExp {
+  return sigil === ':'
+    ? new RegExp(`(?<!:):(${IDENT})(!?)`, 'g')
+    : new RegExp(`(?<!\\$)(\\$\\$?)(${IDENT})(!?)`, 'g');
+}
+
+/**
  * Every parameter reference in `text`, in source order.
  *
  * `:` is the `.sql`-file sigil. The lookbehind excludes `::` casts, and a
@@ -236,10 +250,7 @@ export function parseKeys(list: string): Key[] {
  * a scalar.
  */
 export function scanParams(text: string, sigil: ':' | '$'): ParamRef[] {
-  const re =
-    sigil === ':'
-      ? new RegExp(`(?<!:):(${IDENT})(!?)`, 'g')
-      : new RegExp(`(?<!\\$)(\\$\\$?)(${IDENT})(!?)`, 'g');
+  const re = paramRe(sigil);
   const refs: ParamRef[] = [];
 
   for (const span of spans(text, { dollarQuotes: sigil === ':' })) {
@@ -274,5 +285,79 @@ export function scanParams(text: string, sigil: ':' | '$'): ParamRef[] {
       refs.push({ name, required, a: at, b: end, spread, keys });
     }
   }
+  return refs;
+}
+
+/** A reference a dollar-quoted body swallowed: where it is, and what hid it. */
+export interface QuotedParamRef extends Loc {
+  name: string;
+  /** The delimiter of the body it sits in: `$$`, or `$tag$`. */
+  tag: string;
+}
+
+/**
+ * Every parameter reference that sits inside a dollar-quoted body, in source
+ * order — precisely the ones `scanParams` leaves alone.
+ *
+ * `$$ … $$` and `$tag$ … $tag$` are string literals to Postgres, so a `:name`
+ * written inside one is literal text and no parameter is generated for it.
+ * That is the right reading and nothing here changes it; what it changes is
+ * that the reading can now be said out loud, because a query that quietly
+ * types its params as `void` explains nothing to whoever wrote the `:name`.
+ *
+ * Two things keep it off ordinary PL/pgSQL, which is full of colons that were
+ * never parameters. It matches with `paramRe`, so `x := 1`, `val::int` and
+ * `arr[1:2]` are no more references in here than they are anywhere else — the
+ * cost of a false positive is that every `DO` block in every project warns,
+ * which teaches people to stop reading warnings. And it descends through the
+ * body's own strings and comments, so the colon in `RAISE 'bad:thing'` is left
+ * alone exactly as it would be outside. A nested dollar quote is still a
+ * dollar quote, so what it contains is reported under its own tag.
+ *
+ * `:` only. The tag front-end's sigil is `$`, and `scanParams` scans a tag
+ * with `dollarQuotes: false` because `$$name` is its spread: `$$ … $$` is not
+ * a quoted body there, and a `$name` written between those delimiters is a
+ * real parameter today. There is nothing to report.
+ */
+export function scanQuotedParams(text: string): QuotedParamRef[] {
+  const re = paramRe(':');
+  const refs: QuotedParamRef[] = [];
+
+  /** `tag` is the body `chunk` sits in, or undefined at the top level. */
+  const walk = (chunk: string, base: number, tag: string | undefined): void => {
+    for (const span of spans(chunk, { dollarQuotes: true })) {
+      const part = chunk.slice(span.a, span.b);
+      if (span.kind === 'code') {
+        if (tag === undefined) continue;
+        for (const m of part.matchAll(re)) {
+          const at = base + span.a + m.index;
+          refs.push({
+            name: m[1],
+            a: at,
+            b: at + m[0].length,
+            tag,
+          });
+        }
+        continue;
+      }
+      const open = DOLLAR_TAG.exec(part);
+      // Any other opaque span is a string, a comment or a quoted identifier:
+      // already invisible to params, and not what this is about.
+      if (!open) continue;
+      const [delim] = open;
+      // An unterminated body runs to the end of the chunk, as `spans` cut it.
+      const closed =
+        part.endsWith(delim) && part.length >= delim.length * 2
+          ? -delim.length
+          : undefined;
+      walk(
+        part.slice(delim.length, closed),
+        base + span.a + delim.length,
+        delim,
+      );
+    }
+  };
+
+  walk(text, 0, undefined);
   return refs;
 }
