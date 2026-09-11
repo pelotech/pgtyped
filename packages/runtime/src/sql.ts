@@ -22,12 +22,48 @@ export interface TypePair {
 const VALID_QUERY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * The one string a tag is allowed to be.
+ *
+ * A template hands its tag the *cooked* strings, and there are two shapes
+ * where `strings[0]` is not the query the author wrote. An escape JavaScript
+ * does not define — `E'\101'`, which is valid Postgres octal — leaves it
+ * `undefined`; an interpolation leaves everything from the first `${…}` on in
+ * later entries the tag never reads. Both are programming errors, so both are
+ * reported here, at module evaluation, rather than as a `TypeError` on
+ * `undefined` or as a query silently missing its second half.
+ *
+ * Codegen rejects the same two shapes with a message naming the file, so this
+ * is the backstop for a tag it never saw: one outside `srcDir`, or in a
+ * project that does not run the generator at all.
+ */
+function tagText(strings: TemplateStringsArray): string {
+  if (strings.length > 1) {
+    throw new TypeError(
+      'A sql tag cannot interpolate: the tag reads the first string of the ' +
+        `template and nothing else, so ${JSON.stringify(strings.raw[0])} is ` +
+        'the whole of the query it would send. Pass the value as a $param.',
+    );
+  }
+  const [text] = strings;
+  if (text === undefined) {
+    throw new TypeError(
+      'A sql tag contains an escape JavaScript does not define, so it has no ' +
+        `text: ${JSON.stringify(strings.raw[0])}. Postgres escapes are not ` +
+        "JavaScript escapes: double the backslash, as in E'\\\\101'.",
+    );
+  }
+  return text;
+}
+
+/**
  * Builds a query from an inline template. The result is an ordinary
  * `TypedQuery` with no canonical statement name, so it is never prepared. Use
  * `sql.prepared` to opt into one.
  */
 export function sql<T extends TypePair>(strings: TemplateStringsArray) {
-  return new TypedQuery<T['params'], T['result']>(parseTagged(strings[0]));
+  return new TypedQuery<T['params'], T['result']>(
+    parseTagged(tagText(strings)),
+  );
 }
 
 /**
@@ -60,7 +96,7 @@ sql.prepared = <T extends TypePair>(name?: string) => {
     );
   }
   return (strings: TemplateStringsArray) => {
-    const ir = parseTagged(strings[0], name);
+    const ir = parseTagged(tagText(strings), name);
     const statementName =
       name === undefined ? derivedStatementName(ir) : preparedStatementName(ir);
     return new TypedQuery<T['params'], T['result']>(

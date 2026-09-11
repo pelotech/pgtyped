@@ -102,3 +102,67 @@ test('both tag forms infer their params and result types', () => {
   expect(named.compile({ id: 1 }).values).toStrictEqual([1]);
   expect(derived.compile({ id: 1 }).values).toStrictEqual([1]);
 });
+
+// A tag is cooked by JavaScript before the runtime sees it, so a backslash in
+// the source is not a backslash in the query. Nothing here is fixable at this
+// layer — `strings[0]` is the query, by definition — but it is the text
+// codegen has to describe, so it is pinned.
+describe('a tag holds its cooked text', () => {
+  const textOf = (q: TypedQuery<void, unknown>) => q.compile().text;
+
+  test('an escaped LIKE wildcard reaches Postgres unescaped', () => {
+    expect(
+      textOf(
+        sql<{
+          params: void;
+          result: unknown;
+        }>`SELECT 1 WHERE 'a' LIKE 'The\_%'`,
+      ),
+    ).toBe("SELECT 1 WHERE 'a' LIKE 'The_%'");
+  });
+
+  test('a regex character class reaches Postgres as a letter', () => {
+    expect(
+      textOf(sql<{ params: void; result: unknown }>`SELECT 1 WHERE 'a' ~ '\d'`),
+    ).toBe("SELECT 1 WHERE 'a' ~ 'd'");
+  });
+
+  test('a doubled backslash halves', () => {
+    expect(
+      textOf(
+        sql<{ params: void; result: unknown }>`SELECT '{"p":"x\\y"}'::jsonb`,
+      ),
+    ).toBe(String.raw`SELECT '{"p":"x\y"}'::jsonb`);
+  });
+});
+
+// `strings[0]` is `undefined` when the template holds an escape JavaScript
+// does not define, and the tail of the template is unreachable when it
+// interpolates. Both used to surface as a `TypeError` on `undefined` or as a
+// truncated query; both now name what is wrong.
+describe('a tag the runtime cannot read', () => {
+  test('an escape JavaScript does not define is named', () => {
+    expect(
+      () => sql<{ params: void; result: unknown }>`SELECT E'\101'`,
+    ).toThrow(/escape JavaScript does not define/);
+  });
+
+  test('the same tag under sql.prepared is named too', () => {
+    expect(
+      () =>
+        sql.prepared<{ params: void; result: unknown }>(
+          'Octal',
+        )`SELECT E'\101'`,
+    ).toThrow(/escape JavaScript does not define/);
+  });
+
+  // The signature already rejects this at `tsc`, so the guard is for a
+  // JavaScript caller and for anyone reaching the tag through a cast.
+  test('an interpolation is named rather than truncated', () => {
+    const table = 'books';
+    expect(
+      // @ts-expect-error a tag takes no substitutions
+      () => sql<{ params: void; result: unknown }>`SELECT id FROM ${table}`,
+    ).toThrow(/cannot interpolate/);
+  });
+});
