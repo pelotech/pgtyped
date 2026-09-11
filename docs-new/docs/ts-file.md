@@ -256,6 +256,26 @@ same as for `.sql` files and are written out in full under
 | Array pick and spread | `$$objectArray(prop1, prop2)`   | `($1, $2), ($3, $4), ($5, $6)`    |
 | Typed pick key        | `$$objectArray(prop1::int4)`    | `($1::int4), ($2)`                |
 
+## Backslashes: a tag is cooked by JavaScript before Postgres sees it
+
+A template literal is processed by JavaScript first. Every backslash in a tag is a JavaScript escape, and what reaches Postgres is the result — not what you typed:
+
+```ts
+// Sends `LIKE 'The_%'`: `\_` cooked to `_`, which is a LIKE wildcard.
+const wrong = sql`SELECT * FROM books WHERE name LIKE 'The\_%'`;
+
+// Sends `LIKE 'The\_%'`: an escaped underscore, matching a literal `_`.
+const right = sql`SELECT * FROM books WHERE name LIKE 'The\\_%'`;
+```
+
+So a backslash meant for Postgres has to be doubled. `\d` must be written `\\d`, or the regex matches the letter `d`; `regexp_replace(name, '\.', '!')` must be written `'\\.'`, or it replaces every character. `'{"p":"x\\y"}'::jsonb` needs four backslashes in the tag to reach the server as the two that JSON wants.
+
+An escape JavaScript does not define is worse than wrong, because such a template has no cooked text at all. `E'\101'` is valid Postgres octal and not a valid JavaScript escape, so the tag throws a `TypeError` as the module is imported. Codegen reports it by name rather than letting it get that far. Double the backslash here too: `E'\\101'`.
+
+Escapes that mean the same thing on both sides are harmless — `E'\n'` is a newline either way, and `E'\x41'` is `A` either way — but the rule is easier to follow than the exceptions.
+
+A `.sql` file has no such rule. Its bytes are read verbatim and handed to Postgres unchanged, so `\d` there is `\d`.
+
 ## Limitations
 
 Inside an `sql` tag, `$` is the parameter sigil and `$$` introduces a spread parameter, so a [dollar-quoted string](https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-DOLLAR-QUOTING) cannot be written in a tag. There is no dollar-quote handling in the tag parser at all:
