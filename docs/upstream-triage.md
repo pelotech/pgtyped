@@ -67,11 +67,12 @@ displacing an explicit config value (its precedence is deliberately unchanged), 
 privilege check of PR #563, whose technique was prototyped against a live server before anything was
 built on it and which shipped as the opt-in `checkPrivileges`, the element nullability of array
 results, which absorbs the PR #614 adoption entry, the shared type aliases of #565, the only one
-here that changes the shape of generated output, and the key types of #498/#517/#630, the last
-entry below. PR #563 is an adoption rather than a bug, as are the three entries before the #565 one
-— the cheapest three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also
-been taken. Everything here is listed first so nobody re-opens it, with the reproduction that
-justified each.
+here that changes the shape of generated output unasked, and the key types of #498/#517/#630. PR
+#563 is an adoption rather than a bug, as are the three entries before the #565 one — the cheapest
+three in **Worth adopting from upstream** (PRs #580, #624 and #642), which have also been taken — and
+so is the last entry below, PR #582's `optionalNullParams`, the fifth adoption taken from that
+bucket. Everything here is listed first so nobody re-opens it, with the reproduction that justified
+each.
 
 ### Non-watch runs watched the config file — issue #609, PR #616 — **FIXED**
 
@@ -449,12 +450,13 @@ So an absent key and an explicit `undefined` already reached the server identica
 describes what worked rather than enabling anything new. It is purely widening: every params object
 that compiled before still compiles.
 
-**On the collision with PR #582 / issue #556.** Those want a config flag that makes non-required
-_scalar_ params non-optional, which is the opposite direction on the neighbouring line. They are not
-adopted here, and this change does not foreclose them: if that flag is ever built it should govern
-both branches together, so the two kinds of parameter cannot disagree about what "optional" means.
-Nothing in this change makes that harder — it makes the two branches agree, which is the precondition
-for one flag governing both.
+**On the collision with PR #582 / issue #556.** Those wanted a config flag that makes non-required
+_scalar_ params non-optional, which is the opposite direction on the neighbouring line. Far from
+foreclosing them, this change is what let them be
+[adopted](#a-non-required-parameter-was-always-an-optional-member--pr-582-issue-556--fixed-adopted):
+`optionalNullParams` governs both branches together, so the two kinds of parameter cannot disagree
+about what "optional" means, and making them agree here is the precondition that made one flag
+governing both possible.
 
 **Regression cover.** `packages/cli/src/generator.test.ts` gains the reporter's own mixed case
 (`(line1!, line2, city!)`) in both `sql` and `ts` mode, and the three existing pick expectations
@@ -1337,6 +1339,52 @@ arrays; and a literal seed row, `FROM (VALUES (0, ''), :foos OFFSET 1) AS item(i
 keeps the array-of-objects shape but is ugly and leans on `OFFSET` without an `ORDER BY`, which
 Postgres does not contractually order.
 
+### A non-required parameter was always an optional member — PR #582, issue #556 — **FIXED (adopted)**
+
+An adoption rather than a bug: upstream's own reporter offered the patch, and the idea survives the
+rewrite even though none of the code does. A parameter not marked `!` was emitted as an _optional_
+interface member, so forgetting to pass one compiled and the query ran with it bound to NULL:
+
+```ts
+export interface Get582Params {
+  id: string;
+  note?: string | null | void;
+}
+```
+
+The only way to get the strict reading was to mark every parameter `!`, which also drops `| null`
+from the emitted type — there was no way to say "must be supplied" without also saying "may not be
+null".
+
+**Adopted as `optionalNullParams`, a config boolean defaulting to `true`.** The default is today's
+behaviour exactly, so nothing regenerates; `packages/example` was confirmed byte-identical. With
+`optionalNullParams: false` the same parameter becomes `note: string | null`.
+
+**The `| void` goes with the `?`, deliberately.** `void` is in that union for one reason: to let the
+caller leave the key out, which under `exactOptionalPropertyTypes` the `?` alone does not permit.
+Once the key must be present, keeping `| void` would re-admit `undefined` by value — the very
+omission the flag exists to catch — while `null` already says "bind NULL" in as many words, and the
+runtime treats the two identically. So nothing is lost: `false` emits `| null`, not `| null | void`.
+
+**It governs pick keys as well as scalars, and had to.** [#573](#pick-expansion-keys-were-never-optional--issue-573--fixed)
+was fixed here in the opposite direction — a non-required _pick_ key now gets the `?` a non-required
+scalar always had — and that agreement is the precondition for this flag, not a conflict with it. A
+flag that made scalars mandatory while pick keys stayed optional would re-open exactly the gap #573
+closed, so `(line1!, line2)` emits `line2?: string | null | void` or `line2: string | null` in step
+with the scalar branch.
+
+**An array parameter's element type is untouched.** A non-required spread stays
+`readonly (string | null | void)[]` under either setting: that `| void` sits in the element type,
+where there is no key for anyone to omit, and the flag is about keys.
+
+**Regression cover.** `packages/cli/src/generator.test.ts` gains an `optionalNullParams` block that
+asserts both settings against both branches in both `sql` and `ts` mode — eight tests, of which the
+four `false` ones fail if the generator change is reverted and the four default ones do not, which is
+their point. `packages/cli/src/config.test.ts` covers the default, the override and a non-boolean.
+The hand-built config fixtures in `generator.test.ts` moved to a `testConfig` helper, because this is
+the first flag whose schema default is not `false`, so `{} as ParsedConfig` stopped meaning "the
+defaults".
+
 ---
 
 ## Known limitations — real, reproduced, and not cheaply fixable
@@ -1360,59 +1408,30 @@ the protocol gives us", not "nobody has got to it".
 
 ## Unimplemented feature requests — reproduced as absent
 
-| #                      | Ask                                                       | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #523                   | Support arbitrary env var names in config                 | `config.ts` reads only fixed `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`/`PGPORT`/`PGURI`/`DATABASE_URL`; no `{{MY_DB_HOST}}` templating. See PR #524 in [Worth adopting](#pr-524--env-var-templating-in-config).                                                                                                                                                                                                                                                                 |
-| #586, #556             | A setting to force non-nullability / drop optional params | Not implemented. Verified against the zod schema: `failOnError`, `camelCaseColumnNames`, `hungarianNotation`, `nonEmptyArrayParams`, `preparedStatements` only. `.strict()` now rejects `noOptionalParameters` outright: `(root): Unrecognized key(s) in object: 'noOptionalParameters'`. **Cheap** — one boolean plus one condition. The reporter offered the PR; see PR #582.                                                                                                   |
-| #143                   | Emit type info at runtime                                 | **Partial.** 3.0 emits the whole `QueryIR` into generated files (`queryName`, `statement`, `params` with transforms and locs, `columns`, prepared `name`) — verified in generated output. Column _types_ are still not emitted, which is what the issue actually asks for.                                                                                                                                                                                                        |
-| #404                   | `@comment` annotation                                     | Not supported. `bcc4b07` downgraded unrecognised annotations from fatal to a warning, so a file with `@comment` now generates. Adding the annotation itself is unimplemented.                                                                                                                                                                                                                                                                                                     |
-| #459                   | SQL-formatter-friendly variable syntax                    | No syntax change in 3.0. One thing did move that the issue should know: the quoted-identifier workaround it floats (`":id!"`) _was_ being parsed as a param by 2.4.2 and is now correctly ignored, so that avenue is definitively closed. Worth a comment on the issue.                                                                                                                                                                                                           |
-| #557                   | Conditional fragments `[[ … ]]`                           | Not implemented. Note the "trailing comment trick" the issue relies on cannot work now that comment contents are opaque to the scanner.                                                                                                                                                                                                                                                                                                                                           |
-| #395                   | Mappings within parameter expansions                      | Unsupported; the syntax is passed to Postgres verbatim → `42601 syntax error at or near "("`. New expansion grammar plus IR and renderer support.                                                                                                                                                                                                                                                                                                                                 |
-| #629                   | Composite types                                           | Not implemented; `ARRAY(SELECT ROW(…))` has no structural typing.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| #202                   | Type-safe dynamic filters at runtime                      | Not implemented; out of scope for the rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| #560                   | Globally replace strings                                  | Unimplemented; no `@global` or equivalent.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| #576                   | postgres.js support                                       | The issue's actual ask — codegen emitting postgres.js template literals — is unimplemented. But it is **much closer**: `DatabaseConnection` is a single method over a plain `{name?, text, values}`, and `compile()` hands you that object, so a postgres.js adapter is a five-line wrapper around `sql.unsafe(text, values)`. Worth a FAQ entry showing the adapter.                                                                                                             |
-| #512                   | Target a schema / `search_path`                           | Still no config option, but there is now a **working workaround, and it is new in 3.0**: because codegen goes through node-postgres, `PGOPTIONS` reaches the server. Verified: `SELECT * FROM widgets` against a table in schema `tenant1` fails with `relation "widgets" does not exist`; with `PGOPTIONS='-c search_path=tenant1'` it succeeds and emits `label: string`. The hand-rolled wire client did not send `options`. This is now documented in `docs-new/docs/cli.md`. |
-| #565, #567, #573, #556 | (covered above)                                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| #                      | Ask                                            | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #523                   | Support arbitrary env var names in config      | `config.ts` reads only fixed `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`/`PGPORT`/`PGURI`/`DATABASE_URL`; no `{{MY_DB_HOST}}` templating. See PR #524 in [Worth adopting](#pr-524--env-var-templating-in-config).                                                                                                                                                                                                                                                                 |
+| #586                   | A setting to force result columns non-nullable | Not implemented, and not the same ask as #556: this one wants the _result_ types to drop `\| null`, which would be asserting something the catalog does not say. The parameter half of the pair is done — see [#556 below](#a-non-required-parameter-was-always-an-optional-member--pr-582-issue-556--fixed-adopted).                                                                                                                                                             |
+| #143                   | Emit type info at runtime                      | **Partial.** 3.0 emits the whole `QueryIR` into generated files (`queryName`, `statement`, `params` with transforms and locs, `columns`, prepared `name`) — verified in generated output. Column _types_ are still not emitted, which is what the issue actually asks for.                                                                                                                                                                                                        |
+| #404                   | `@comment` annotation                          | Not supported. `bcc4b07` downgraded unrecognised annotations from fatal to a warning, so a file with `@comment` now generates. Adding the annotation itself is unimplemented.                                                                                                                                                                                                                                                                                                     |
+| #459                   | SQL-formatter-friendly variable syntax         | No syntax change in 3.0. One thing did move that the issue should know: the quoted-identifier workaround it floats (`":id!"`) _was_ being parsed as a param by 2.4.2 and is now correctly ignored, so that avenue is definitively closed. Worth a comment on the issue.                                                                                                                                                                                                           |
+| #557                   | Conditional fragments `[[ … ]]`                | Not implemented. Note the "trailing comment trick" the issue relies on cannot work now that comment contents are opaque to the scanner.                                                                                                                                                                                                                                                                                                                                           |
+| #395                   | Mappings within parameter expansions           | Unsupported; the syntax is passed to Postgres verbatim → `42601 syntax error at or near "("`. New expansion grammar plus IR and renderer support.                                                                                                                                                                                                                                                                                                                                 |
+| #629                   | Composite types                                | Not implemented; `ARRAY(SELECT ROW(…))` has no structural typing.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| #202                   | Type-safe dynamic filters at runtime           | Not implemented; out of scope for the rewrite.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| #560                   | Globally replace strings                       | Unimplemented; no `@global` or equivalent.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| #576                   | postgres.js support                            | The issue's actual ask — codegen emitting postgres.js template literals — is unimplemented. But it is **much closer**: `DatabaseConnection` is a single method over a plain `{name?, text, values}`, and `compile()` hands you that object, so a postgres.js adapter is a five-line wrapper around `sql.unsafe(text, values)`. Worth a FAQ entry showing the adapter.                                                                                                             |
+| #512                   | Target a schema / `search_path`                | Still no config option, but there is now a **working workaround, and it is new in 3.0**: because codegen goes through node-postgres, `PGOPTIONS` reaches the server. Verified: `SELECT * FROM widgets` against a table in schema `tenant1` fails with `relation "widgets" does not exist`; with `PGOPTIONS='-c search_path=tenant1'` it succeeds and emits `label: string`. The hand-rolled wire client did not send `options`. This is now documented in `docs-new/docs/cli.md`. |
+| #565, #567, #573, #556 | (covered above)                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ---
 
 # Worth adopting from upstream
 
 Ordered by value per unit of effort. The three cheapest — PRs #580, #624 and #642 — have been taken,
-as has PR #563, the pre-flight privilege check; all four are recorded in
-[Fixed on this branch](#fixed-on-this-branch). What is left all needs real code or a decision first.
-
-### PR #582 — an `optionalNullParams` config flag
-
-**Effort: ~10 lines across `config.ts` + `generator.ts`, plus a test.**
-
-Adds a config boolean (default `true`, i.e. current behaviour) that, when `false`, stops a
-non-`!` scalar param from being emitted as an optional interface member. Current behaviour confirmed
-in generated output: a non-required scalar becomes `id?: string | null | void`.
-
-Survives the rewrite essentially verbatim. The `config.ts` half needs re-expressing in the fork's zod
-schema (upstream's is `io-ts`); the generator half is the exact three-line change that still exists
-here:
-
-```ts
-const optional = param.type === ParameterTransform.Scalar && !param.required;
-```
-
-The fork already carries two flags of exactly this character (`nonEmptyArrayParams`,
-`camelCaseColumnNames`), so it fits.
-
-**What it buys:** with `optionalNullParams: false`, forgetting to pass a parameter becomes a compile
-error rather than a silent `NULL`. Today the only way to get that is to mark every param `!`, which
-also changes the emitted TS type. Also answers issue #556.
-
-**#573 has since been fixed here, in the opposite direction**: a non-required _pick_ key now gets the
-`?` a non-required scalar always had. That is not a conflict, it is a precondition — the two branches
-now agree, so if this flag is built it should govern both together rather than making one kind of
-parameter optional and the other not.
-
-**Unverified:** the current output and the patched branch were confirmed; the flag was not built.
+as have PR #563, the pre-flight privilege check, and PR #582, the `optionalNullParams` flag; all five
+are recorded in [Fixed on this branch](#fixed-on-this-branch). The two that are left both need real
+code or a decision first.
 
 ### PR #524 — env-var templating in config
 
@@ -1651,7 +1670,6 @@ Collected from every bucket, so the gaps are in one place.
   `NULL`-binding path: its behaviour was confirmed by hand against a 15.19 container, but the example
   suite runs on PostgreSQL 18, so only unit tests cover which of the two paths is chosen.
 - **PR #620**: the packaging defect was reproduced, the PGlite claim was not.
-- **PR #582**: the current output and the patched branch were confirmed; the flag was not built.
 - **PR #524**: the implementation was read and the env-precedence footgun reproduced; upstream's own
   test file was not run.
 - **PR #624**: pg18 verified for codegen and the example suite only — twice, before and after the
@@ -1674,7 +1692,7 @@ Every triaged number, and where it is covered.
 #460 **FIXED here** · #491 **FIXED here** (docs) · #498 **FIXED here** · #503 **FIXED here** · #504 NA · #512 feature/workaround ·
 #513 limitation · #517 **FIXED here** · #522 **FIXED here** · #523 adopt #524 · #526 **FIXED here** ·
 #534 **FIXED here** · #548 fixed (residual docs **FIXED here**) · #549 limitation · #551 limitation · #552 open ·
-#556 adopt #582 · #557 feature · #560 feature · #561 limitation · #564 NA · #565 **FIXED here** ·
+#556 **FIXED here** · #557 feature · #560 feature · #561 limitation · #564 NA · #565 **FIXED here** ·
 #566 NA · #567 **FIXED here** · #572 **FIXED here** (docs + warning) · #573 **FIXED here** · #574 fixed · #576 feature ·
 #578 NA · #579 **FIXED here** · #583 limitation · #584 → PR · #585 fixed · #586 feature ·
 #594 **FIXED here** · #599 fixed · #604 fixed · #609 **FIXED here** · #610 unverified · #611 fixed (bcc4b07) ·
@@ -1682,7 +1700,7 @@ Every triaged number, and where it is covered.
 
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 **FIXED here** ·
-#580 **FIXED here** · #582 adopt (small) · #584 **FIXED here** · #612 **FIXED here** ·
+#580 **FIXED here** · #582 **FIXED here** · #584 **FIXED here** · #612 **FIXED here** ·
 #614 **FIXED here** (rescoped) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
 #622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·
 #632 already fixed · #633 already fixed · #635 already fixed · #637 **FIXED here** (amended) ·
