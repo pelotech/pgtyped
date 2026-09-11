@@ -79,3 +79,19 @@ SELECT * FROM book_country;
   @column total!
 */
 SELECT count(*)::int AS total FROM books;
+
+/*
+  @name UpdateBooksFromValues
+  @param books -> ((id!::int4, rank!::int4, name!::text)...)
+
+  Upstream #498, #517 and #630. A `VALUES` list inside a sub-select resolves its
+  column types from its own rows and nothing downstream, so with no casts every
+  column of `item` comes back `text`: `id` is typed `string`, and the join
+  predicate fails at run time with `42883 operator does not exist: integer =
+  text`. The casts pin the columns before anything downstream is typechecked.
+*/
+UPDATE books b
+SET rank = item.rank, name = item.name
+FROM (VALUES :books) AS item(id, rank, name)
+WHERE b.id = item.id
+RETURNING b.id, b.rank, b.name;

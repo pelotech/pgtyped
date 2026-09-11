@@ -418,3 +418,40 @@ const countBooksTotalIR: any = {"queryName":"CountBooksTotal","statement":"SELEC
 export const countBooksTotal = new TypedQuery<CountBooksTotalParams,CountBooksTotalResult>(countBooksTotalIR);
 
 
+/** 'UpdateBooksFromValues' parameters type */
+export interface UpdateBooksFromValuesParams {
+  books: readonly ({
+    id: number,
+    rank: number,
+    name: string
+  })[];
+}
+
+/** 'UpdateBooksFromValues' return type */
+export interface UpdateBooksFromValuesResult {
+  id: number;
+  name: string | null;
+  rank: number | null;
+}
+
+/** 'UpdateBooksFromValues' query type */
+export interface UpdateBooksFromValuesQuery {
+  params: UpdateBooksFromValuesParams;
+  result: UpdateBooksFromValuesResult;
+}
+
+const updateBooksFromValuesIR: any = {"queryName":"UpdateBooksFromValues","statement":"UPDATE books b\nSET rank = item.rank, name = item.name\nFROM (VALUES :books) AS item(id, rank, name)\nWHERE b.id = item.id\nRETURNING b.id, b.rank, b.name","params":[{"name":"books","transform":{"type":"pick_array_spread","keys":[{"name":"id","required":true,"type":"int4"},{"name":"rank","required":true,"type":"int4"},{"name":"name","required":true,"type":"text"}]},"required":false,"locs":[{"a":67,"b":73}]}],"columns":[]};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * UPDATE books b
+ * SET rank = item.rank, name = item.name
+ * FROM (VALUES :books) AS item(id, rank, name)
+ * WHERE b.id = item.id
+ * RETURNING b.id, b.rank, b.name
+ * ```
+ */
+export const updateBooksFromValues = new TypedQuery<UpdateBooksFromValuesParams,UpdateBooksFromValuesResult>(updateBooksFromValuesIR);
+
+

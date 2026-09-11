@@ -18,6 +18,7 @@ import {
   insertBooks,
   updateBooks,
   updateBooksCustom,
+  updateBooksFromValues,
   updateBooksRankNotNull,
 } from './books/books.queries.js';
 import {
@@ -51,9 +52,17 @@ import { sql, unprepared } from '@pelotech/pgtyped-runtime';
 import type {
   CountBookCommentsTagQuery,
   FindBookByIdTagQuery,
+  UpdateBooksFromValuesTagQuery,
 } from './index.test.types.js';
 
 const findBookByIdTag = sql<FindBookByIdTagQuery>`SELECT * FROM books WHERE id = $id`;
+
+// The tag spelling of the `.sql` query of the same name; see `books.sql` for
+// why the casts are there. On one line, like every other tag here: codegen's
+// `queryText` does `.replace('\n', '')`, which drops the *first* newline
+// wherever it falls, so a tag wrapped across lines is described to the server
+// with two of its lines welded together.
+const updateBooksFromValuesTag = sql<UpdateBooksFromValuesTagQuery>`UPDATE books b SET rank = item.rank, name = item.name FROM (VALUES $$books(id!::int4, rank!::int4, name!::text)) AS item(id, rank, name) WHERE b.id = item.id RETURNING b.id, b.rank, b.name`;
 
 // Run by exactly one test, the plain-tag case in `prepared statements` below.
 // pg_prepared_statements is per session and this suite shares one client, so a
@@ -262,6 +271,53 @@ test('sql tag query', async () => {
   const books = await findBookByIdTag.run(client, { id: 1 });
   expect(findBookByIdTag.name).toBeUndefined(); // tags are never prepared
   expect(books).toMatchSnapshot();
+});
+
+/**
+ * Upstream #498, #517 and #630, all one construct: `FROM (VALUES :rows) AS
+ * t(...)`. Postgres gives a sub-select's columns concrete types before it
+ * typechecks anything downstream, and a `VALUES` list resolves its columns from
+ * its own rows alone — so an all-`unknown` row falls back to `text` for every
+ * column, `id` is generated as `string`, and the join predicate fails at run
+ * time with `42883 operator does not exist: integer = text`. A key type puts a
+ * cast in the rendered row, which pins the column.
+ *
+ * Both halves are load-bearing and neither catches the other's failure: the
+ * `const … : number` annotations are checked by `check:test`, and the `expect`s
+ * are the only place the generated types are compared against a live server.
+ */
+describe('key types on a VALUES pick, upstream #498/#517/#630', () => {
+  const rows = [
+    { id: 1, rank: 91, name: 'One' },
+    { id: 2, rank: 92, name: 'Two' },
+  ];
+
+  test('(SQL) the params are typed from the casts, and the query runs', async () => {
+    // `id: number` is the whole of the fix. Without the cast this is `string`,
+    // and passing a number here would not compile.
+    const updated = await updateBooksFromValues.run(client, { books: rows });
+    const id: number = updated[0].id;
+    const rank: number = updated[0].rank!;
+    const name: string = updated[0].name!;
+    expect(typeof id).toBe('number');
+    expect(typeof rank).toBe('number');
+    expect(typeof name).toBe('string');
+    expect([...updated].sort((a, b) => a.id - b.id)).toEqual(rows);
+  });
+
+  test('(TS) the tag spelling generates and runs the same way', async () => {
+    const updated = await updateBooksFromValuesTag.run(client, { books: rows });
+    const id: number = updated[0].id;
+    expect(typeof id).toBe('number');
+    expect([...updated].sort((a, b) => a.id - b.id)).toEqual(rows);
+  });
+
+  test('a one-row batch renders the casts too', async () => {
+    const updated = await updateBooksFromValues.run(client, {
+      books: [rows[0]],
+    });
+    expect(updated).toEqual([rows[0]]);
+  });
 });
 
 test('@column total! removes null from the generated type and the value is a number', async () => {

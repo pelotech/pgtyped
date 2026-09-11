@@ -687,3 +687,114 @@ describe('an empty array in a spread', () => {
     );
   });
 });
+
+/**
+ * The construct all three of upstream #498, #517 and #630 report:
+ * `FROM (VALUES :rows) AS t(a, b)`. Postgres has to give a sub-select's columns
+ * concrete types before it typechecks anything downstream, and a `VALUES` list
+ * resolves its columns from its own rows alone — so with every row an `unknown`
+ * parameter, the `unknown` → `text` fallback fires and locks in, and the query
+ * fails with `42804` or `42883` further down. A cast in the rendered row is
+ * what pins it, and nothing else here changes: the server then reports the real
+ * OID in `ParameterDescription` and codegen reads its type off that.
+ */
+describe('key types render as casts', () => {
+  test('(SQL) a pick_tuple casts each typed key, in both render forms', () => {
+    const ir = parseSqlFile(
+      `/* @name Q @param u -> (id::int4, val::text, note) */
+       UPDATE t SET x = 1 FROM (VALUES :u) AS item(id, val, note);`,
+    ).queries[0];
+    const expected =
+      'UPDATE t SET x = 1 FROM (VALUES ($1::int4,$2::text,$3)) AS item(id, val, note)';
+    expect(render(ir).query).toBe(expected);
+    expect(render(ir, { u: { id: 1, val: 'a', note: null } })).toMatchObject({
+      query: expected,
+      bindings: [1, 'a', null],
+    });
+  });
+
+  test('(SQL) a pick_array_spread casts the first row only', () => {
+    // Verified against a live server: `VALUES ($1::int4,$2::text),($3,$4)`
+    // prepares as `{integer,text,integer,text}`, so the first row is enough to
+    // type the whole column and repeating the cast per row would only grow the
+    // SQL with the batch.
+    const ir = parseSqlFile(
+      `/* @name Q @param us -> ((id::int4, val::text)...) */
+       UPDATE t SET x = 1 FROM (VALUES :us) AS item(id, val);`,
+    ).queries[0];
+    expect(
+      render(ir, {
+        us: [
+          { id: 1, val: 'a' },
+          { id: 2, val: 'b' },
+          { id: 3, val: 'c' },
+        ],
+      }),
+    ).toMatchObject({
+      query:
+        'UPDATE t SET x = 1 FROM (VALUES ($1::int4,$2::text),($3,$4),($5,$6)) AS item(id, val)',
+      bindings: [1, 'a', 2, 'b', 3, 'c'],
+    });
+    // The mapping form renders one row, which is the text sent to Describe.
+    expect(render(ir).query).toBe(
+      'UPDATE t SET x = 1 FROM (VALUES ($1::int4,$2::text)) AS item(id, val)',
+    );
+  });
+
+  test('(TS) a tag renders the same casts', () => {
+    const ir = parseTagged(
+      'UPDATE t SET x = 1 FROM (VALUES $$us(id::int4, val::text)) AS item(id, val)',
+      'Q',
+    );
+    expect(
+      render(ir, {
+        us: [
+          { id: 1, val: 'a' },
+          { id: 2, val: 'b' },
+        ],
+      }).query,
+    ).toBe(
+      'UPDATE t SET x = 1 FROM (VALUES ($1::int4,$2::text),($3,$4)) AS item(id, val)',
+    );
+  });
+
+  test('a cast does not disturb the mapping, and `!` still reaches it', () => {
+    const ir = parseSqlFile(
+      `/* @name Q @param u -> (id!::int4, val::text) */ INSERT INTO t VALUES :u;`,
+    ).queries[0];
+    expect(render(ir).mapping).toStrictEqual([
+      {
+        name: 'u',
+        type: ParameterTransform.Pick,
+        dict: {
+          id: {
+            name: 'id',
+            required: true,
+            type: ParameterTransform.Scalar,
+            assignedIndex: 1,
+          },
+          val: {
+            name: 'val',
+            required: false,
+            type: ParameterTransform.Scalar,
+            assignedIndex: 2,
+          },
+        },
+      },
+    ]);
+  });
+
+  test('an untyped key list renders exactly as it did', () => {
+    const ir = parseSqlFile(
+      `/* @name Q @param us -> ((name, age)...) */ INSERT INTO t VALUES :us;`,
+    ).queries[0];
+    expect(
+      render(ir, {
+        us: [
+          { name: 'a', age: 1 },
+          { name: 'b', age: 2 },
+        ],
+      }).query,
+    ).toBe('INSERT INTO t VALUES ($1,$2),($3,$4)');
+  });
+});

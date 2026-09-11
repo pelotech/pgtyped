@@ -21,6 +21,28 @@ export interface FindBookByIdTagQuery {
   result: FindBookByIdTagResult;
 }
 
+/** 'UpdateBooksFromValuesTag' parameters type */
+export interface UpdateBooksFromValuesTagParams {
+  books: readonly ({
+    id: number,
+    rank: number,
+    name: string
+  })[];
+}
+
+/** 'UpdateBooksFromValuesTag' return type */
+export interface UpdateBooksFromValuesTagResult {
+  id: number;
+  name: string | null;
+  rank: number | null;
+}
+
+/** 'UpdateBooksFromValuesTag' query type */
+export interface UpdateBooksFromValuesTagQuery {
+  params: UpdateBooksFromValuesTagParams;
+  result: UpdateBooksFromValuesTagResult;
+}
+
 /** 'CountBookCommentsTag' parameters type */
 export type CountBookCommentsTagParams = void;
 

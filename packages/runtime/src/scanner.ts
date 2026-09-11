@@ -128,19 +128,82 @@ export interface ParamRef extends Loc {
   required: boolean;
   /** `$$name`. Always false for the `:` sigil. */
   spread: boolean;
-  /** `$name(k!, k)`. Always undefined for the `:` sigil. */
+  /** `$name(k!, k::int4)`. Always undefined for the `:` sigil. */
   keys: Key[] | undefined;
 }
 
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
-const KEY_LIST = new RegExp(`^\\s*${IDENT}!?(\\s*,\\s*${IDENT}!?)*\\s*,?\\s*$`);
 
-function parseKeys(list: string): Key[] {
+/**
+ * What may follow a key's `::`. An identifier, optionally schema-qualified,
+ * with any number of `[]` suffixes — nothing else. There is no whitespace in
+ * it and no parenthesised modifier, so the multi-word spellings are out:
+ * write `timestamptz`, `varchar`, `float8` and `numeric` rather than
+ * `timestamp with time zone`, `character varying`, `double precision` or
+ * `numeric(10,2)`. Every multi-word type has a single-word alias, and a
+ * modifier cannot change the OID that `ParameterDescription` reports, so
+ * nothing is out of reach.
+ *
+ * The narrowness is the point: the text goes into the SQL verbatim, so a
+ * grammar that admitted arbitrary text would admit arbitrary SQL.
+ */
+const KEY_TYPE = new RegExp(`^${IDENT}(?:\\.${IDENT})?(?:\\[\\])*$`);
+
+/**
+ * One key of a selection: `name`, `name!`, `name::type` or `name!::type`.
+ *
+ * The cast body is matched loosely here — everything up to the next comma or
+ * the closing paren — and checked by `parseKey`. Matching `KEY_TYPE` in this
+ * position instead would send a mistyped cast back to the subquery branch
+ * below, where a group that is not a key list is silently left in the SQL; a
+ * loose match keeps it a selection so the mistake can be reported.
+ */
+const KEY = `${IDENT}!?(?:\\s*::[^,)]*)?`;
+
+/** The body of a selection, as a source fragment the `.sql` front-end embeds too. */
+export const KEY_LIST_SOURCE = `\\s*${KEY}(?:\\s*,\\s*${KEY})*\\s*,?\\s*`;
+const KEY_LIST = new RegExp(`^${KEY_LIST_SOURCE}$`);
+
+/**
+ * One key, or a throw naming it.
+ *
+ * `!` comes before the cast — `id!::int4`, never `id::int4!` — so that the
+ * marker always sits directly on the name it qualifies. That is already how a
+ * scalar reference reads: `:id!::int4` parses today, the `!` binding to the
+ * name and the cast going to the server untouched. The reversed spelling is
+ * rejected by name rather than by the general type error, because it is the
+ * mistake anyone who knows the `!` marker will make first.
+ */
+function parseKey(text: string): Key {
+  const at = text.indexOf('::');
+  const head = (at === -1 ? text : text.slice(0, at)).trimEnd();
+  const name = head.replace(/!$/, '');
+  const required = head.endsWith('!');
+  if (at === -1) return { name, required };
+
+  const type = text.slice(at + 2).trim();
+  if (type.endsWith('!') && KEY_TYPE.test(type.slice(0, -1)))
+    throw new Error(
+      `Key "${text.trim()}" writes "!" after the cast; a required typed key is ` +
+        `"${name}!::${type.slice(0, -1)}", with "!" on the name`,
+    );
+  if (!KEY_TYPE.test(type))
+    throw new Error(
+      `Key "${name}" is cast to "${type}", which is not a usable type name: a key ` +
+        `type is an identifier, optionally schema-qualified, with any number of "[]" ` +
+        `suffixes — "int4", "public.my_enum", "text[]". Multi-word types have ` +
+        `single-word aliases: "timestamptz", "varchar", "float8".`,
+    );
+  return { name, required, type };
+}
+
+/** Throws on a key that `KEY` admitted but `parseKey` will not have. */
+export function parseKeys(list: string): Key[] {
   return list
     .split(',')
     .map((k) => k.trim())
     .filter(Boolean)
-    .map((k) => ({ name: k.replace(/!$/, ''), required: k.endsWith('!') }));
+    .map(parseKey);
 }
 
 /**
@@ -152,14 +215,21 @@ function parseKeys(list: string): Key[] {
  * `tags[lo:hi]` reports `hi` as a param, exactly as the old ANTLR grammar did.
  * Transforms come from `@param` annotations, so `:` refs carry no selection.
  *
- * `$` is the tag sigil: `$$name` is a spread and `$name(a, b!)` is an inline
- * pick. `$1` is a positional placeholder and not ours. A parenthesised group
- * after a scalar is only a selection when its contents are exactly a key list;
- * `$id (SELECT ...)` is a scalar followed by a subquery. That sniff is how the
- * old grammar disambiguated too, and it inherits the same blind spot: a group
- * whose contents happen to look like a key list, such as `$id (t)`, reads as a
- * pick. A malformed selection degrades to a scalar and leaves the group in the
- * SQL rather than reporting a diagnostic.
+ * `$` is the tag sigil: `$$name` is a spread and `$name(a, b!::int4)` is an
+ * inline pick. `$1` is a positional placeholder and not ours. A parenthesised
+ * group after a scalar is only a selection when its contents are exactly a key
+ * list; `$id (SELECT ...)` is a scalar followed by a subquery. That sniff is how
+ * the old grammar disambiguated too, and it inherits the same blind spot: a
+ * group whose contents happen to look like a key list, such as `$id (t)`, reads
+ * as a pick. A group that is not a key list at all degrades to a scalar and is
+ * left in the SQL rather than reporting a diagnostic.
+ *
+ * Key types do not widen that sniff into a subquery. `KEY` only admits a cast
+ * body directly after an identifier, so `$x(a::int4)` is a selection while
+ * `$x(SELECT 1::int4)` is still a subquery — `SELECT` is an identifier, but
+ * what follows it is neither a `::`, a comma nor the end. What the loose cast
+ * body buys is that a key list with an unusable type is reported here rather
+ * than falling back to the subquery reading and reaching the server as SQL.
  *
  * The selection is matched against the enclosing code span, so a quote or
  * comment inside the parentheses hides the closing `)` and the reference stays
@@ -188,7 +258,16 @@ export function scanParams(text: string, sigil: ':' | '$'): ParamRef[] {
         const rest = code.slice(m.index + m[0].length);
         const sel = /^\s*\(([^)]*)\)/.exec(rest);
         if (sel && KEY_LIST.test(sel[1])) {
-          keys = parseKeys(sel[1]);
+          try {
+            keys = parseKeys(sel[1]);
+          } catch (err) {
+            throw new Error(
+              `Parameter "${name}": ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              { cause: err },
+            );
+          }
           end += sel[0].length;
         }
       }

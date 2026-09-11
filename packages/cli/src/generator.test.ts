@@ -260,6 +260,73 @@ export interface IInsertNotificationsQuery {
   };`);
     });
 
+    /**
+     * Key types need no codegen support at all, and this is the test that says
+     * so: the cast goes into the SQL codegen sends to Describe, the server
+     * answers with the OID that cast produced, and the existing pick branch
+     * maps it like any other. Without the cast the server would answer `text`
+     * for every column of a `VALUES` list inside a sub-select, which is upstream
+     * #498, #517 and #630.
+     */
+    test(`Key types reach Describe as casts, and their OIDs type the params (${mode})`, async () => {
+      const queryStringSQL = `
+    /*
+      @name Update630
+      @param foos -> ((id!::int4, val::text)...)
+    */
+    UPDATE foo f SET val = item.val FROM (VALUES :foos) AS item(id, val) WHERE f.id = item.id;
+    `;
+      const queryStringTS = `const update630 = sql\`UPDATE foo f SET val = item.val FROM (VALUES $$foos(id!::int4, val::text)) AS item(id, val) WHERE f.id = item.id\`;`;
+      const queryString = mode === 'sql' ? queryStringSQL : queryStringTS;
+      // What the server answers *because* of the casts. Describe on the same
+      // statement without them reports `['text', 'text']`.
+      const mockTypes: IQueryTypes = {
+        returnTypes: [],
+        paramMetadata: {
+          params: ['int4', 'text'],
+          mapping: [
+            {
+              name: 'foos',
+              type: ParameterTransform.PickSpread,
+              dict: {
+                id: {
+                  name: 'id',
+                  assignedIndex: 1,
+                  required: true,
+                  type: ParameterTransform.Scalar,
+                },
+                val: {
+                  name: 'val',
+                  assignedIndex: 2,
+                  required: false,
+                  type: ParameterTransform.Scalar,
+                },
+              },
+            },
+          ],
+        },
+      };
+      const types = new TypeAllocator(TypeMapping());
+      let described = '';
+      const typeSource = async (q: any) => {
+        described = q.query;
+        return mockTypes;
+      };
+      const result = await queryToTypeDeclarations(
+        parsedQuery(mode, queryString),
+        'src/queries.sql',
+        typeSource,
+        types,
+        {} as ParsedConfig,
+      );
+
+      expect(described).toContain('(VALUES ($1::int4,$2::text))');
+      expect(result).toContain(`  foos: readonly ({
+    id: number,
+    val?: string | null | void
+  })[];`);
+    });
+
     test(`DeleteUsers by UUID (${mode})`, async () => {
       const queryStringSQL = `
     /* @name DeleteUsers */

@@ -57,6 +57,18 @@ export interface QueryParameters {
     Scalar | NestedParameters | Scalar[] | NestedParameters[];
 }
 
+/**
+ * The cast a key's placeholder carries, or nothing when it declared no type.
+ *
+ * The cast is what makes `FROM (VALUES :rows) AS t(a, b)` typable at all. A
+ * `VALUES` list inside a sub-select resolves its column types from its own rows
+ * and nothing downstream, so an all-`unknown` row falls back to `text` for every
+ * column; the cast pins the column before anything else looks at it. Nothing
+ * here maps or validates the type — once it is in the SQL the server reports the
+ * real OID in `ParameterDescription` and codegen reads its type off that.
+ */
+const cast = (type: string | undefined): string => (type ? `::${type}` : '');
+
 /** Applies non-overlapping half-open substitutions, last first so earlier offsets stay valid. */
 function substitute(
   text: string,
@@ -149,7 +161,7 @@ export const render = (
         [key: string]: ScalarParameter;
       } = {};
       const sub = usedParam.transform.keys
-        .map(({ name, required }) => {
+        .map(({ name, required, type }) => {
           const idx = i++;
           dict[name] = {
             name,
@@ -162,7 +174,7 @@ export const render = (
             const val = paramValue[name];
             bindings.push(val);
           }
-          return `$${idx}`;
+          return `$${idx}${cast(type)}`;
         })
         .join(',');
       if (!passedParams) {
@@ -189,13 +201,19 @@ export const render = (
       if (passedParams) {
         const passedParam = passedParams[usedParam.name] as NestedParameters[];
         assertSpreadable(passedParam, usedParam, queryIR.queryName);
+        // Only the first row carries the casts. Postgres resolves a `VALUES`
+        // list column-wise, so a type pinned in the first row propagates down
+        // the column: `VALUES ($1::int4,$2::text),($3,$4)` prepares as
+        // `{integer,text,integer,text}`, verified against a live server.
+        // Repeating them would restate that once per element of the caller's
+        // array, growing the SQL with the batch for nothing.
         sub = passedParam
-          .map((entity) => {
+          .map((entity, row) => {
             const ssub = keys
-              .map(({ name }) => {
+              .map(({ name, type }) => {
                 const val = entity[name];
                 bindings.push(val);
-                return `$${i++}`;
+                return `$${i++}${row === 0 ? cast(type) : ''}`;
               })
               .join(',');
             return ssub;
@@ -206,7 +224,7 @@ export const render = (
           [key: string]: ScalarParameter;
         } = {};
         sub = keys
-          .map(({ name, required }) => {
+          .map(({ name, required, type }) => {
             const idx = i++;
             dict[name] = {
               name,
@@ -214,7 +232,7 @@ export const render = (
               type: ParameterTransform.Scalar,
               assignedIndex: idx,
             } as ScalarParameter;
-            return `$${idx}`;
+            return `$${idx}${cast(type)}`;
           })
           .join(',');
         paramMapping.push({

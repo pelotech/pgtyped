@@ -41,6 +41,24 @@ test('reports a malformed tag without aborting the file', () => {
   ]);
 });
 
+// The same containment for an unusable key type: it reaches the server as SQL
+// otherwise, and `character varying` in a cast is a syntax error at a paren the
+// author did not write.
+test('reports an unusable key type without aborting the file', () => {
+  const fileContent = `
+    const good = sql\`select id from users where id = $id\`;
+    const bad = sql\`insert into t values $$us(id::int4!, val::text)\`;
+  `;
+
+  const result = parseCode(fileContent, 'queries.ts');
+  expect(result.queries.map((q) => q.queryName)).toEqual(['good']);
+  expect(result.errors).toHaveLength(1);
+  expect(result.errors[0]).toBe(
+    'queries.ts: Parameter "us": Key "id::int4!" writes "!" after the cast; ' +
+      'a required typed key is "id!::int4", with "!" on the name',
+  );
+});
+
 describe('a sql.prepared tag with an explicit statement name', () => {
   test('is found, and the explicit name beats the variable', () => {
     const result = parseCode(
