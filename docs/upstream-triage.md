@@ -1431,7 +1431,9 @@ the protocol gives us", not "nobody has got to it".
 Ordered by value per unit of effort. The three cheapest — PRs #580, #624 and #642 — have been taken,
 as have PR #563, the pre-flight privilege check, and PR #582, the `optionalNullParams` flag; all five
 are recorded in [Fixed on this branch](#fixed-on-this-branch). PR #524 turned out to need no code at
-all — see [Not applicable](#not-applicable). The one that is left needs a decision first.
+all — see [Not applicable](#not-applicable). The one that is left, PR #620, is no longer blocked on
+anything unknown: its PGlite premise was the open question and has been confirmed by running it. What
+remains is a decision about when to commit to a public interface, not a technical risk.
 
 ### PR #620 — a programmatic API, minus the package split
 
@@ -1449,13 +1451,52 @@ fork's deliberate 6-packages-to-3 consolidation.
 move the argv/`process.exit` code out of `index.ts` into a `cli.ts` bin, and export a small
 `generateTypes(file, config, db)` surface. **The first two are done** — `index.ts` is a library that
 exports `main`, `cli.ts` is the bin, and the package has a real `"."` entry. The third, a public
-surface worth committing to, is still open: `main` takes a whole `ParsedConfig` and exits the process
-on an unreachable database, so it is importable but not yet an API. The fork is well positioned for the PGlite half: `TypeDb`
-in `db/type-db.ts` is already a two-method interface (`describe`, `rows`) over a `pg.Pool`.
+surface worth committing to, is what is left.
 
-**Unverified:** the packaging defect was reproduced; the PGlite claim was not. `db/describe.ts` uses
-`pg`'s private `Connection.parse`/`describe`/`sync`, and whether PGlite has an equivalent was not
-checked — if it does not, the "no TCP" story is more work than it looks.
+**The PGlite premise was unverified and is now confirmed, by running it.** `@electric-sql/pglite`
+0.5.8 (reporting server 18.3) can back `TypeDb` in full, so no part of the extended-query path has to
+be reimplemented. A ~30-line adapter wired into the built CLI generated correct output — enum alias,
+array alias, `pg_attribute` nullability, a column comment from `pg_description` — with no TCP
+listener and no pool, in both `sql` and `ts` modes, string in and string out.
+
+What the next person needs and would otherwise re-derive:
+
+- **`db.describeQuery()` is unusable.** It returns only `{dataTypeID, parser}` per column — no
+  `tableID`/`columnID`, so the `pg_attribute` nullability join has nothing to join on. Use
+  `execProtocol` with `protocol.serialize`, which PGlite exports: `parse` + `describe` + `sync`
+  concatenated returns a full `parameterDescription` and `rowDescription` including `tableID`,
+  `columnID`, `dataTypeSize` and `dataTypeModifier`. No private API is touched.
+- **`execProtocol` is not covered by PGlite's query lock, and the failure is silent.** Nine
+  concurrent `describe` calls produced 360/360 wrong results: one caller receives every backend
+  message and the rest receive nothing, yielding an empty `Described` and therefore `never` types,
+  with no error. Wrapping each call in `db.runExclusive` gives 0/360. `MAX_CONCURRENCY` in `util.ts`
+  buys nothing here — correctness is fine, throughput is serial.
+- **`explain` must use `exec()`, not `query()`.** `query()` always binds, so
+  `EXPLAIN (GENERIC_PLAN) … WHERE id = $1` fails with `08P01 bind message supplies 0 parameters`.
+  Only matters with `checkPrivileges` on.
+- `rowDescription.format` is numeric `0`/`1` rather than pg's `'text'`/`'binary'`.
+- **OIDs match a real server** byte for byte for the same schema and query (PGlite 18.3 against
+  Postgres 18.6), differing only in `tableOID`, which is a relfilenode and per-database by nature. A
+  user enum and a `CREATE DOMAIN` got identical OIDs on both, and both report the domain's _base_
+  type in `RowDescription` — Postgres behaviour, not a PGlite deviation. The existing `typeMap`
+  needs no change.
+
+**Ready when wanted, and deliberately not done yet.** The remaining work is small — an optional
+`db?: TypeDb` parameter on `main` (skipping `verifyConnection`, which is right anyway when there is
+no pool to verify), a thin `generateTypes` over the existing `generateTypedecsFromFile` +
+`generateDeclarationFile` seam, and a `configFrom` that runs the same zod parse `parseConfig` does
+without the `require`. `main` has exactly one `process.exit`, on that one pre-flight.
+
+What argues for waiting is not the cost but the commitment: the public surface would be `TypeDb`,
+and `TypeDb` went from two methods to three when `explain` arrived with the privilege check. Freezing
+it now makes every future method a breaking change for anyone implementing it, and nobody in this
+fork has asked for in-process codegen. If it is built, make new methods optional from the start, keep
+the PGlite adapter in the docs rather than taking a 3.7 MB WASM dependency, and note that
+`generateTypes` cannot honour `sharedTypesFile` — shared types are a whole-run concept keyed by
+declaration file path, so per-file text generation cannot participate.
+
+Worth fixing first, if it is built: `srcDir` and the config path both resolve against
+`process.cwd()` (#572), which is a wart a shell caller absorbs and a build script does not.
 
 ---
 
@@ -1646,7 +1687,9 @@ Collected from every bucket, so the gaps are in one place.
   grants and the DML safety this originally disclaimed. What remains untested in CI is the pre-16
   `NULL`-binding path: its behaviour was confirmed by hand against a 15.19 container, but the example
   suite runs on PostgreSQL 18, so only unit tests cover which of the two paths is chosen.
-- **PR #620**: the packaging defect was reproduced, the PGlite claim was not.
+- **PR #620**: nothing outstanding. The packaging defect was reproduced and fixed, and the PGlite
+  claim — the one thing this list used to carry for it — was confirmed by generating real types
+  through PGlite with no TCP listener. What is left is a decision, not an unknown.
 - **PR #524**: the implementation was read and the env-precedence footgun reproduced; upstream's own
   test file was not run.
 - **PR #624**: pg18 verified for codegen and the example suite only — twice, before and after the
@@ -1678,7 +1721,7 @@ Every triaged number, and where it is covered.
 **Pull requests (27).**
 #524 adopt (rewrite) · #545 already fixed · #553 open bug · #555 NA · #563 **FIXED here** ·
 #580 **FIXED here** · #582 **FIXED here** · #584 **FIXED here** · #612 **FIXED here** ·
-#614 **FIXED here** (rescoped) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split still NA ·
+#614 **FIXED here** (rescoped) · #615 NA · #616 **FIXED here** · #619 NA · #620 packaging **FIXED here**, split NA, API ready when wanted ·
 #622 NA · #623 NA · #624 **FIXED here** · #627 already fixed · #628 already fixed ·
 #632 already fixed · #633 already fixed · #635 already fixed · #637 **FIXED here** (amended) ·
 #639 NA · #641 already fixed · #642 **FIXED here** · #643 already fixed
