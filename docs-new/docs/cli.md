@@ -127,9 +127,21 @@ This is deliberately not a templating syntax. A JavaScript config gives you defa
 composition, a `Number()` for the port, a different branch per environment, and reading a value out
 of a mounted secrets file — none of which a `{{VAR}}` placeholder in JSON could express.
 
-**Use the `.cjs` extension.** A `.js` config works only in a package that is not `"type": "module"`;
-in an ESM package it fails to load as CommonJS and surfaces as a confusing validation error about
-missing fields rather than a module-format one. `.cjs` is unambiguous and works either way.
+An ES module works too — `export default { … }`, or named exports, whichever you prefer:
+
+```js title="pgtyped.config.js"
+export default {
+  srcDir: './src/',
+  db: { host: process.env.MYAPP_DB_HOST },
+  // …
+};
+```
+
+The one combination that cannot work is `module.exports =` in a file Node reads as an ES module,
+which is what a `.js` file is in a package declaring `"type": "module"`. The assignment reaches
+nothing, so PgTyped reports that the file exported nothing and tells you to rename it `.cjs` or use
+`export default`. If you would rather not think about it, `.cjs` is unambiguous and works in either
+kind of package.
 
 The precedence above still applies: a `PG*` variable overrides a field the config set, whether the
 config is JSON or JavaScript, and warns when it does.
