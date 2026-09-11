@@ -394,6 +394,27 @@ const countBooksTotal = sql<CountBooksTotalQuery>`
   SELECT count(*)::int AS total FROM books`;
 ```
 
+## Dollar-quoted bodies
+
+In a `.sql` file the parameter sigil is `:`, so a [dollar-quoted string](https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-DOLLAR-QUOTING) can be written normally — `$$ ... $$` and `$tag$ ... $tag$` are recognised as strings, including any `;` inside them.
+
+What the body contains is text, exactly as Postgres reads it. A `:name` written inside one is **not** a parameter:
+
+```sql
+/* @name CreateSequence */
+DO $$ BEGIN EXECUTE 'CREATE SEQUENCE ' || :name; END $$;
+```
+
+generates `export type CreateSequenceParams = void;` — the `:name` reaches the server as the five literal characters `:name`. Postgres has no way to parameterise a dollar-quoted body; the value has to reach it some other way, such as building the statement outside the quotes.
+
+Because that is easy to write by accident and impossible to see in the output, codegen warns on it, naming the query and the delimiter that hid the reference:
+
+```
+queries.sql: Parameter ":name" in @name CreateSequence is inside a dollar-quoted string ($$ … $$), so Postgres reads it as literal text: no parameter is generated for it and the sigil reaches the server as written. A dollar-quoted body cannot take parameters — if it was meant as one, the reference has to move outside the quotes. (offset 69)
+```
+
+`failOnError` turns it into a failed run. The warning uses the same pattern that finds parameters everywhere else, so the colons PL/pgSQL is made of do not trigger it: `x := 1`, `val::int4` and `arr[1:2]` are not parameter references inside a dollar-quoted body any more than they are outside one.
+
 :::note
 We will be adding more annotation tags and expansion types in the future.  
 If you have an idea for a new expansion type, or a new annotation tag, please submit an issue for that so we can consider it.

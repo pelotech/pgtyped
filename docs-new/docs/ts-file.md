@@ -267,4 +267,4 @@ const createFn = sql`CREATE FUNCTION f() RETURNS int AS $$SELECT 1$$ LANGUAGE sq
 
 A body that happens to begin with whitespace (`AS $$ SELECT 1 $$`) survives by accident, because the parameter pattern needs an identifier right after the `$$`. Do not rely on that.
 
-Put statements with a dollar-quoted body in a `.sql` file instead. There the parameter sigil is `:`, and `$$ ... $$` is recognised as a quoted string, including any `;` inside it.
+Put statements with a dollar-quoted body in a `.sql` file instead. There the parameter sigil is `:`, and `$$ ... $$` is recognised as a quoted string, including any `;` inside it. A `:name` written inside that body is literal text to Postgres and generates no parameter; codegen warns when it finds one, and [Dollar-quoted bodies](sql-file.md#dollar-quoted-bodies) explains why.
