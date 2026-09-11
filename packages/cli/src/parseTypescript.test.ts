@@ -365,3 +365,82 @@ describe('the type argument is linted against the query name', () => {
     ).toContain('`IGetUsersQuery`');
   });
 });
+
+// The statement text codegen reads is what the tag says, verbatim. Codegen
+// types the query from it and the runtime hashes its rendering into the
+// prepared statement name, so any edit to the interior would generate types
+// and a name for a query the runtime never sends.
+describe('the statement text is the tag interior, verbatim', () => {
+  const statementOf = (source: string) => {
+    const result = parseCode(source, 'queries.ts');
+    expect(result.errors).toEqual([]);
+    return result.queries[0].statement;
+  };
+
+  test('a single-line tag', () => {
+    expect(statementOf('const q = sql`select id from users`;')).toBe(
+      'select id from users',
+    );
+  });
+
+  test('a tag whose text starts on the line after the backtick', () => {
+    expect(
+      statementOf(
+        ['const q = sql`', '  select id', '  from users`;'].join('\n'),
+      ),
+    ).toBe('select id\n  from users');
+  });
+
+  // The case that was broken: the first newline is the one between lines one
+  // and two, and removing it welded `users` onto `select id` to make
+  // `select id from usersorder by id`, which the server either rejects or,
+  // worse, accepts as a different query than the one that was typed.
+  test('a tag whose text starts on the backtick line keeps its newlines', () => {
+    expect(
+      statementOf(
+        ['const q = sql`select id', 'from users', 'order by id`;'].join('\n'),
+      ),
+    ).toBe('select id\nfrom users\norder by id');
+  });
+
+  test('a blank line inside a tag survives', () => {
+    expect(
+      statementOf(['const q = sql`select id', '', 'from users`;'].join('\n')),
+    ).toBe('select id\n\nfrom users');
+  });
+
+  // The interior feeds the statement hash, so indentation is part of the
+  // query's identity and may not be normalised away.
+  test('interior indentation is preserved', () => {
+    expect(
+      statementOf(
+        [
+          'const q = sql`select id',
+          '    from users',
+          '    where id = $id`;',
+        ].join('\n'),
+      ),
+    ).toBe('select id\n    from users\n    where id = $id');
+  });
+
+  // `\n` inside a SQL string literal is two characters of source, not a line
+  // break, and reaches the server as the escape the author wrote.
+  test('an escape inside a string literal is left alone', () => {
+    expect(
+      statementOf(
+        String.raw`const q = sql` + '`' + String.raw`select E'a\nb'` + '`;',
+      ),
+    ).toBe(String.raw`select E'a\nb'`);
+  });
+
+  test('and is still left alone in a multi-line tag', () => {
+    expect(
+      statementOf(
+        [
+          String.raw`const q = sql` + '`' + String.raw`select E'a\nb'`,
+          'from users`;',
+        ].join('\n'),
+      ),
+    ).toBe(String.raw`select E'a\nb'` + '\nfrom users');
+  });
+});
