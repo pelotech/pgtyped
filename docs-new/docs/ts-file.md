@@ -188,23 +188,73 @@ query.run(connection, {
 INSERT INTO users (name, age) VALUES ($1, $2), ($3, $4) RETURNING id;
 ```
 
+### Typing the keys of a pick
+
+A pick renders bare `$n` placeholders and lets Postgres work out what they are, which works
+everywhere except one place: a `VALUES` list inside a sub-select. Postgres gives a sub-select's
+columns concrete types before it typechecks anything downstream, and a `VALUES` list resolves its
+columns from its own rows alone — so with every row a parameter, every column falls back to `text`,
+`id` is generated as `string`, and the query fails at run time with
+`42883 operator does not exist: integer = text`.
+
+Write a cast on the key to pin it. `!` comes before the cast, so a required typed key is
+`id!::int4`:
+
+#### Syntax:
+
+```
+$$foos(id::int4, val::text)
+```
+
+#### Example:
+
+```ts title="Query code:"
+const updateFoos = sql<UpdateFoosQuery>`UPDATE foo f SET val = item.val FROM (VALUES $$foos(id!::int4, val!::text)) AS item(id, val) WHERE f.id = item.id`;
+
+updateFoos.run(connection, {
+  foos: [
+    { id: 1, val: 'a' },
+    { id: 2, val: 'b' },
+  ],
+});
+```
+
+```sql title="Resulting query:"
+-- Bindings: [1, 'a', 2, 'b']
+UPDATE foo f SET val = item.val
+FROM (VALUES ($1::int4,$2::text),($3,$4)) AS item(id, val)
+WHERE f.id = item.id
+```
+
+Only the first row carries the casts: Postgres resolves a `VALUES` list column-wise, so a type
+pinned in the first row types the whole column.
+
+The type is a **Postgres** type name, not a TypeScript one — PgTyped puts the cast in the SQL and
+reads the resulting OID back off the server's parameter description. It must be an identifier,
+optionally schema-qualified, with any number of `[]` suffixes; anything else is a parse error naming
+the tag and the offending key. The rules, the caveats and the two alternative query shapes are the
+same as for `.sql` files and are written out in full under
+[Typing the keys of a pick](sql-file#typing-the-keys-of-a-pick).
+
 ## Parameter type reference
 
-| Expansion             | Syntax                      | Parameter Type                                             |
-| --------------------- | --------------------------- | ---------------------------------------------------------- |
-| Scalar parameter      | `$paramName`                | `paramName: ParamType`                                     |
-| Object pick           | `$paramName(name, author)`  | `paramName: { name: NameType, author: AuthorType }`        |
-| Array spread          | `$$paramName`               | `paramName: Array<ParamType>`                              |
-| Array pick and spread | `$$paramName(name, author)` | `paramName: Array<{ name: NameType, author: AuthorType }>` |
+| Expansion             | Syntax                       | Parameter Type                                             |
+| --------------------- | ---------------------------- | ---------------------------------------------------------- |
+| Scalar parameter      | `$paramName`                 | `paramName: ParamType`                                     |
+| Object pick           | `$paramName(name, author)`   | `paramName: { name: NameType, author: AuthorType }`        |
+| Array spread          | `$$paramName`                | `paramName: Array<ParamType>`                              |
+| Array pick and spread | `$$paramName(name, author)`  | `paramName: Array<{ name: NameType, author: AuthorType }>` |
+| Typed pick key        | `$paramName(id!::int4)`      | `paramName: { id: number }`                                |
 
 ## Substitution reference
 
-| Expansion             | Query in TS                  | Query with substituted parameter  |
-|-----------------------|------------------------------|-----------------------------------|
-| Simple parameter      | `$parameter`                 | `$1`                              |
-| Object pick           | `$object(prop1, prop2)`      | `($1, $2)`                        |
-| Array spread          | `$$array`                    | `($1, $2, $3)`                    |
-| Array pick and spread | `$$objectArray(prop1, prop2)`| `($1, $2), ($3, $4), ($5, $6)`    |
+| Expansion             | Query in TS                     | Query with substituted parameter  |
+|-----------------------|---------------------------------|-----------------------------------|
+| Simple parameter      | `$parameter`                    | `$1`                              |
+| Object pick           | `$object(prop1, prop2)`         | `($1, $2)`                        |
+| Array spread          | `$$array`                       | `($1, $2, $3)`                    |
+| Array pick and spread | `$$objectArray(prop1, prop2)`   | `($1, $2), ($3, $4), ($5, $6)`    |
+| Typed pick key        | `$$objectArray(prop1::int4)`    | `($1::int4), ($2)`                |
 
 ## Limitations
 
