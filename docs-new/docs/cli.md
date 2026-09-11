@@ -98,6 +98,42 @@ same way — `PGOPTIONS='-c search_path=tenant1 -c statement_timeout=5000'` sets
 just to codegen. Set it in both places if your queries depend on a non-default `search_path`: the types are generated
 against whatever schema codegen saw, and nothing checks that the application later connects the same way.
 
+### Using other environment variables
+
+The variables above are the only ones PgTyped reads by name. To take a connection field from a
+variable of your own — `MYAPP_DB_HOST`, or whatever your CI already exports — write the config as a
+CommonJS module instead of JSON. `parseConfig` loads it with `require`, so any module that exports a
+config object works:
+
+```js title="pgtyped.config.cjs"
+module.exports = {
+  transforms: [
+    { mode: 'sql', include: '**/*.sql', emitTemplate: '{{dir}}/{{name}}.queries.ts' },
+  ],
+  srcDir: './src/',
+  db: {
+    host: process.env.MYAPP_DB_HOST ?? 'localhost',
+    port: Number(process.env.MYAPP_DB_PORT ?? 5432),
+    user: process.env.MYAPP_DB_USER,
+    password: process.env.MYAPP_DB_PASSWORD,
+    dbName: process.env.MYAPP_DB_NAME,
+  },
+};
+```
+
+Then `pgtyped -c pgtyped.config.cjs`.
+
+This is deliberately not a templating syntax. A JavaScript config gives you defaults, string
+composition, a `Number()` for the port, a different branch per environment, and reading a value out
+of a mounted secrets file — none of which a `{{VAR}}` placeholder in JSON could express.
+
+**Use the `.cjs` extension.** A `.js` config works only in a package that is not `"type": "module"`;
+in an ESM package it fails to load as CommonJS and surfaces as a confusing validation error about
+missing fields rather than a module-format one. `.cjs` is unambiguous and works either way.
+
+The precedence above still applies: a `PG*` variable overrides a field the config set, whether the
+config is JSON or JavaScript, and warns when it does.
+
 ### Example configuration file
 
 Below is an example configuration file, with comments explaining each field.  
