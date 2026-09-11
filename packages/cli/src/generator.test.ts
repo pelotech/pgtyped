@@ -2219,3 +2219,129 @@ describe('the pre-flight privilege check', () => {
     }
   });
 });
+
+/**
+ * Issue #549. `DO $$ … :name … $$` types its params as `void`, because the
+ * body is a string to Postgres and the `:name` in it is text. That is the
+ * right answer and it does not change here; what changes is that the run now
+ * says so, instead of handing back a `void` the user has to explain to
+ * themselves.
+ */
+describe('a param sigil inside a dollar-quoted body', () => {
+  const doBlock = `
+    /* @name RunBlock */
+    DO $$ BEGIN EXECUTE 'CREATE SEQUENCE ' || :name; END $$;
+  `;
+
+  const generate = (contents: string, failOnError = false) =>
+    generateTypedecsFromFile(
+      contents,
+      'queries.sql',
+      emptyDb,
+      { mode: 'sql', include: '*.sql' },
+      new TypeAllocator(TypeMapping()),
+      testConfig({ hungarianNotation: false, failOnError }),
+    );
+
+  test('warns, names the query, and still generates void params', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(doBlock);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain(
+        'Parameter ":name" in @name RunBlock is inside a dollar-quoted string ($$ … $$)',
+      );
+      // Located like every other `.sql` diagnostic.
+      expect(warn.mock.calls[0][0]).toMatch(
+        /^queries\.sql: .* \(offset \d+\)$/,
+      );
+      // Unchanged: the warning is the whole of the fix.
+      expect(result.typedQueries[0].typeDeclaration).toContain(
+        'export type RunBlockParams = void;',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('failOnError promotes it to a failed run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(generate(doBlock, true)).rejects.toThrow(
+        'is inside a dollar-quoted string',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('ordinary PL/pgSQL in a DO block is not warned about', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generate(
+        `
+        /* @name RunBlock */
+        DO $$
+        DECLARE n int;
+        BEGIN
+          n := 1;
+          PERFORM n::text, arr[1:2];
+          RAISE NOTICE 'done: %', n;
+        END $$;
+      `,
+        // Under failOnError, so a false positive fails the test loudly.
+        true,
+      );
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(result.typedQueries).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** Describes one int4 param, so a real `:id` can be typed. */
+  const int4Db: TypeDb = {
+    describe: async () => ({ params: [{ oid: 23 }], fields: [] }),
+    rows: async (sql) =>
+      sql.includes('FROM pg_type')
+        ? [
+            {
+              oid: 23,
+              typname: 'int4',
+              typtype: 'b',
+              enumlabel: null,
+              typelem: 0,
+              typcategory: 'N',
+              typbasetype: 0,
+            },
+          ]
+        : [],
+    explain: async () => undefined,
+  };
+
+  test('a param outside a dollar quote is generated as before', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await generateTypedecsFromFile(
+        `/* @name GetUser */ SELECT id FROM t WHERE id = :id AND tag = $$x$$;`,
+        'queries.sql',
+        int4Db,
+        { mode: 'sql', include: '*.sql' },
+        new TypeAllocator(TypeMapping()),
+        testConfig({ hungarianNotation: false, failOnError: true }),
+      );
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(result.typedQueries[0].typeDeclaration).toContain(
+        'export interface GetUserParams',
+      );
+      expect(result.typedQueries[0].typeDeclaration).toContain(
+        'id?: number | null | void;',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

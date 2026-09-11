@@ -6,7 +6,13 @@ import type {
   QueryIR,
   Transform,
 } from './ir.js';
-import { KEY_LIST_SOURCE, parseKeys, scanParams, spans } from './scanner.js';
+import {
+  KEY_LIST_SOURCE,
+  parseKeys,
+  scanParams,
+  scanQuotedParams,
+  spans,
+} from './scanner.js';
 
 export interface SqlFileParse {
   queries: QueryIR[];
@@ -293,6 +299,22 @@ export function parseSqlFile(text: string): SqlFileParse {
           locs: [loc],
         });
       }
+    }
+    // A `:name` inside `$$ … $$` is a string to Postgres, so it generates no
+    // parameter and the query's params type comes out `void` with nothing said
+    // about why (#549). Reading it as a string is correct and stays; only the
+    // silence goes. A warning, not an error: a dollar-quoted body containing a
+    // colon is legal SQL, and plenty of them mean it.
+    for (const ref of scanQuotedParams(statement)) {
+      warnings.push({
+        message:
+          `Parameter "${statement.slice(ref.a, ref.b)}" in @name ${block.name} is inside a ` +
+          `dollar-quoted string (${ref.tag} … ${ref.tag}), so Postgres reads it as literal ` +
+          `text: no parameter is generated for it and the sigil reaches the server as ` +
+          `written. A dollar-quoted body cannot take parameters — if it was meant as one, ` +
+          `the reference has to move outside the quotes.`,
+        offset: blockEnd + lead + ref.a,
+      });
     }
     for (const [declared, { offset }] of block.params) {
       if (!byName.has(declared)) {

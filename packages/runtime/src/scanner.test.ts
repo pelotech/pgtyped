@@ -1,5 +1,5 @@
 // packages/runtime/src/scanner.test.ts
-import { scanParams, spans } from './scanner.js';
+import { scanParams, scanQuotedParams, spans } from './scanner.js';
 
 describe('spans', () => {
   const opaque = (text: string, dollarQuotes = true) =>
@@ -345,5 +345,88 @@ describe('known limits, pinned so a change is a decision', () => {
   test('an empty selection degrades to a scalar', () => {
     const [p] = scanParams('VALUES $x()', '$');
     expect(p.keys).toBeUndefined();
+  });
+});
+
+/**
+ * The other half of the dollar-quote rule: `scanParams` skips these, and this
+ * is what lets the front-end say so rather than generating `void` in silence
+ * (#549). Nothing here changes what is generated.
+ */
+describe('scanQuotedParams', () => {
+  const found = (sql: string) =>
+    scanQuotedParams(sql).map((r) => [sql.slice(r.a, r.b), r.tag]);
+
+  test('reports the reference and the delimiter that hid it', () => {
+    expect(found('DO $$ SELECT :name $$')).toStrictEqual([[':name', '$$']]);
+    expect(found('DO $fn$ SELECT :name $fn$')).toStrictEqual([
+      [':name', '$fn$'],
+    ]);
+  });
+
+  test('reports every reference in the body, in source order', () => {
+    expect(found('DO $$ :a AND :b $$').map(([text]) => text)).toStrictEqual([
+      ':a',
+      ':b',
+    ]);
+  });
+
+  test('reports nothing outside a dollar-quoted body', () => {
+    expect(found('SELECT :id FROM t')).toStrictEqual([]);
+    expect(found("SELECT ':id' FROM t")).toStrictEqual([]);
+  });
+
+  test('descends into a nested dollar quote, under its own tag', () => {
+    expect(found('DO $o$ EXECUTE $i$ :name $i$ $o$')).toStrictEqual([
+      [':name', '$i$'],
+    ]);
+  });
+
+  test('an unterminated body still reports what is in it', () => {
+    expect(found('DO $$ SELECT :name')).toStrictEqual([[':name', '$$']]);
+  });
+
+  test('an empty body reports nothing', () => {
+    expect(found('SELECT $$$$')).toStrictEqual([]);
+  });
+
+  /**
+   * It matches with the same pattern `scanParams` does, so what is not a
+   * parameter outside the quotes is not reported as one inside them. A
+   * warning that fired on `x := 1` would fire on every `DO` block ever
+   * written, which is worse than the silence it replaces.
+   */
+  describe('matches only what would have been a param outside the quotes', () => {
+    // Named with JSON.stringify so the one with a newline in it reads.
+    const nothing = (body: string) =>
+      test(JSON.stringify(body), () =>
+        expect(found(`DO $$ ${body} $$`)).toStrictEqual([]),
+      );
+
+    nothing('x := 1');
+    nothing('val::int4');
+    nothing('a::b::c');
+    nothing('arr[1:2]');
+    nothing("RAISE NOTICE 'bad:thing'");
+    nothing('-- see :name\n');
+    nothing('SELECT 1; -- 12:30');
+  });
+
+  test('the same references `scanParams` skips, and no others', () => {
+    const sql = 'SELECT :real, $$ :fake $$';
+    expect(scanParams(sql, ':').map((p) => p.name)).toStrictEqual(['real']);
+    expect(scanQuotedParams(sql).map((r) => r.name)).toStrictEqual(['fake']);
+  });
+
+  /**
+   * Why the `$` front-end gets no equivalent. It scans with
+   * `dollarQuotes: false`, because `$$name` is its spread sigil, so `$$ … $$`
+   * is not a quoted body there and a `$name` between those delimiters is a
+   * real parameter — there is nothing to warn about.
+   */
+  test('a $name between $$ delimiters in a tag is a real param', () => {
+    expect(scanParams('DO $$ SELECT $name $$', '$').map((p) => p.name)).toEqual(
+      ['name'],
+    );
   });
 });
