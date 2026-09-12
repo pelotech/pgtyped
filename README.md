@@ -16,6 +16,7 @@ PgTyped reads the queries in your `.sql` files (or `sql` tags in `.ts` files), a
 - Every fixed query is sent as a named prepared statement, so Postgres parses and plans it once per connection.
 - A runtime with **no dependencies of its own**.
 - Watch mode, so types regenerate as you edit.
+- Codegen with no server at all: hand it an in-process [PGlite](https://pglite.dev/) and the whole pipeline runs inside your Node process. See below.
 - Optional checks that catch problems before runtime: a query the connecting role may not execute, a parameter you forgot to pass, a name that hides a typo.
 
 ## Install
@@ -96,13 +97,39 @@ The [example package](./packages/example/README.md) is a small working project w
 
 ## Generating without a server
 
-Codegen normally needs a running Postgres. It can also run against an in-process [PGlite](https://pglite.dev/) instance — useful in CI, or in a script that applies migrations in memory and then generates types, with no server anywhere. See [Generating without a server](./docs-new/docs/cli.md#generating-without-a-server) for the flow and its limits.
+Codegen needs a Postgres that can describe your queries. It does not need a _server_. Hand `main` a PGlite — Postgres compiled to WASM, running inside your Node process — and types are generated with no listener, no Docker and no credentials:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { PGlite } from '@electric-sql/pglite';
+import { main } from '@pelotech/pgtyped-cli';
+import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
+import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
+
+const db = await PGlite.create();
+
+// Apply your schema to the empty in-memory database. A schema dump is the
+// simplest form; any migration tool that can run against a PGlite instance in
+// this process works just as well.
+await db.exec(readFileSync('sql/schema.sql', 'utf8'));
+
+const code = await main(
+  parseConfig('config.json'),
+  false,
+  undefined,
+  pgliteTypeDb(db),
+);
+await db.close();
+process.exit(code ?? 0);
+```
+
+The schema still has to get into that database first; the tool that applies it has to be one that can run in the same process. Details, limits and the extension story are in [Generating without a server](./docs-new/docs/cli.md#generating-without-a-server).
 
 ## Limitations
 
 Worth knowing before you start:
 
-- **Codegen needs a database** — a running Postgres, or PGlite as above. The database is the source of truth, so there is no way to generate types from a schema file alone.
+- **Codegen needs a database** — a running Postgres, or PGlite as above. The database is the source of truth. There is no config option that reads a schema file; the script above is how a schema file becomes a database to read from.
 - **GitHub Packages only**, with the registry and token setup above. There is no npmjs.com release.
 - **Node 24 or newer, ESM only.** There is no CommonJS build of the runtime or of the generated code.
 - **Nullability comes from the catalog.** A column from the outer side of a `LEFT JOIN`, or from a view, is reported as Postgres reports it, which is not always what the query can return. `@column` annotations exist for exactly this; see [typing](./docs-new/docs/typing.md).
@@ -128,4 +155,4 @@ It is maintained for pelotech's own use first. Issues and pull requests are welc
 
 ## License
 
-[MIT](./LICENSE). Copyright (c) 2019 Adel Salakh, for the original project; changes in this fork are under the same license.
+[MIT](./LICENSE). Copyright (c) 2019 Adel Salakh for the original project, and copyright (c) 2026 Pelotech for the changes in this fork, under the same license.
