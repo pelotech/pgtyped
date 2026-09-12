@@ -485,6 +485,7 @@ It is an **optional peer dependency** and lives behind its own subpath export,
 so a project generating against a real server never installs or loads it.
 
 ```ts title="typegen.ts"
+import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { main } from '@pelotech/pgtyped-cli';
 import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
@@ -492,10 +493,10 @@ import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
 
 const db = await PGlite.create();
 
-// Your migrations, in order, against an empty database. Whatever tool you
-// already use works, as long as it can be pointed at a PGlite instance;
-// `db.exec` on a schema dump is the simplest version of it.
-await migrate(db);
+// Apply your schema to the empty in-memory database. A schema dump is the
+// simplest form; any migration tool that can run against a PGlite instance in
+// this process works just as well.
+await db.exec(readFileSync('sql/schema.sql', 'utf8'));
 
 const code = await main(parseConfig('config.json'), false, undefined, pgliteTypeDb(db));
 await db.close();
@@ -531,6 +532,11 @@ injected. `pgliteTypeDb` is the one this package ships.
   schema" is really "apply my migrations", and that is your script's job — this
   package has no opinion about, and no configuration for, where your migrations
   live.
+
+- **The migration tool has to run in this process.** One that can be handed a
+  PGlite instance (or a query function) works. One that only takes a
+  connection string cannot reach an in-process database at all — for that
+  you still need a server.
 
 #### Privileges
 
