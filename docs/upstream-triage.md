@@ -1469,7 +1469,7 @@ to an in-process PGlite and regenerating the example produced all eight committe
 and its `typesOverrides` mapping, arrays, the `pg_description` comment, the `pg_attribute`
 nullability join and the whole-run shared-types union.
 
-Four things about PGlite that the adapter has to get right, each of which fails **silently**:
+Five things about PGlite that the adapter has to get right, each of which fails **silently**:
 
 - **`db.describeQuery()` is unusable.** It returns only `{dataTypeID, serializer}` per column — no
   `tableID`/`columnID`, so the `pg_attribute` nullability join has nothing to join on and every
@@ -1485,6 +1485,14 @@ Four things about PGlite that the adapter has to get right, each of which fails 
   `EXPLAIN (GENERIC_PLAN) … WHERE id = $1` fails `08P01 bind message supplies 0 parameters`. Only
   matters with `checkPrivileges` on.
 - **`rowDescription.format` is numeric `0`/`1`** rather than pg's `'text'`/`'binary'`.
+- **After a client session through `@electric-sql/pglite-socket`, the instance's next
+  `execProtocol` returns zero messages** — no `parameterDescription`, no `rowDescription`, no error —
+  and the one after it is normal. Measured with `@electric-sql/pglite` 0.5.8 and
+  `@electric-sql/pglite-socket` 0.2.11: a `pg.Client` runs DDL through a `PGLiteSocketServer`, the
+  server is stopped, and the first Describe on the same instance comes back empty; `exec()` and
+  `query()`, which `explain` and `rows` use, are unaffected. Since Parse/Describe/Sync has no side
+  effects, `describe` retries an empty answer once and throws, naming the query, if the retry is
+  empty too — it never returns "no params, no columns" for a query it did not describe.
 
 Also relied upon and measured: PGlite parses `oid`, `int4` and `atttypid` to `number` and `attnotnull`
 to `boolean` as pg does — `nullable: !attnotnull` would make every column nullable against a `'t'`
