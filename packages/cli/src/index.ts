@@ -1,7 +1,7 @@
 import nun from 'nunjucks';
 import pg from 'pg';
 import { ParsedConfig, TransformConfig } from './config.js';
-import { typeDb, verifyConnection } from './db/type-db.js';
+import { type TypeDb, typeDb, verifyConnection } from './db/type-db.js';
 import { SharedTypeRegistry } from './sharedTypes.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
 import { debug, fatal, MAX_CONCURRENCY } from './util.js';
@@ -18,6 +18,12 @@ nun.configure({ autoescape: false });
  * is expected to keep the process alive. `cli.ts` owns the exit; nothing here
  * ends the process except an unrecoverable failure, so importing this module
  * cannot take a host process down with it (see the note in `cli.ts`).
+ *
+ * `injectedDb` hands codegen a database it did not open. Nothing else on this
+ * path needs a server — `pg` is imported for the pool and for nothing else —
+ * so a caller holding an in-process Postgres can generate types with no
+ * listener anywhere. `pgliteTypeDb` in `db/pglite.ts` is the adapter this fork
+ * ships; anything implementing `TypeDb` works.
  */
 export async function main(
   cfg: ParsedConfig | Promise<ParsedConfig>,
@@ -25,36 +31,47 @@ export async function main(
   isWatchMode: boolean,
   // tslint:disable-next-line:no-shadowed-variable
   fileOverride?: string,
+  injectedDb?: TypeDb,
 ): Promise<number | undefined> {
   const config = await cfg;
   debug('starting codegenerator');
 
-  // Codegen waits on the database, not on the CPU, so a small connection pool
-  // buys the parallelism a thread pool used to. pg connects lazily, so no
-  // connection is opened until the check below.
-  const pool = new pg.Pool({
-    host: config.db.host,
-    port: config.db.port,
-    user: config.db.user,
-    password: config.db.password,
-    database: config.db.dbName,
-    ssl: config.db.ssl,
-    max: MAX_CONCURRENCY,
-  });
-  const db = typeDb(pool);
+  // Undefined exactly when a database was injected: there is then no pool to
+  // build, none to close, and nothing to verify. Skipping the pre-flight is
+  // right rather than merely convenient — it exists to catch an unreachable
+  // *server*, and an injected TypeDb has none. A broken one still fails per
+  // query, which is where an in-process database's failures belong.
+  let pool: pg.Pool | undefined;
+  let db = injectedDb;
 
-  // Nothing is written until the database has answered once. A failure here
-  // used to arrive later, as a describe error per query, which codegen turns
-  // into a `never` type — so an unreachable database quietly replaced correct
-  // output with broken output and exited 0.
-  try {
-    await verifyConnection(pool);
-  } catch (e) {
-    await pool.end().catch(() => undefined);
-    fatal(
-      `Could not connect to the database at ${config.db.host}:${config.db.port} as user "${config.db.user}". No files were written.`,
-      e,
-    );
+  if (!db) {
+    // Codegen waits on the database, not on the CPU, so a small connection
+    // pool buys the parallelism a thread pool used to. pg connects lazily, so
+    // no connection is opened until the check below.
+    pool = new pg.Pool({
+      host: config.db.host,
+      port: config.db.port,
+      user: config.db.user,
+      password: config.db.password,
+      database: config.db.dbName,
+      ssl: config.db.ssl,
+      max: MAX_CONCURRENCY,
+    });
+    db = typeDb(pool);
+
+    // Nothing is written until the database has answered once. A failure here
+    // used to arrive later, as a describe error per query, which codegen turns
+    // into a `never` type — so an unreachable database quietly replaced
+    // correct output with broken output and exited 0.
+    try {
+      await verifyConnection(pool);
+    } catch (e) {
+      await pool.end().catch(() => undefined);
+      fatal(
+        `Could not connect to the database at ${config.db.host}:${config.db.port} as user "${config.db.user}". No files were written.`,
+        e,
+      );
+    }
   }
 
   // One registry for every transform: a project with both `.sql` files and
@@ -73,7 +90,8 @@ export async function main(
 
   const tasks = config.transforms.map(transformTask);
 
-  // In watch mode the pool stays open for the lifetime of the process.
+  // In watch mode the pool, if there is one, stays open for the lifetime of
+  // the process.
   if (isWatchMode) {
     return undefined;
   }
@@ -83,7 +101,7 @@ export async function main(
     transforms = await Promise.all(tasks);
   } catch {
     // The failing file has already been reported; failOnError got us here.
-    await pool.end();
+    await pool?.end();
     return 1;
   }
   let exitCode = 0;
@@ -105,7 +123,7 @@ export async function main(
         }
       } catch (err) {
         console.error(err instanceof Error ? err.message : err);
-        await pool.end();
+        await pool?.end();
         return 1;
       }
     }
@@ -119,6 +137,6 @@ export async function main(
     );
     exitCode = 1;
   }
-  await pool.end();
+  await pool?.end();
   return exitCode;
 }

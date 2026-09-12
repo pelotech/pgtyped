@@ -8,6 +8,10 @@
       "types": "./lib/index.d.ts",
       "import": "./lib/index.js"
     },
+    "./pglite": {
+      "types": "./lib/db/pglite.d.ts",
+      "import": "./lib/db/pglite.js"
+    },
     "./*": "./lib/*",
     "./package.json": "./package.json"
   },
@@ -51,6 +55,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@types/debug": "^4.1.13",
     "@types/fs-extra": "11.0.4",
     "@types/node": "catalog:",
@@ -61,9 +66,13 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
+    "@electric-sql/pglite": ">=0.5 <1",
     "typescript": ">=5 <7"
   },
   "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    },
     "typescript": {
       "optional": true
     }

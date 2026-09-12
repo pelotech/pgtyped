@@ -9,7 +9,7 @@ Watch mode is most useful for a local development workflow,
 while build mode can be used for generating types when running CI.
 
 :::note
-Codegen connects to your database through [node-postgres](https://github.com/brianc/node-postgres) and asks Postgres to describe each query, so the CLI needs a reachable database with your schema applied. It is not a static analyser: without a database it cannot run.
+Codegen connects to your database through [node-postgres](https://github.com/brianc/node-postgres) and asks Postgres to describe each query, so the CLI needs a reachable database with your schema applied. It is not a static analyser: without a database it cannot run. It does not need a *server*, though — see [Generating without a server](#generating-without-a-server).
 :::
 
 ### Flags
@@ -453,3 +453,91 @@ Sample configuration files have been provided below.
   }
 }
 ```
+
+### Generating without a server
+
+Codegen needs a Postgres that can describe your queries. It does not need a
+*server*: `main` takes an optional fourth argument, a `TypeDb`, and when one is
+supplied no connection pool is built and no connection is verified. Hand it a
+[PGlite](https://pglite.dev/) — Postgres compiled to WASM, running inside your
+Node process — and the whole pipeline runs with no listener, no Docker and no
+credentials.
+
+That is the answer to "generate types from my DDL instead of from a database":
+apply your migrations to an in-memory Postgres in the same process, then
+generate against it.
+
+```shell script
+npm install --save-dev @electric-sql/pglite
+```
+
+It is an **optional peer dependency** and lives behind its own subpath export,
+so a project generating against a real server never installs or loads it.
+
+```ts title="typegen.ts"
+import { PGlite } from '@electric-sql/pglite';
+import { main } from '@pelotech/pgtyped-cli';
+import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
+import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
+
+const db = await PGlite.create();
+
+// Your migrations, in order, against an empty database. Whatever tool you
+// already use works, as long as it can be pointed at a PGlite instance;
+// `db.exec` on a schema dump is the simplest version of it.
+await migrate(db);
+
+const code = await main(parseConfig('config.json'), false, undefined, pgliteTypeDb(db));
+await db.close();
+process.exit(code ?? 0);
+```
+
+The config file's `db` block is ignored entirely on this path. Everything else
+behaves as it does against a server: transforms, `typesOverrides`,
+`sharedTypesFile`, `failOnError` and the exit code are all unchanged.
+
+Any object implementing `TypeDb` — `describe`, `rows` and `explain` — can be
+injected. `pgliteTypeDb` is the one this package ships.
+
+#### What a PGlite cannot do
+
+- **A default PGlite has only `plpgsql`.** Thirty-four contrib extensions ship
+  in the package, but each must be named in the **constructor**: a
+  `CREATE EXTENSION citext` line in your DDL fails with `0A000 extension
+  "citext" is not available` on its own.
+
+  ```ts
+  import { citext } from '@electric-sql/pglite/contrib/citext';
+
+  const db = await PGlite.create({ extensions: { citext } });
+  await db.exec('CREATE EXTENSION citext');
+  ```
+
+- **There is no PostGIS, pgvector or TimescaleDB.** A schema that depends on one
+  of them cannot be applied to a PGlite at all, and this path is not available
+  to it.
+
+- **Your DDL has to be applicable in one process, in order.** "Generate from my
+  schema" is really "apply my migrations", and that is your script's job — this
+  package has no opinion about, and no configuration for, where your migrations
+  live.
+
+#### Privileges
+
+A PGlite has no listener, so there is nobody to authenticate as: codegen runs as
+the superuser that created the instance. With
+[`checkPrivileges`](#checking-privileges) on, that means every query passes,
+which is not what the check is for.
+
+`SET ROLE` stands in, and gives identical privilege semantics:
+
+```ts
+await db.exec(`
+  CREATE ROLE app;
+  GRANT USAGE ON SCHEMA public TO app;
+  GRANT SELECT ON books TO app;
+  SET ROLE app;
+`);
+```
+
+After that the check reports the same `42501` a real connection as `app` would.

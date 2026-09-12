@@ -280,6 +280,58 @@ describe('the package can be imported without running the CLI', () => {
     expect(status).toBe(0);
   }, 30_000);
 
+  /**
+   * The PGlite adapter lives behind its own export because
+   * `@electric-sql/pglite` is an optional peer dependency: a multi-megabyte
+   * WASM Postgres that nobody generating against a real server should have to
+   * install. `"./*"` maps to `./lib/*`, which would make the bare `/pglite`
+   * specifier resolve to an extensionless path, so the subpath needs a real
+   * entry of its own — and whether it has one is only answerable through the
+   * `exports` map, from outside the package.
+   *
+   * `module.registerHooks` records what each import actually loads, which is
+   * the claim: the main entry must not pull PGlite in, and the subpath must.
+   */
+  describe('the PGlite adapter is behind its own export', () => {
+    const loadProbe = (specifier: string) =>
+      "import { registerHooks } from 'node:module';\n" +
+      'const loaded = [];\n' +
+      'registerHooks({ load: (url, context, nextLoad) => {\n' +
+      '  loaded.push(url);\n' +
+      '  return nextLoad(url, context);\n' +
+      '} });\n' +
+      `const m = await import('${specifier}');\n` +
+      "console.log('pglite:' + loaded.some((u) => u.includes('@electric-sql/pglite')));\n" +
+      "console.log('exports:' + Object.keys(m).sort().join(','));\n";
+
+    test('the subpath resolves and exports pgliteTypeDb', () => {
+      const dir = consumer(loadProbe('@pelotech/pgtyped-cli/pglite'));
+
+      const { status, stdout, stderr } = runNode(dir);
+
+      expect(stderr).toBe('');
+      expect(stdout).toContain('exports:pgliteTypeDb');
+      expect(status).toBe(0);
+    }, 30_000);
+
+    test('and loads PGlite, which is the cost it is kept away from', () => {
+      const dir = consumer(loadProbe('@pelotech/pgtyped-cli/pglite'));
+
+      expect(runNode(dir).stdout).toContain('pglite:true');
+    }, 30_000);
+
+    test('importing the package itself loads no PGlite at all', () => {
+      const dir = consumer(loadProbe('@pelotech/pgtyped-cli'));
+
+      const { status, stdout, stderr } = runNode(dir);
+
+      expect(stderr).toBe('');
+      expect(stdout).toContain('pglite:false');
+      expect(stdout).toContain('exports:main');
+      expect(status).toBe(0);
+    }, 30_000);
+  });
+
   test('the bin is a separate module from the library entry point', () => {
     expect(
       JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf-8')) as {
