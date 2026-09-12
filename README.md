@@ -1,60 +1,67 @@
 <img width="340" height="150" align="right" src="https://raw.githubusercontent.com/pelotech/pgtyped/HEAD/header.png">
 
-# [PgTyped](https://pgtyped.dev/)
+# PgTyped
 
-[![Actions Status](https://github.com/pelotech/pgtyped/workflows/CI/badge.svg)](https://github.com/pelotech/pgtyped/actions) [![Join the chat at https://gitter.im/pgtyped/community](https://badges.gitter.im/pgtyped/community.svg)](https://gitter.im/pgtyped/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![CI](https://github.com/pelotech/pgtyped/workflows/CI/badge.svg)](https://github.com/pelotech/pgtyped/actions)
 
-PgTyped makes it possible to use raw SQL in TypeScript with guaranteed type-safety.  
-No need to map or translate your DB schema to TypeScript, PgTyped automatically generates types and interfaces for your SQL queries by using your running Postgres database as the source of type information.
+Write SQL. Get TypeScript types for it, taken from your real database.
 
----
+PgTyped reads the queries in your `.sql` files (or `sql` tags in `.ts` files), asks Postgres what each one takes and returns, and writes a typed function for it. Your schema stays where it already is — in the database. There is nothing to keep in sync by hand.
 
-## Features:
+## What you get
 
-1. Automatically generates TS types for parameters/results of SQL queries of any complexity.
-2. Supports extracting and typing queries from both SQL and TS files.
-3. Generate query types as you write them, using watch mode.
-4. Useful parameter interpolation helpers for arrays and objects.
-5. No need to define your DB schema in TypeScript, your running DB is the live source of type data.
-6. Prevents SQL injections by not doing explicit parameter substitution. Instead, queries and parameters are sent separately to the DB driver, allowing parameter substitution to be safely done by the PostgreSQL server.
-7. Native ESM. The runtime and the generated code are ESM-only, and the runtime has no dependencies of its own.
+- Types for parameters and results, inferred from the live schema. Change a column, regenerate, and the compiler tells you what broke.
+- Queries in plain SQL files, or inline `sql` tags in TypeScript. Both are typed the same way.
+- Parameters are sent to Postgres separately from the query text, so there is no string substitution and no SQL injection surface.
+- Every fixed query is sent as a named prepared statement, so Postgres parses and plans it once per connection.
+- A runtime with **no dependencies of its own**.
+- Watch mode, so types regenerate as you edit.
+- Codegen with no server at all: hand it an in-process [PGlite](https://pglite.dev/) and the whole pipeline runs inside your Node process. See below.
+- Optional checks that catch problems before runtime: a query the connecting role may not execute, a parameter you forgot to pass, a name that hides a typo.
 
-### Documentation
+## Install
 
-Visit our documentation page at [https://pgtyped.dev/](https://pgtyped.dev/)
+The packages are published to **GitHub Packages**, not to npmjs.com. Two things are needed first, and both are easy to miss:
 
-### Getting started
+1. Tell npm where the `@pelotech` scope lives. In your project's `.npmrc`:
 
-1. `npm install -D @pelotech/pgtyped-cli`
-2. `npm install @pelotech/pgtyped-runtime` (`@pelotech/pgtyped-runtime` is the only required runtime dependency of pgtyped, and it has no dependencies of its own)
-3. Create a PgTyped `config.json` file.
-4. Run `npx pgtyped -w -c config.json` to start PgTyped in watch mode.
+   ```
+   @pelotech:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+   ```
 
-`typescript` is an optional peer dependency of the CLI, supported at `>=5 <7`. It is loaded lazily and only needed for `ts` mode transforms, which scan `.ts` files for `sql` tags. If all your transforms are `sql` mode, you do not need it.
+2. `GITHUB_TOKEN` must be a token with the `read:packages` scope. GitHub Packages needs one to install even public packages.
 
-More info on getting started can be found in the [Getting Started](https://pgtyped.dev/docs/getting-started) page.
-You can also refer to the [example app](./packages/example/README.md) for a preconfigured example.
+Then:
 
-### Example
+```
+npm install -D @pelotech/pgtyped-cli
+npm install @pelotech/pgtyped-runtime
+```
 
-Lets save some queries in `books.sql`:
+`@pelotech/pgtyped-runtime` is the only thing your application depends on at runtime. `typescript` (5 or 6) is an optional peer of the CLI, only needed if you use `sql` tags in `.ts` files.
+
+## A first query
+
+Put a query in `books.sql`:
 
 ```sql
 /* @name FindBookById */
-SELECT * FROM books WHERE id = :bookId;
+SELECT * FROM books WHERE id = :id;
 ```
 
-PgTyped parses the SQL file, extracting all queries and generating strictly typed TS queries in `books.queries.ts`:
+Point PgTyped at a database and a config file:
 
-````ts
-/** Types generated for queries found in "books.sql" */
-import { TypedQuery } from '@pelotech/pgtyped-runtime';
+```
+npx pgtyped -c config.json
+```
 
-//...
+It writes `books.queries.ts`, which looks like this (abbreviated):
 
+```ts
 /** 'FindBookById' parameters type */
 export interface FindBookByIdParams {
-  bookId?: number | null | void;
+  id?: number | null | void;
 }
 
 /** 'FindBookById' return type */
@@ -65,63 +72,87 @@ export interface FindBookByIdResult {
   rank: number | null;
 }
 
-/** 'FindBookById' query type */
-export interface FindBookByIdQuery {
-  params: FindBookByIdParams;
-  result: FindBookByIdResult;
-}
-
-/**
- * Query generated from SQL:
- * ```
- * SELECT * FROM books WHERE id = :bookId
- * ```
- */
 export const findBookById = new TypedQuery<
   FindBookByIdParams,
   FindBookByIdResult
 >(findBookByIdIR);
-````
+```
 
-Query `findBookById` is now statically typed, with types inferred from the PostgreSQL schema.  
-This generated query can be imported and executed as follows:
+Use it with any `pg` client or pool:
 
 ```ts
 import { Client } from 'pg';
-import { findBookById } from './books.queries';
+import { findBookById } from './books.queries.js';
 
-export const client = new Client({
-  host: 'localhost',
-  user: 'test',
-  password: 'example',
-  database: 'test',
-});
+const client = new Client({ connectionString: process.env.DATABASE_URL });
+await client.connect();
 
-async function main() {
-  await client.connect();
-  const books = await findBookById.run(client, { bookId: 5 });
-  console.log(`Book name: ${books[0].name}`);
-  await client.end();
-}
+const books = await findBookById.run(client, { id: 5 });
+console.log(books[0]?.name);
 
-main();
+await client.end();
 ```
 
-### Resources
+The [example package](./packages/example/README.md) is a small working project with a schema, queries in both styles, and tests.
 
-1. [Configuring pgTyped](https://pgtyped.dev/docs/cli)
-2. [Writing queries in SQL files](https://pgtyped.dev/docs/sql-file-intro)
-3. [Advanced queries and parameter expansions in SQL files](https://pgtyped.dev/docs/sql-file)
-4. [Writing queries in TS files](https://pgtyped.dev/docs/ts-file-intro)
-5. [Advanced queries and parameter expansions in TS files](https://pgtyped.dev/docs/ts-file)
+## Generating without a server
 
-### Project state:
+Codegen needs a Postgres that can describe your queries. It does not need a _server_. Hand `main` a PGlite — Postgres compiled to WASM, running inside your Node process — and types are generated with no listener, no Docker and no credentials:
 
-This project is being actively developed and its APIs might change.
-All issue reports, feature requests and PRs appreciated.
+```ts
+import { readFileSync } from 'node:fs';
+import { PGlite } from '@electric-sql/pglite';
+import { main } from '@pelotech/pgtyped-cli';
+import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
+import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
 
-### License
+const db = await PGlite.create();
 
-[MIT](https://github.com/pelotech/pgtyped/tree/HEAD/LICENSE)
+// Apply your schema to the empty in-memory database. A schema dump is the
+// simplest form; any migration tool that can run against a PGlite instance in
+// this process works just as well.
+await db.exec(readFileSync('sql/schema.sql', 'utf8'));
 
-Copyright (c) 2019-present, Adel Salakh
+const code = await main(
+  parseConfig('config.json'),
+  false,
+  undefined,
+  pgliteTypeDb(db),
+);
+await db.close();
+process.exit(code ?? 0);
+```
+
+The schema still has to get into that database first; the tool that applies it has to be one that can run in the same process. Details, limits and the extension story are in [Generating without a server](./docs-new/docs/cli.md#generating-without-a-server).
+
+## Limitations
+
+Worth knowing before you start:
+
+- **Codegen needs a database** — a running Postgres, or PGlite as above. The database is the source of truth. There is no config option that reads a schema file; the script above is how a schema file becomes a database to read from.
+- **GitHub Packages only**, with the registry and token setup above. There is no npmjs.com release.
+- **Node 24 or newer, ESM only.** There is no CommonJS build of the runtime or of the generated code.
+- **Nullability comes from the catalog.** A column from the outer side of a `LEFT JOIN`, or from a view, is reported as Postgres reports it, which is not always what the query can return. `@column` annotations exist for exactly this; see [typing](./docs-new/docs/typing.md).
+- **A parameter is a value, never an identifier.** `ORDER BY :column` cannot be made to work, and PgTyped will not pretend otherwise.
+- **`sql` tags are JavaScript strings first.** A backslash in a tag must be written `\\`; `.sql` files have no such rule. See [ts-file](./docs-new/docs/ts-file.md).
+
+Everything else that was checked and found to be a real limit is listed, with reproductions, in [docs/upstream-triage.md](./docs/upstream-triage.md).
+
+## Documentation
+
+- [Getting started](./docs-new/docs/getting-started.md)
+- [Configuration and the CLI](./docs-new/docs/cli.md)
+- [Queries in SQL files](./docs-new/docs/sql-file.md)
+- [Queries in TypeScript files](./docs-new/docs/ts-file.md)
+- [How types are chosen](./docs-new/docs/typing.md)
+- [Upgrading from 2.x](./packages/runtime/README.md#upgrading-from-2x)
+
+## About this fork
+
+This is a fork of [adelsz/pgtyped](https://github.com/adelsz/pgtyped), which has had no maintainer activity since 2025. Version 3.0 rewrote the parser, the runtime and the codegen, renamed the packages to the `@pelotech` scope, and went through every open issue and pull request upstream to reproduce and fix what could be fixed. The [upgrade guide](./packages/runtime/README.md#upgrading-from-2x) covers the changes that affect existing projects.
+
+It is maintained for pelotech's own use first. Issues and pull requests are welcome, with the understanding that what gets built is what someone here needs.
+
+## License
+
+[MIT](./LICENSE). Copyright (c) 2019 Adel Salakh for the original project, and copyright (c) 2026 Pelotech for the changes in this fork, under the same license.
