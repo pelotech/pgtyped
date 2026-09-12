@@ -772,7 +772,7 @@ describe('codegen exit code', () => {
      * here is the only way to make the run connect as the restricted role in
      * the container and on a developer's host alike.
      */
-    const runAs = (dir: string) =>
+    const runAs = (dir: string, user = role, password = 'privcheck') =>
       spawnSync(process.execPath, [cliEntry, '-c', 'config.json'], {
         cwd: dir,
         encoding: 'utf-8',
@@ -785,10 +785,14 @@ describe('codegen exit code', () => {
           PGHOST: dbConfig.host,
           PGPORT: String(dbConfig.port),
           PGDATABASE: dbConfig.database,
-          PGUSER: role,
-          PGPASSWORD: 'privcheck',
+          PGUSER: user,
+          PGPASSWORD: password,
         },
       });
+
+    /** The same run as the database's owner: `postgres`, a superuser. */
+    const runAsOwner = (dir: string) =>
+      runAs(dir, dbConfig.user, dbConfig.password);
 
     test('is off by default: the revoked query generates cleanly and exits 0', () => {
       const dir = scratch({});
@@ -831,6 +835,8 @@ describe('codegen exit code', () => {
         // The UPDATE only touches the column the role was granted, so it is
         // not reported — the check is not just "warn about every DML".
         expect(output).not.toContain('UpdateItemB');
+        // A restricted role is what the check is for, so it is not warned about.
+        expect(output).not.toContain('superuser');
 
         // Advisory: the types are right, so they are still written.
         expect(generated).toContain('value: string');
@@ -853,6 +859,48 @@ describe('codegen exit code', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     }, 120_000);
+
+    /**
+     * The same project, the same check, connected as `postgres` — which is
+     * what every other run in this suite connects as, and what a project gets
+     * when it turns the check on without changing who codegen connects as. A
+     * superuser bypasses every privilege check, so the revoked table and the
+     * ungranted column both pass; the run has to say why it found nothing.
+     */
+    describe('as a superuser', () => {
+      test('passes every query, and says so, naming the role', () => {
+        const dir = scratch({ checkPrivileges: true });
+        try {
+          const { status, stdout, stderr } = runAsOwner(dir);
+          const output = stdout + stderr;
+
+          expect(output).toContain(
+            `running as "${dbConfig.user}", which is a superuser`,
+          );
+          expect(output).toContain('SET ROLE');
+          // The two findings the restricted role earns above, both silent.
+          expect(output).not.toContain('permission denied');
+          expect(fs.existsSync(path.join(dir, 'src', 'q.ts'))).toBe(true);
+          expect(status).toBe(0);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }, 120_000);
+
+      test('fails the run under failOnError, and writes nothing', () => {
+        const dir = scratch({ checkPrivileges: true, failOnError: true });
+        try {
+          const { status, stderr } = runAsOwner(dir);
+
+          expect(stderr).toContain('which is a superuser');
+          expect(stderr).toContain('No files were written');
+          expect(fs.existsSync(path.join(dir, 'src', 'q.ts'))).toBe(false);
+          expect(status).not.toBe(0);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }, 120_000);
+    });
   });
 
   /**

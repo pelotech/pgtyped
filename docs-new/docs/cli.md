@@ -269,10 +269,20 @@ generated — …
 
 The types are still generated, and the run still exits 0. That is deliberate: the SQL is valid and its types are an accurate description of it, so replacing them with `never` — which is what codegen does for a query it cannot describe — would break every call site over something only a `GRANT` can fix. Under [`failOnError`](#configuration-file-format) the same finding fails the run instead, and nothing is written.
 
+**The check is meaningless as a superuser.** A superuser bypasses every privilege check, so with codegen connected as `postgres` — which is how it is very often run — every query passes, and a clean run tells you nothing at all. Codegen looks up the role it is connected as once per run, and if that role is a superuser it says so:
+
+```
+checkPrivileges is on, but codegen is running as "postgres", which is a superuser. A superuser
+bypasses every privilege check, so every query will pass and the check cannot report anything.
+Connect as the role the application runs as — or SET ROLE to it — for the check to mean anything.
+```
+
+Like every other finding it is a warning by default and fails the run under `failOnError`, in this case before any file is processed. The role is read from `pg_roles` at `current_user`, which follows `SET ROLE`: a session that has switched to the application role is checked as that role, and not warned about.
+
 #### Why it is off by default
 
 - **It is the wrong question for most projects.** Codegen very often connects as the schema owner or a migration role, while the application connects as a restricted one. Checking the owner's privileges tells you nothing about the application's, and the check would be reassuring for exactly the queries it should not be. Turn it on only when codegen connects as the role that will run the queries in production.
-- **It costs a round trip per query,** plus one `SHOW server_version_num` for the run. That is a real cost on a large project against a remote database, and it buys nothing at all in the case above.
+- **It costs a round trip per query,** plus two for the run: `SHOW server_version_num`, and the `pg_roles` lookup of the connected role. That is a real cost on a large project against a remote database, and it buys nothing at all in the case above.
 
 #### What it needs, and what it misses
 
@@ -525,9 +535,11 @@ injected. `pgliteTypeDb` is the one this package ships.
 #### Privileges
 
 A PGlite has no listener, so there is nobody to authenticate as: codegen runs as
-the superuser that created the instance. With
-[`checkPrivileges`](#checking-privileges) on, that means every query passes,
-which is not what the check is for.
+the superuser that created the instance, `postgres`, unless your script says
+otherwise. With [`checkPrivileges`](#checking-privileges) on, that means every
+query passes, which is not what the check is for — so the run warns that it is
+running as a superuser, exactly as it would against a server it had connected
+to as `postgres`.
 
 `SET ROLE` stands in, and gives identical privilege semantics:
 
@@ -540,4 +552,5 @@ await db.exec(`
 `);
 ```
 
-After that the check reports the same `42501` a real connection as `app` would.
+After that codegen runs as `app`: the warning goes away, and a table `app` has
+not been granted reports the same `42501` a real connection as `app` would.

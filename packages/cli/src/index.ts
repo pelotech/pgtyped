@@ -1,7 +1,12 @@
 import nun from 'nunjucks';
 import pg from 'pg';
 import { ParsedConfig, TransformConfig } from './config.js';
-import { type TypeDb, typeDb, verifyConnection } from './db/type-db.js';
+import {
+  currentRole,
+  type TypeDb,
+  typeDb,
+  verifyConnection,
+} from './db/type-db.js';
 import { SharedTypeRegistry } from './sharedTypes.js';
 import { TypescriptAndSqlTransformer } from './typescriptAndSqlTransformer.js';
 import { debug, fatal, MAX_CONCURRENCY } from './util.js';
@@ -9,6 +14,16 @@ import { debug, fatal, MAX_CONCURRENCY } from './util.js';
 // tslint:disable:no-console
 
 nun.configure({ autoescape: false });
+
+/** What the run says when `checkPrivileges` is on and `roleName` is a superuser. */
+function superuserWarning(roleName: string): string {
+  return (
+    `checkPrivileges is on, but codegen is running as "${roleName}", which is a superuser. ` +
+    `A superuser bypasses every privilege check, so every query will pass and the check ` +
+    `cannot report anything. Connect as the role the application runs as — or SET ROLE to ` +
+    `it — for the check to mean anything.`
+  );
+}
 
 /**
  * Runs codegen once, or starts it watching.
@@ -71,6 +86,31 @@ export async function main(
         `Could not connect to the database at ${config.db.host}:${config.db.port} as user "${config.db.user}". No files were written.`,
         e,
       );
+    }
+  }
+
+  // A superuser bypasses every privilege check, so with `checkPrivileges` on
+  // and codegen connected as one, every query passes and the clean run says
+  // nothing at all — a silent false negative from the one feature whose job
+  // is to catch privilege problems. Asked once per run, here, before any file
+  // is processed: the answer is a property of the connection, not of a query,
+  // and a run with the check off must not pay for a round trip it never uses.
+  // The lookup goes through `rows`, so it holds for an injected PGlite too,
+  // which is superuser by default and answers as the `SET ROLE` role after one.
+  if (config.checkPrivileges) {
+    const role = await currentRole(db);
+    if (role.superuser) {
+      console.warn(superuserWarning(role.name));
+      // Advisory by default, fatal under failOnError — the rule every other
+      // diagnostic follows. Before the first file rather than at the first
+      // query, so the strict reading writes nothing at all.
+      if (config.failOnError) {
+        console.error(
+          'failOnError is set, so the run stops here. No files were written.',
+        );
+        await pool?.end();
+        return 1;
+      }
     }
   }
 
