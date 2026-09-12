@@ -55,3 +55,32 @@ export async function verifyConnection(
   const client = await pool.connect();
   client.release();
 }
+
+/** The role codegen's queries run as, and whether it is a superuser. */
+export interface CurrentRole {
+  name: string;
+  superuser: boolean;
+}
+
+/**
+ * Asks the database which role it is answering as, and whether that role is a
+ * superuser.
+ *
+ * Read from `pg_roles` at `current_user` rather than from the `is_superuser`
+ * setting. Both follow `SET ROLE` — measured against a real 18.6 server and
+ * against PGlite, where a session that starts as the superuser answers
+ * `false` after `SET ROLE app` and `true` again after `RESET ROLE` — but the
+ * catalog row is the documented meaning of "superuser", and it carries the
+ * role's name in the same round trip, which the warning built on this needs.
+ *
+ * Goes through `rows`, so it answers identically over a pool and over an
+ * injected PGlite; nothing else on the interface is needed.
+ */
+export async function currentRole(
+  db: Pick<TypeDb, 'rows'>,
+): Promise<CurrentRole> {
+  const [row] = (await db.rows(
+    'SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user',
+  )) as { rolname: string; rolsuper: boolean }[];
+  return { name: row.rolname, superuser: row.rolsuper === true };
+}

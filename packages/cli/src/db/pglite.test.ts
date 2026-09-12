@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { ParsedConfig } from '../config.js';
 import { main } from '../index.js';
 import { pgliteTypeDb, type PGliteDb } from './pglite.js';
+import { currentRole } from './type-db.js';
 
 /**
  * Every test here runs against a real in-process Postgres: no Docker, no
@@ -375,4 +376,121 @@ describe('codegen against an injected PGlite', () => {
   test('honours sharedTypesFile, which nothing else on this path proves', () => {
     expect(shared()).toContain('export type mood');
   });
+});
+
+/**
+ * A PGlite has no listener and nobody to authenticate as, so codegen runs as
+ * the superuser that created it — and a superuser passes every privilege
+ * check. `SET ROLE` is the documented remedy, and the lookup reads `pg_roles`
+ * at `current_user` precisely because `current_user` follows it: the case that
+ * has to come out right is superuser by default, and not after `SET ROLE`.
+ */
+describe('the superuser warning on an injected PGlite', () => {
+  const ROLE_SETUP =
+    'CREATE ROLE app; GRANT USAGE ON SCHEMA public TO app; ' +
+    'GRANT SELECT ON authors TO app; SET ROLE app;';
+
+  test('the role is the superuser by default, and the SET ROLE role after one', async () => {
+    const scoped = await PGlite.create();
+    try {
+      await expect(currentRole(pgliteTypeDb(scoped))).resolves.toStrictEqual({
+        name: 'postgres',
+        superuser: true,
+      });
+
+      await scoped.exec(
+        ROLE_SETUP.replace('GRANT SELECT ON authors TO app; ', ''),
+      );
+
+      await expect(currentRole(pgliteTypeDb(scoped))).resolves.toStrictEqual({
+        name: 'app',
+        superuser: false,
+      });
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
+
+  /** Runs codegen with the check on against `scoped`, returning what it warned. */
+  const checkedRun = async (scoped: PGlite) => {
+    const dir = mkdtempSync(join(tmpdir(), 'pgtyped-pglite-super-'));
+    const srcDir = join(dir, 'src');
+    mkdirSync(srcDir);
+    writeFileSync(
+      join(srcDir, 'authors.sql'),
+      '/* @name FindAuthor */\nSELECT id, name FROM authors WHERE id = :id!;\n',
+    );
+    const config: ParsedConfig = {
+      db: {
+        host: '127.0.0.1',
+        port: 1,
+        user: 'nobody',
+        password: undefined,
+        dbName: 'nothing',
+      },
+      failOnError: false,
+      camelCaseColumnNames: false,
+      hungarianNotation: false,
+      nonEmptyArrayParams: false,
+      optionalNullParams: false,
+      preparedStatements: false,
+      checkPrivileges: true,
+      sharedTypesFile: false,
+      srcDir,
+      transforms: [
+        {
+          mode: 'sql',
+          include: '**/*.sql',
+          emitTemplate: '{{dir}}/{{name}}.queries.ts',
+        },
+      ],
+      typesOverrides: {},
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const code = await main(config, false, undefined, pgliteTypeDb(scoped));
+      return {
+        code,
+        warnings: warn.mock.calls.map(([message]) => String(message)),
+        generated: readFileSync(join(srcDir, 'authors.queries.ts'), 'utf-8'),
+      };
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  test('warns by default, because the check would pass everything', async () => {
+    const scoped = await PGlite.create();
+    try {
+      await scoped.exec(SCHEMA);
+
+      const { code, warnings, generated } = await checkedRun(scoped);
+
+      expect(code).toBe(0);
+      expect(warnings).toStrictEqual([
+        expect.stringContaining('running as "postgres", which is a superuser'),
+      ]);
+      expect(generated).toContain('name: string');
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
+
+  test('does not warn after SET ROLE to a role that is not a superuser', async () => {
+    const scoped = await PGlite.create();
+    try {
+      await scoped.exec(SCHEMA);
+      await scoped.exec(ROLE_SETUP);
+
+      const { code, warnings, generated } = await checkedRun(scoped);
+
+      expect(code).toBe(0);
+      // Nothing at all: the role is granted what the query needs, so the
+      // check has nothing to report either.
+      expect(warnings).toStrictEqual([]);
+      expect(generated).toContain('name: string');
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
 });

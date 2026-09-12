@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ParsedConfig } from './config.js';
@@ -73,6 +79,25 @@ function stubDb(): TypeDb {
     },
     explain: async () => undefined,
   };
+}
+
+/**
+ * `stubDb`, answering the role lookup as `role` and recording every catalog
+ * query it is sent, so a test can prove which round trips a run made.
+ */
+function roleDb(role: { rolname: string; rolsuper: boolean }) {
+  const base = stubDb();
+  const catalogQueries: string[] = [];
+  const db: TypeDb = {
+    ...base,
+    rows: async (sql) => {
+      catalogQueries.push(sql);
+      return sql.includes('pg_roles') ? [role] : base.rows(sql);
+    },
+  };
+  const roleLookups = () =>
+    catalogQueries.filter((sql) => sql.includes('pg_roles'));
+  return { db, roleLookups };
 }
 
 /** A config pointing at a port nothing is listening on, which is the point. */
@@ -179,5 +204,162 @@ describe('main without an injected TypeDb', () => {
       expect.objectContaining({ host: '127.0.0.1', port: 1, user: 'nobody' }),
     );
     expect(verifyConnection).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A superuser bypasses every privilege check, so `checkPrivileges` on a
+ * superuser connection passes every query and reports nothing — a clean run
+ * that tells the user nothing at all. The run says so, once, before any file
+ * is processed. The stub answers the lookup, so this is what `main` does with
+ * the answer; `db/pglite.test.ts` is where a real database gives one.
+ */
+describe('the superuser warning', () => {
+  const postgres = { rolname: 'postgres', rolsuper: true };
+  const app = { rolname: 'app', rolsuper: false };
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  let error: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  const warnings = () =>
+    warn.mock.calls.map(([message]: unknown[]) => String(message));
+
+  test('warns, naming the role, and still generates', async () => {
+    const { config, dir } = project();
+    const { db } = roleDb(postgres);
+
+    const code = await main(
+      { ...config, checkPrivileges: true },
+      false,
+      undefined,
+      db,
+    );
+
+    expect(code).toBe(0);
+    expect(warnings()).toStrictEqual([
+      expect.stringContaining('running as "postgres", which is a superuser'),
+    ]);
+    expect(warnings()[0]).toContain('SET ROLE');
+    // Advisory: the types are right, so they are written.
+    expect(readFileSync(join(dir, 'src', 'q.queries.ts'), 'utf-8')).toContain(
+      'one: number',
+    );
+  });
+
+  test('says nothing as a role that is not a superuser', async () => {
+    const { config } = project();
+    const { db, roleLookups } = roleDb(app);
+
+    const code = await main(
+      { ...config, checkPrivileges: true },
+      false,
+      undefined,
+      db,
+    );
+
+    expect(code).toBe(0);
+    expect(roleLookups()).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The lookup is a round trip, and a run with the check off — the default —
+   * must not pay for one it never uses.
+   */
+  test('asks nothing of the database when the check is off', async () => {
+    const { config } = project();
+    const { db, roleLookups } = roleDb(postgres);
+
+    await main({ ...config, checkPrivileges: false }, false, undefined, db);
+
+    expect(roleLookups()).toStrictEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The answer is a property of the connection, not of a query, so it is
+   * asked for once — before the first file, not once per file or per query
+   * processed concurrently.
+   */
+  test('asks once per run, however many files and queries are checked', async () => {
+    const { config, dir } = project();
+    const { db, roleLookups } = roleDb(postgres);
+    const files = Array.from({ length: 8 }, (_, i) => `many${i}.sql`);
+    for (const file of files) {
+      writeFileSync(
+        join(dir, 'src', file),
+        [
+          `/* @name First${file.length} */`,
+          'SELECT 1 AS one;',
+          '',
+          `/* @name Second${file.length} */`,
+          'SELECT 2 AS one;',
+          '',
+        ].join('\n'),
+      );
+    }
+
+    const code = await main(
+      { ...config, checkPrivileges: true },
+      false,
+      undefined,
+      db,
+    );
+
+    expect(code).toBe(0);
+    expect(roleLookups()).toStrictEqual([
+      'SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user',
+    ]);
+    expect(warnings()).toHaveLength(1);
+  });
+
+  /**
+   * Fatal under failOnError, like every other diagnostic — and before the
+   * first file rather than at the first query, so the strict reading writes
+   * nothing at all.
+   */
+  test('failOnError fails the run before anything is written', async () => {
+    const { config, dir } = project();
+    const { db } = roleDb(postgres);
+
+    const code = await main(
+      { ...config, checkPrivileges: true, failOnError: true },
+      false,
+      undefined,
+      db,
+    );
+
+    expect(code).toBe(1);
+    expect(warnings()).toStrictEqual([
+      expect.stringContaining('"postgres", which is a superuser'),
+    ]);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('No files were written'),
+    );
+    expect(existsSync(join(dir, 'src', 'q.queries.ts'))).toBe(false);
+  });
+
+  test('failOnError changes nothing for a role that is not a superuser', async () => {
+    const { config, dir } = project();
+    const { db } = roleDb(app);
+
+    const code = await main(
+      { ...config, checkPrivileges: true, failOnError: true },
+      false,
+      undefined,
+      db,
+    );
+
+    expect(code).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    expect(existsSync(join(dir, 'src', 'q.queries.ts'))).toBe(true);
   });
 });

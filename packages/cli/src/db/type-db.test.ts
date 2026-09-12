@@ -1,4 +1,4 @@
-import { typeDb, verifyConnection } from './type-db.js';
+import { currentRole, typeDb, verifyConnection } from './type-db.js';
 
 describe('verifyConnection', () => {
   test('releases the client it checked out', async () => {
@@ -93,5 +93,45 @@ describe('typeDb().explain', () => {
     typeDb(pool as never);
 
     expect(versionQueries).toStrictEqual([]);
+  });
+});
+
+/**
+ * The one query the superuser warning rests on. It reads `pg_roles` at
+ * `current_user` — which follows `SET ROLE`, measured against a real server
+ * and against PGlite in `pglite.test.ts` — and goes through `rows`, so it is
+ * the same lookup over a pool and over an injected database.
+ */
+describe('currentRole', () => {
+  const answering = (row: Record<string, unknown>) => {
+    const queries: string[] = [];
+    const db = {
+      rows: async (sql: string) => {
+        queries.push(sql);
+        return [row];
+      },
+    };
+    return { db, queries };
+  };
+
+  test('reads rolsuper for current_user, not for the session user', async () => {
+    const { db, queries } = answering({ rolname: 'postgres', rolsuper: true });
+
+    await expect(currentRole(db)).resolves.toStrictEqual({
+      name: 'postgres',
+      superuser: true,
+    });
+    expect(queries).toStrictEqual([
+      'SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user',
+    ]);
+  });
+
+  test('names a role that is not a superuser', async () => {
+    const { db } = answering({ rolname: 'app', rolsuper: false });
+
+    await expect(currentRole(db)).resolves.toStrictEqual({
+      name: 'app',
+      superuser: false,
+    });
   });
 });
