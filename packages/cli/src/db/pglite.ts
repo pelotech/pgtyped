@@ -50,8 +50,8 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 /**
- * Parse + Describe(statement) + Sync on the unnamed statement, exactly as the
- * pool adapter's `DescribeStatement` sends it.
+ * One Parse + Describe(statement) + Sync on the unnamed statement, exactly as
+ * the pool adapter's `DescribeStatement` sends it.
  *
  * `db.describeQuery()` looks like the obvious call and cannot be used: it
  * returns `{dataTypeID, parser}` per column and no `tableID`/`columnID`, so the
@@ -59,26 +59,28 @@ function concat(parts: Uint8Array[]): Uint8Array {
  * every column comes out nullable. `execProtocol` with the exported
  * `protocol.serialize` gives the full RowDescription and touches no private
  * API.
+ *
+ * Resolves `undefined` if the instance answered with nothing at all — no
+ * parameter description, no row description and no error. A statement Describe
+ * always carries a `parameterDescription` (an empty one for a query with no
+ * parameters, followed by `noData` rather than a `rowDescription` when nothing
+ * is returned), so a response with neither is not a description of anything.
+ * An error is thrown by `execProtocol` itself and never reaches the loop.
  */
-async function describe(db: PGliteDb, text: string): Promise<Described> {
-  // The most important line in this file. `execProtocol` is *not* covered by
-  // PGlite's query lock, and the failure is silent: a same-tick burst of nine
-  // unlocked describes has one caller receive every backend message and the
-  // other eight receive none, yielding an empty `Described` — which codegen
-  // renders as `never` with no error at all. `runExclusive` is what makes
-  // concurrent transforms correct here.
-  const { messages } = await db.runExclusive(() =>
-    db.execProtocol(
-      concat([
-        protocol.serialize.parse({ text }),
-        protocol.serialize.describe({ type: 'S' }),
-        protocol.serialize.sync(),
-      ]),
-    ),
+async function sendDescribe(
+  db: PGliteDb,
+  text: string,
+): Promise<Described | undefined> {
+  const { messages } = await db.execProtocol(
+    concat([
+      protocol.serialize.parse({ text }),
+      protocol.serialize.describe({ type: 'S' }),
+      protocol.serialize.sync(),
+    ]),
   );
 
-  let params: { oid: number }[] = [];
-  let fields: DescribedField[] = [];
+  let params: { oid: number }[] | undefined;
+  let fields: DescribedField[] | undefined;
   for (const message of messages) {
     if (message.name === 'parameterDescription') {
       params = (message as ParameterDescription).dataTypeIDs.map((oid) => ({
@@ -99,7 +101,41 @@ async function describe(db: PGliteDb, text: string): Promise<Described> {
       }));
     }
   }
-  return { params, fields };
+  if (params === undefined && fields === undefined) {
+    return undefined;
+  }
+  return { params: params ?? [], fields: fields ?? [] };
+}
+
+async function describe(db: PGliteDb, text: string): Promise<Described> {
+  // The most important line in this file. `execProtocol` is *not* covered by
+  // PGlite's query lock, and the failure is silent: a same-tick burst of nine
+  // unlocked describes has one caller receive every backend message and the
+  // other eight receive none, yielding an empty `Described` — which codegen
+  // renders as `never` with no error at all. `runExclusive` is what makes
+  // concurrent transforms correct here.
+  const described = await db.runExclusive(async () => {
+    // An empty answer is never returned as a description. The known cause is
+    // a client session through `@electric-sql/pglite-socket`: after the
+    // server is stopped, the instance's next `execProtocol` returns zero
+    // messages and the one after it is normal, so the first Describe would
+    // otherwise come back as "no params, no columns" and be typed as such.
+    // Parse/Describe/Sync has no side effects, so a second attempt is safe
+    // and drains whatever swallowed the first; if that is empty too, the
+    // instance is not answering and saying so beats generating from nothing.
+    // The guard is not socket-specific on purpose — it covers any cause of
+    // swallowed output, which is why there is no drain at construction.
+    return (await sendDescribe(db, text)) ?? (await sendDescribe(db, text));
+  });
+  if (described === undefined) {
+    throw new Error(
+      `PGlite returned no response to a Describe of this query, and none on a ` +
+        `retry either: no parameter description, no row description and no ` +
+        `error. The instance is not answering the extended-query protocol, so ` +
+        `no types can be generated for it. Query: ${text}`,
+    );
+  }
+  return described;
 }
 
 /**
