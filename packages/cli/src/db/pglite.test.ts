@@ -1,7 +1,9 @@
 import { PGlite, protocol } from '@electric-sql/pglite';
+import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import pg from 'pg';
 import type { ParsedConfig } from '../config.js';
 import { main } from '../index.js';
 import { pgliteTypeDb, type PGliteDb } from './pglite.js';
@@ -119,6 +121,17 @@ describe('pgliteTypeDb().describe', () => {
   });
 });
 
+/** The wire bytes of one Parse + Describe + Sync, as the adapter sends them. */
+function concat(parts: Uint8Array[]): Uint8Array {
+  const message = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    message.set(part, offset);
+    offset += part.length;
+  }
+  return message;
+}
+
 /**
  * `execProtocol` is not covered by PGlite's query lock, and the failure is
  * silent: unlocked, one caller in a same-tick burst receives every backend
@@ -131,20 +144,12 @@ describe('pgliteTypeDb().describe', () => {
  * happens not to race today.
  */
 describe('describe is serialized with runExclusive', () => {
-  const describeMessage = (text: string) => {
-    const parts = [
+  const describeMessage = (text: string) =>
+    concat([
       protocol.serialize.parse({ text }),
       protocol.serialize.describe({ type: 'S' as const }),
       protocol.serialize.sync(),
-    ];
-    const message = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-    let offset = 0;
-    for (const part of parts) {
-      message.set(part, offset);
-      offset += part.length;
-    }
-    return message;
-  };
+    ]);
 
   const QUERY = 'SELECT id, name FROM authors WHERE id = $1';
   const BURST = 9;
@@ -193,6 +198,210 @@ describe('describe is serialized with runExclusive', () => {
       typeDb.describe('SELECT id FROM authors'),
     ).resolves.toMatchObject({ params: [] });
   }, 30_000);
+});
+
+/**
+ * The recommended way to run a migration tool that only takes a connection
+ * string against an in-process PGlite is `@electric-sql/pglite-socket`: expose
+ * the instance on a port, let the tool migrate through it, stop the server and
+ * hand the same instance to codegen. After such a session the instance's next
+ * `execProtocol` returns zero messages and the one after it is normal — so
+ * the first Describe, unguarded, would come back as "no params, no columns"
+ * and be typed as exactly that, with no error.
+ *
+ * Measured with `@electric-sql/pglite` 0.5.8 and `@electric-sql/pglite-socket`
+ * 0.2.11. `exec()` and `query()` — which `explain` and `rows` use — are not
+ * affected, and each also absorbs the swallowed call.
+ */
+describe('describe after a session through PGLiteSocketServer', () => {
+  // Nothing listens here; 5432 is the one port a stray server might be on.
+  const PORT = 47391;
+  const QUERY = 'SELECT id, name FROM authors WHERE id = $1';
+
+  /** A fresh instance whose only traffic so far was the socket session. */
+  const migratedThroughSocket = async () => {
+    const scoped = await PGlite.create();
+    const server = new PGLiteSocketServer({
+      db: scoped,
+      port: PORT,
+      host: '127.0.0.1',
+    });
+    await server.start();
+    try {
+      const client = new pg.Client({
+        connectionString: `postgres://postgres:postgres@127.0.0.1:${PORT}/postgres`,
+      });
+      await client.connect();
+      try {
+        await client.query(SCHEMA);
+      } finally {
+        await client.end();
+      }
+    } finally {
+      await server.stop();
+    }
+    return scoped;
+  };
+
+  test('the first describe comes back complete', async () => {
+    const scoped = await migratedThroughSocket();
+    try {
+      const { params, fields } = await pgliteTypeDb(scoped).describe(QUERY);
+
+      expect(params).toStrictEqual([{ oid: 23 }]);
+      expect(fields.map((f) => f.name)).toStrictEqual(['id', 'name']);
+      for (const field of fields) {
+        expect(field.tableOID).toBeGreaterThan(0);
+      }
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
+
+  test('a failing first describe still rejects with the server’s error', async () => {
+    const scoped = await migratedThroughSocket();
+    try {
+      await expect(
+        pgliteTypeDb(scoped).describe('SELECT nope FROM authors'),
+      ).rejects.toMatchObject({ code: '42703' });
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
+
+  /**
+   * The raw protocol, so the passing test above is known to be exercising the
+   * guard rather than a PGlite that has stopped swallowing the call.
+   */
+  test('and would not without the guard: the raw first execProtocol returns nothing', async () => {
+    const scoped = await migratedThroughSocket();
+    try {
+      const message = concat([
+        protocol.serialize.parse({ text: QUERY }),
+        protocol.serialize.describe({ type: 'S' as const }),
+        protocol.serialize.sync(),
+      ]);
+      const first = await scoped.runExclusive(() =>
+        scoped.execProtocol(message),
+      );
+      const second = await scoped.runExclusive(() =>
+        scoped.execProtocol(message),
+      );
+
+      expect(first.messages).toStrictEqual([]);
+      expect(second.messages.map((m) => m.name)).toStrictEqual([
+        'parseComplete',
+        'parameterDescription',
+        'rowDescription',
+        'readyForQuery',
+      ]);
+    } finally {
+      await scoped.close();
+    }
+  }, 60_000);
+});
+
+/**
+ * The guard itself, on stubs: an empty answer costs one retry, and two in a
+ * row are an error rather than a description. Whatever swallows the output —
+ * a socket session today, anything else tomorrow — the adapter never hands
+ * codegen "no params, no columns" for a query it did not describe.
+ */
+describe('describe never returns an empty description silently', () => {
+  const COMPLETE = {
+    data: new Uint8Array(),
+    messages: [
+      { name: 'parameterDescription', length: 0, dataTypeIDs: [23] },
+      {
+        name: 'rowDescription',
+        length: 0,
+        fields: [
+          {
+            name: 'id',
+            tableID: 1,
+            columnID: 1,
+            dataTypeID: 23,
+            dataTypeSize: 4,
+            dataTypeModifier: -1,
+            format: 0,
+          },
+        ],
+      },
+    ],
+  };
+  const EMPTY = { data: new Uint8Array(), messages: [] };
+
+  test('retries once, so a single swallowed response costs nothing', async () => {
+    const answers = [EMPTY, COMPLETE];
+    let calls = 0;
+    const flaky = {
+      runExclusive: <T>(fn: () => Promise<T>) => fn(),
+      execProtocol: async () => {
+        calls += 1;
+        return answers.shift() ?? EMPTY;
+      },
+    } as unknown as PGliteDb;
+
+    const { params, fields } = await pgliteTypeDb(flaky).describe(
+      'SELECT id FROM authors WHERE id = $1',
+    );
+
+    expect(calls).toBe(2);
+    expect(params).toStrictEqual([{ oid: 23 }]);
+    expect(fields.map((f) => f.name)).toStrictEqual(['id']);
+  });
+
+  test('throws, naming the query, when the instance answers nothing twice', async () => {
+    let calls = 0;
+    const mute = {
+      runExclusive: <T>(fn: () => Promise<T>) => fn(),
+      execProtocol: async () => {
+        calls += 1;
+        return EMPTY;
+      },
+    } as unknown as PGliteDb;
+
+    await expect(
+      pgliteTypeDb(mute).describe('SELECT id FROM authors WHERE id = $1'),
+    ).rejects.toThrow(
+      /no response to a Describe.*SELECT id FROM authors WHERE id = \$1/s,
+    );
+    expect(calls).toBe(2);
+  });
+
+  /**
+   * A statement that returns no rows describes as a `parameterDescription`
+   * followed by `noData`, so the guard must not mistake "no columns" for "no
+   * answer".
+   */
+  test('a description with parameters but no columns is complete, not empty', async () => {
+    const { params, fields } = await pgliteTypeDb(db).describe(
+      'INSERT INTO authors (name) VALUES ($1)',
+    );
+
+    expect(params).toStrictEqual([{ oid: 25 }]);
+    expect(fields).toStrictEqual([]);
+  });
+
+  test('and so is one with neither, which is still a parameterDescription', async () => {
+    let calls = 0;
+    const counting: PGliteDb = {
+      query: db.query.bind(db) as PGliteDb['query'],
+      exec: db.exec.bind(db),
+      execProtocol: (message, options) => {
+        calls += 1;
+        return db.execProtocol(message, options);
+      },
+      runExclusive: (fn) => db.runExclusive(fn),
+    };
+
+    const { params, fields } = await pgliteTypeDb(counting).describe(
+      "INSERT INTO authors (name) VALUES ('anon')",
+    );
+
+    expect({ params, fields }).toStrictEqual({ params: [], fields: [] });
+    expect(calls).toBe(1);
+  });
 });
 
 /**
