@@ -485,6 +485,7 @@ It is an **optional peer dependency** and lives behind its own subpath export,
 so a project generating against a real server never installs or loads it.
 
 ```ts title="typegen.ts"
+import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { main } from '@pelotech/pgtyped-cli';
 import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
@@ -492,10 +493,11 @@ import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
 
 const db = await PGlite.create();
 
-// Your migrations, in order, against an empty database. Whatever tool you
-// already use works, as long as it can be pointed at a PGlite instance;
-// `db.exec` on a schema dump is the simplest version of it.
-await migrate(db);
+// Apply your schema to the empty in-memory database. A schema dump is the
+// simplest form; a migration tool works too — one that can be handed the
+// instance directly, or one that wants a connection string, through a socket
+// (see "With graphile-migrate" below).
+await db.exec(readFileSync('sql/schema.sql', 'utf8'));
 
 const code = await main(parseConfig('config.json'), false, undefined, pgliteTypeDb(db));
 await db.close();
@@ -532,6 +534,10 @@ injected. `pgliteTypeDb` is the one this package ships.
   package has no opinion about, and no configuration for, where your migrations
   live.
 
+- **A migration tool that only takes a connection string is fine.** The instance
+  can be put behind a local socket for as long as the tool needs it; see
+  [With graphile-migrate](#with-graphile-migrate).
+
 #### Privileges
 
 A PGlite has no listener, so there is nobody to authenticate as: codegen runs as
@@ -554,3 +560,103 @@ await db.exec(`
 
 After that codegen runs as `app`: the warning goes away, and a table `app` has
 not been granted reports the same `42501` a real connection as `app` would.
+
+#### With graphile-migrate
+
+[graphile-migrate](https://github.com/graphile/migrate) talks to Postgres over
+the wire through `pg`, so it cannot be handed a PGlite instance directly. It
+can be handed a socket: `@electric-sql/pglite-socket` puts a listener in front
+of an in-process PGlite for as long as you need one, and `graphile-migrate
+migrate` — the forward-only command that applies `migrations/committed/` — runs
+against it unchanged. Stop the listener afterwards and generate against the
+same instance.
+
+```shell script
+npm install --save-dev @electric-sql/pglite @electric-sql/pglite-socket graphile-migrate
+```
+
+```ts title="typegen.mjs"
+import { PGlite } from '@electric-sql/pglite';
+import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
+import { migrate } from 'graphile-migrate';
+import { main } from '@pelotech/pgtyped-cli';
+import { parseConfig } from '@pelotech/pgtyped-cli/config.js';
+import { pgliteTypeDb } from '@pelotech/pgtyped-cli/pglite';
+
+const db = await PGlite.create();
+
+// graphile-migrate speaks the wire protocol through `pg`, so give the PGlite a
+// listener for the duration of the migration. Any port above the privileged
+// range that nothing else is using; the credentials are not checked.
+const server = new PGLiteSocketServer({ db, host: '127.0.0.1', port: 15432 });
+await server.start();
+
+await migrate({ connectionString: 'postgres://postgres:postgres@127.0.0.1:15432/postgres' });
+
+// graphile-migrate keeps its pool open for 200ms after `migrate` resolves and
+// exits the process if a pooled connection is cut. Wait for it to hang up.
+while (server.getStats().activeConnections > 0) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+await server.stop();
+
+const code = await main(parseConfig('config.json'), false, undefined, pgliteTypeDb(db));
+await db.close();
+process.exit(code ?? 0);
+```
+
+`migrate(settings)` reads `migrations/committed/` under the current directory
+(or `migrationsFolder`), creates its `graphile_migrate` bookkeeping schema on
+the PGlite, applies the committed migrations in order inside its advisory lock,
+and records each one in `graphile_migrate.migrations`. It does not read
+`.gmrc`, and it needs neither `SHADOW_DATABASE_URL` nor `ROOT_DATABASE_URL`.
+The CLI form, `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:15432/postgres
+npx graphile-migrate migrate`, works against the same listener from another
+process; the programmatic call is the one to use in a script, because the
+script already owns the instance.
+
+The loop before `server.stop()` is not optional. graphile-migrate holds its
+`pg.Pool` for 200ms after `migrate` resolves, and its pool error handler calls
+`process.exit(1)`; stopping the listener while that idle connection is still
+attached prints `An error occurred in the PgPool: Connection terminated
+unexpectedly` and kills the run mid-codegen.
+
+A few things about the listener worth knowing:
+
+- **Nothing checks the credentials.** pglite-socket forwards the startup packet
+  to PGlite as-is: any user, any password and any database name connect, and
+  every session is `postgres` on the one database `postgres`. The URL above is
+  the conventional spelling, not a requirement. `sslmode=require` fails
+  (`The server does not support SSL connections`); leave SSL out.
+- **`maxConnections` defaults to 1.** `migrate` opens one pool with one client,
+  so the default is enough for it.
+
+##### What does not work: `commit`, `reset`, `watch`, `status`
+
+This is the CI and codegen flow. It is not a replacement for the development
+database that the rest of graphile-migrate's workflow assumes.
+
+`commit` and `reset` (and `uncommit`, which shares the code) rebuild a database
+by connecting as root and running `DROP DATABASE IF EXISTS … ; CREATE DATABASE
+…`. A PGlite has exactly one usable database, `postgres`, and every socket
+connection lands in it whatever name the URL carries, so the drop is always of
+the database the root connection is sitting in:
+
+```
+error: cannot drop the currently open database
+    at graphile-migrate/dist/commands/reset.js:25   (the DROP DATABASE step)
+```
+
+That is with a second PGlite behind a second socket as the shadow and the root
+URL pointing at it, which is as close to the intended layout as a PGlite can
+get. Naming the shadow or main database something other than `postgres` in the
+URL gets past the error, because the drop becomes a no-op and the `CREATE
+DATABASE` is accepted (it creates an entry in `pg_database` that nothing can
+connect to) — and then the "reset" resets nothing. `reset` run twice with a row
+inserted in between reports `Already up to date` and keeps the row. Do not use
+either of these against a PGlite: they succeed only by not doing their job.
+
+`watch` needs the shadow database for the same reason, and `status` refuses to
+run without `SHADOW_DATABASE_URL` at all. Keep a real Postgres for the
+development loop; use the script above where all you need is the committed
+migrations applied and types generated from them.
