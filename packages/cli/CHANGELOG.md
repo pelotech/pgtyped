@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.0.1](https://github.com/pelotech/pgtyped/compare/v3.0.0...v3.0.1) (2026-09-28)
+
+
+### Build
+
+* publish to npmjs.com with trusted publishing ([#44](https://github.com/pelotech/pgtyped/issues/44)) ([5d162d6](https://github.com/pelotech/pgtyped/commit/5d162d63f3a3de5fac17f7ef57a2f24494209f9c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @pelotech/pgtyped-runtime bumped to 3.0.1
+
 ## [3.0.0](https://github.com/pelotech/pgtyped/compare/v2.4.3...v3.0.0) (2026-09-13)
 
 ### Highlights
