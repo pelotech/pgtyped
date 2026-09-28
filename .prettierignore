@@ -10,3 +10,9 @@ pnpm-lock.yaml
 
 # The docs site is not part of the library build and is left to its own tooling.
 docs-new
+
+# Written by release-please, which does not run prettier; its bullets and blank
+# lines fail `prettier --check`, and CI on the release pull request with them.
+# A reformatting commit pushed by the workflow's GITHUB_TOKEN would not re-run
+# CI, so the file is left in the shape release-please writes.
+**/CHANGELOG.md
