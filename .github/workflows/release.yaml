@@ -50,22 +50,28 @@ jobs:
           gh pr edit "$number" --repo "${{ github.repository }}" --title "chore: release $version"
 
   publish:
-    name: Publish to GitHub Packages
+    name: Publish to npm
     needs: release-please
     if: needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      # npm trusted publishing: npm exchanges this workflow's OIDC token for a
+      # short-lived publish token, so there is no NPM_TOKEN secret, and it
+      # attaches a provenance attestation on its own. Each package must list
+      # pelotech/pgtyped and release.yaml as its trusted publisher on npmjs.com.
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
+      # No registry-url: that only writes an .npmrc for a NODE_AUTH_TOKEN, and
+      # there is no token. The registry comes from each package's
+      # publishConfig. Trusted publishing needs npm 11.5.1 or newer; pnpm
+      # publish shells out to the npm bundled with Node 24.
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'pnpm'
-          registry-url: 'https://npm.pkg.github.com'
-          scope: '@pelotech'
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
@@ -75,6 +81,4 @@ jobs:
       # ranges to the real version as it packs. --no-git-checks because the
       # release commit is what we are publishing from.
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm publish -r --no-git-checks

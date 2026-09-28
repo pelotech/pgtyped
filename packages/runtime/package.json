@@ -26,7 +26,8 @@
   },
   "homepage": "https://github.com/pelotech/pgtyped",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "scripts": {
     "test": "vitest run",

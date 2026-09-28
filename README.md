@@ -21,18 +21,7 @@ PgTyped reads the queries in your `.sql` files (or `sql` tags in `.ts` files), a
 
 ## Install
 
-The packages are published to **GitHub Packages**, not to npmjs.com. Two things are needed first, and both are easy to miss:
-
-1. Tell npm where the `@pelotech` scope lives. In your project's `.npmrc`:
-
-   ```
-   @pelotech:registry=https://npm.pkg.github.com
-   //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-   ```
-
-2. `GITHUB_TOKEN` must be a token with the `read:packages` scope. GitHub Packages needs one to install even public packages.
-
-Then:
+The packages are published to npmjs.com.
 
 ```
 npm install -D @pelotech/pgtyped-cli
@@ -40,6 +29,8 @@ npm install @pelotech/pgtyped-runtime
 ```
 
 `@pelotech/pgtyped-runtime` is the only thing your application depends on at runtime. `typescript` (5 or 6) is an optional peer of the CLI, only needed if you use `sql` tags in `.ts` files.
+
+Earlier releases were published to GitHub Packages. If your `.npmrc` has `@pelotech:registry=https://npm.pkg.github.com` for pgtyped, remove it (and the `//npm.pkg.github.com/:_authToken` line, if nothing else uses it) so the `@pelotech` scope resolves from npmjs.com.
 
 ## A first query
 
@@ -130,7 +121,6 @@ The schema still has to get into that database first. A tool that can be handed 
 Worth knowing before you start:
 
 - **Codegen needs a database** — a running Postgres, or PGlite as above. The database is the source of truth. There is no config option that reads a schema file; the script above is how a schema file becomes a database to read from.
-- **GitHub Packages only**, with the registry and token setup above. There is no npmjs.com release.
 - **Node 24 or newer, ESM only.** There is no CommonJS build of the runtime or of the generated code.
 - **Nullability comes from the catalog.** A column from the outer side of a `LEFT JOIN`, or from a view, is reported as Postgres reports it, which is not always what the query can return. `@column` annotations exist for exactly this; see [typing](./docs-new/docs/typing.md).
 - **A parameter is a value, never an identifier.** `ORDER BY :column` cannot be made to work, and PgTyped will not pretend otherwise.
